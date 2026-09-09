@@ -1,0 +1,911 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>BillAudit Pro - Sales Agent Custody & Collection Tracker</title>
+  
+  <!-- Font & Icons -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+  
+  <!-- HTML5 QR Code Scanner Library -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- App Container -->
+  <div id="app" class="app-layout">
+
+    <!-- Top Navigation Header -->
+    <header class="top-header">
+      <div class="brand-section">
+        <div class="brand-logo">
+          <i class="fa-solid fa-qrcode"></i>
+        </div>
+        <div class="brand-info">
+          <h1>BillAudit <span class="badge-pro">PRO</span></h1>
+          <span class="subtext">Custody & Fraud Prevention</span>
+        </div>
+      </div>
+
+      <div class="header-controls">
+        <!-- Online/Offline Status Indicator -->
+        <div id="connectionStatus" class="status-pill online" title="Network Status">
+          <span class="dot"></span>
+          <span class="status-text">Online</span>
+        </div>
+
+        <!-- Google Sheet Sync Status -->
+        <button id="quickSyncBtn" class="sync-pill" title="Click to sync with Google Sheet">
+          <i class="fa-solid fa-arrows-rotate"></i>
+          <span id="syncStatusText">Synced</span>
+          <span id="pendingBadge" class="pending-badge" style="display: none;">0</span>
+        </button>
+
+        <!-- Dark/Light Theme Switcher -->
+        <button id="themeToggleBtn" class="icon-btn" title="Toggle Dark/Light Mode">
+          <i class="fa-solid fa-moon"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- Global Stats Overview Bar -->
+    <section class="global-stats-bar">
+      <div class="stat-card" id="statCardDispatched">
+        <div class="stat-icon icon-blue"><i class="fa-solid fa-folder-open"></i></div>
+        <div class="stat-details">
+          <span class="stat-label">In Custody</span>
+          <h3 id="statInCustody">0</h3>
+          <span class="stat-sub" id="statInCustodyAmt">₹0</span>
+        </div>
+      </div>
+
+      <div class="stat-card" id="statCardCollected">
+        <div class="stat-icon icon-green"><i class="fa-solid fa-circle-check"></i></div>
+        <div class="stat-details">
+          <span class="stat-label">Collected</span>
+          <h3 id="statCollected">0</h3>
+          <span class="stat-sub" id="statCollectedAmt">₹0</span>
+        </div>
+      </div>
+
+      <div class="stat-card" id="statCardReturned">
+        <div class="stat-icon icon-indigo"><i class="fa-solid fa-rotate-left"></i></div>
+        <div class="stat-details">
+          <span class="stat-label">Returned In-Hand</span>
+          <h3 id="statReturned">0</h3>
+          <span class="stat-sub" id="statReturnedAmt">₹0</span>
+        </div>
+      </div>
+
+      <div class="stat-card alert-card" id="statCardMissing">
+        <div class="stat-icon icon-red"><i class="fa-solid fa-triangle-exclamation"></i></div>
+        <div class="stat-details">
+          <span class="stat-label">Missing / Alert</span>
+          <h3 id="statMissing">0</h3>
+          <span class="stat-sub" id="statMissingAmt">₹0</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Main Navigation Tab Bar -->
+    <nav class="nav-tabs">
+      <button class="tab-btn active" data-tab="tab-dispatch">
+        <i class="fa-solid fa-truck-ramp-box"></i>
+        <span>1. Dispatch File</span>
+      </button>
+      <button class="tab-btn" data-tab="tab-settlement">
+        <i class="fa-solid fa-clipboard-check"></i>
+        <span>2. EOD Settlement</span>
+      </button>
+      <button class="tab-btn" data-tab="tab-ledger">
+        <i class="fa-solid fa-table-list"></i>
+        <span>3. Live Ledger</span>
+      </button>
+      <button class="tab-btn" data-tab="tab-settings">
+        <i class="fa-solid fa-gear"></i>
+        <span>Settings & Sheet</span>
+      </button>
+    </nav>
+
+    <!-- Content Sections Container -->
+    <main class="main-content">
+
+      <!-- ======================================================== -->
+      <!-- TAB 1: DISPATCH (ISSUE BILLS TO SALES AGENT FOR NEXT DAY) -->
+      <!-- ======================================================== -->
+      <section id="tab-dispatch" class="tab-pane active">
+        <div class="pane-header">
+          <div class="title-wrap">
+            <h2><i class="fa-solid fa-file-arrow-up"></i> Handover Bills to Agent</h2>
+            <p>Scan bills to create custody record before agent leaves for next day route</p>
+          </div>
+        </div>
+
+        <!-- Dispatch Setup Card -->
+        <div class="card setup-card">
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="dispatchAgentSelect"><i class="fa-solid fa-user-tie"></i> Select Sales Agent *</label>
+              <div class="select-with-add">
+                <select id="dispatchAgentSelect" class="form-control" required>
+                  <option value="">-- Choose Agent --</option>
+                </select>
+                <button id="addAgentQuickBtn" class="btn-sm btn-outline" title="Add New Agent">
+                  <i class="fa-solid fa-user-plus"></i>
+                </button>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="dispatchDate"><i class="fa-solid fa-calendar-day"></i> Route Date *</label>
+              <input type="date" id="dispatchDate" class="form-control" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Scanner Card -->
+        <div class="card scanner-card">
+          <div class="scanner-card-header">
+            <div class="scanner-title">
+              <i class="fa-solid fa-camera"></i>
+              <span>QR Code Camera Scanner</span>
+            </div>
+            <div class="scanner-actions">
+              <button id="startScanBtn" class="btn btn-primary btn-sm">
+                <i class="fa-solid fa-video"></i> Start Camera
+              </button>
+              <button id="stopScanBtn" class="btn btn-danger btn-sm" style="display: none;">
+                <i class="fa-solid fa-video-slash"></i> Stop Camera
+              </button>
+              <button id="switchCameraBtn" class="btn btn-outline btn-sm" style="display: none;" title="Switch Camera">
+                <i class="fa-solid fa-camera-rotate"></i>
+              </button>
+              <button id="torchBtn" class="btn btn-outline btn-sm" style="display: none;" title="Toggle Flashlight">
+                <i class="fa-solid fa-bolt"></i>
+              </button>
+            </div>
+          </div>
+
+          <!-- Video Viewport -->
+          <div id="scannerContainer" class="scanner-viewport" style="display: none;">
+            <div id="qr-reader"></div>
+            <div class="scanner-overlay">
+              <div class="scan-target-box">
+                <div class="corner top-left"></div>
+                <div class="corner top-right"></div>
+                <div class="corner bottom-left"></div>
+                <div class="corner bottom-right"></div>
+                <div class="laser-beam"></div>
+              </div>
+              <p class="scan-instructions">Align Bill QR code inside the frame</p>
+            </div>
+          </div>
+
+          <!-- Scanner Preferences & Manual Input -->
+          <div class="scanner-extras">
+            <div class="toggle-group">
+              <label class="switch-label">
+                <input type="checkbox" id="continuousScanToggle" checked />
+                <span>Continuous Scan Mode</span>
+              </label>
+              <label class="switch-label">
+                <input type="checkbox" id="audioBeepToggle" checked />
+                <span>Sound Feedback <i class="fa-solid fa-volume-high"></i></span>
+              </label>
+            </div>
+
+            <!-- Manual Input Fallback -->
+            <div class="manual-input-box">
+              <span class="divider-text">OR MANUALLY ENTER / PASTE QR CODE</span>
+              <div class="input-with-btn">
+                <input type="text" id="manualQrInput" class="form-control" 
+                       placeholder="e.g. IN-FY26/27-3921,Satguru Provision Store,5,465.00" />
+                <button id="addManualBillBtn" class="btn btn-secondary">
+                  <i class="fa-solid fa-plus"></i> Add Bill
+                </button>
+              </div>
+              <small class="hint">Format supported: Bill No, Party Name with ID, Bill Amount</small>
+            </div>
+          </div>
+        </div>
+
+        <!-- Staging / Basket Table of Scanned Bills to Dispatch -->
+        <div class="card basket-card">
+          <div class="basket-header">
+            <div class="basket-title">
+              <h3><i class="fa-solid fa-list-check"></i> Scanned Bills for Handover</h3>
+              <span class="badge-count" id="dispatchBasketCount">0 Bills</span>
+            </div>
+            <div class="basket-summary">
+              <span>Total Value: <strong id="dispatchBasketTotal" class="highlight-amt">₹0.00</strong></span>
+              <button id="clearBasketBtn" class="btn-xs btn-outline-danger" title="Clear list">Clear</button>
+            </div>
+          </div>
+
+          <div class="table-responsive">
+            <table class="data-table" id="dispatchBasketTable">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Bill Number</th>
+                  <th>Party Name & ID</th>
+                  <th>Bill Amount</th>
+                  <th>Scan Time</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="dispatchBasketTbody">
+                <tr class="empty-row">
+                  <td colspan="6">
+                    <div class="empty-state">
+                      <i class="fa-solid fa-qrcode"></i>
+                      <p>No bills scanned yet. Start the camera or type QR text above.</p>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="basket-footer">
+            <button id="confirmDispatchBtn" class="btn btn-success btn-lg" disabled>
+              <i class="fa-solid fa-check-double"></i> Confirm Handover & Issue to Agent
+            </button>
+            <button id="printHandoverSlipBtn" class="btn btn-outline" disabled>
+              <i class="fa-solid fa-print"></i> Print Handover Slip
+            </button>
+            <button id="whatsappHandoverBtn" class="btn btn-outline-whatsapp" disabled>
+              <i class="fa-brands fa-whatsapp"></i> Share on WhatsApp
+            </button>
+          </div>
+        </div>
+      </section>
+
+
+      <!-- ======================================================== -->
+      <!-- TAB 2: END OF DAY SETTLEMENT & FRAUD PREVENTION AUDIT   -->
+      <!-- ======================================================== -->
+      <section id="tab-settlement" class="tab-pane">
+        <div class="pane-header">
+          <div class="title-wrap">
+            <h2><i class="fa-solid fa-scale-balanced"></i> End of Day Return & Settlement</h2>
+            <p>Verify collected money & scan physical bills to eliminate missing bill fraud</p>
+          </div>
+        </div>
+
+        <!-- Settlement Filter Bar -->
+        <div class="card setup-card">
+          <div class="form-row align-items-end">
+            <div class="form-group flex-1">
+              <label for="settlementAgentSelect"><i class="fa-solid fa-user-check"></i> Agent Returning for Settlement *</label>
+              <select id="settlementAgentSelect" class="form-control" required>
+                <option value="">-- Choose Agent --</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="settlementDate"><i class="fa-solid fa-calendar-check"></i> Audit Date</label>
+              <input type="date" id="settlementDate" class="form-control" />
+            </div>
+            <div class="form-group">
+              <button id="loadAgentBillsBtn" class="btn btn-primary">
+                <i class="fa-solid fa-magnifying-glass"></i> Load Agent Custody
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Fraud Alert & Live Audit Dashboard -->
+        <div class="card audit-dashboard-card" id="auditDashboardCard">
+          <div class="audit-summary-grid">
+            <div class="audit-box box-total">
+              <span class="label">Total Bills Dispatched</span>
+              <h3 id="audTotalCount">0</h3>
+              <span class="sub" id="audTotalAmt">₹0.00</span>
+            </div>
+            <div class="audit-box box-paid">
+              <span class="label">Collected (Paid)</span>
+              <h3 id="audPaidCount">0</h3>
+              <span class="sub text-success" id="audPaidAmt">₹0.00</span>
+            </div>
+            <div class="audit-box box-returned">
+              <span class="label">Verified in Hand (Next Round)</span>
+              <h3 id="audReturnedCount">0</h3>
+              <span class="sub text-primary" id="audReturnedAmt">₹0.00</span>
+            </div>
+            <div class="audit-box box-missing" id="audMissingBox">
+              <span class="label">⚠️ UNACCOUNTED / MISSING</span>
+              <h3 id="audMissingCount" class="text-danger">0</h3>
+              <span class="sub text-danger" id="audMissingAmt">₹0.00</span>
+            </div>
+          </div>
+
+          <!-- Alert Banner for Missing Bills -->
+          <div id="missingBillAlertBanner" class="alert-banner danger-banner" style="display: none;">
+            <i class="fa-solid fa-triangle-exclamation fa-2x"></i>
+            <div class="banner-text">
+              <h4>FRAUD / LOSS RISK DETECTED: <span id="alertMissingCount">0</span> Bills Unaccounted For</h4>
+              <p>The highlighted bills were neither marked paid nor physically scanned back into custody. Demand physical verification from the sales agent immediately.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quick Audit Mode Buttons & Scanner -->
+        <div class="card scanner-card">
+          <div class="settlement-scan-modes">
+            <div class="mode-header">
+              <span class="mode-title"><i class="fa-solid fa-bolt-lightning"></i> Fast Scan Action:</span>
+              <div class="mode-toggle-buttons">
+                <button class="mode-btn active" id="modePayBtn" data-mode="PAY">
+                  <i class="fa-solid fa-money-bill-wave"></i> Receive Payment
+                </button>
+                <button class="mode-btn" id="modeReturnBtn" data-mode="RETURN">
+                  <i class="fa-solid fa-hand-holding-dollar"></i> Scan Physical Return (Next Round)
+                </button>
+              </div>
+            </div>
+            <div class="mode-desc-bar" id="modeDescBar">
+              <i class="fa-solid fa-info-circle"></i>
+              <span id="modeDescText">Scan a bill to register payment (Full or Partial).</span>
+            </div>
+          </div>
+
+          <!-- Scanner Controls for Settlement -->
+          <div class="scanner-card-header">
+            <div class="scanner-title">
+              <i class="fa-solid fa-barcode"></i>
+              <span>Settlement QR Scanner</span>
+            </div>
+            <div class="scanner-actions">
+              <button id="startSettlementScanBtn" class="btn btn-primary btn-sm">
+                <i class="fa-solid fa-video"></i> Start Camera
+              </button>
+              <button id="stopSettlementScanBtn" class="btn btn-danger btn-sm" style="display: none;">
+                <i class="fa-solid fa-video-slash"></i> Stop Camera
+              </button>
+            </div>
+          </div>
+
+          <!-- Video Viewport for Settlement -->
+          <div id="settlementScannerContainer" class="scanner-viewport" style="display: none;">
+            <div id="qr-reader-settlement"></div>
+          </div>
+
+          <!-- Manual Entry for Settlement -->
+          <div class="scanner-extras">
+            <div class="manual-input-box">
+              <div class="input-with-btn">
+                <input type="text" id="settlementManualInput" class="form-control" 
+                       placeholder="Scan or paste Bill QR / Bill Number..." />
+                <button id="settlementManualSubmitBtn" class="btn btn-secondary">
+                  <i class="fa-solid fa-arrow-right"></i> Process Bill
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Settlement Bills Detailed Table -->
+        <div class="card">
+          <div class="basket-header">
+            <div class="basket-title">
+              <h3><i class="fa-solid fa-list-check"></i> Agent's Dispatched Bills & Status</h3>
+              <span class="badge-count" id="agentBillsCount">0 Bills</span>
+            </div>
+            <div class="basket-summary">
+              <div class="filter-mini-group">
+                <button class="filter-chip active" data-filter="ALL">All (<span id="chipAllCount">0</span>)</button>
+                <button class="filter-chip chip-pending" data-filter="PENDING">Pending (<span id="chipPendingCount">0</span>)</button>
+                <button class="filter-chip chip-paid" data-filter="PAID">Paid (<span id="chipPaidCount">0</span>)</button>
+                <button class="filter-chip chip-returned" data-filter="RETURNED">Returned (<span id="chipReturnedCount">0</span>)</button>
+                <button class="filter-chip chip-missing" data-filter="MISSING">Missing (<span id="chipMissingCount">0</span>)</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="table-responsive">
+            <table class="data-table" id="settlementTable">
+              <thead>
+                <tr>
+                  <th>Bill Number</th>
+                  <th>Party Name</th>
+                  <th>Bill Amount</th>
+                  <th>Status</th>
+                  <th>Collected Amt</th>
+                  <th>Payment Details / Return Note</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="settlementTbody">
+                <tr class="empty-row">
+                  <td colspan="7">
+                    <div class="empty-state">
+                      <i class="fa-solid fa-user-clock"></i>
+                      <p>Select an agent and click "Load Agent Custody" to begin EOD settlement.</p>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="basket-footer">
+            <button id="finalizeSettlementBtn" class="btn btn-success btn-lg">
+              <i class="fa-solid fa-file-signature"></i> Finalize Daily Settlement & Close Day
+            </button>
+            <button id="shareSettlementWhatsappBtn" class="btn btn-outline-whatsapp">
+              <i class="fa-brands fa-whatsapp"></i> Send Agent Summary
+            </button>
+            <button id="printSettlementBtn" class="btn btn-outline">
+              <i class="fa-solid fa-print"></i> Print Settlement Sheet
+            </button>
+          </div>
+        </div>
+      </section>
+
+
+      <!-- ======================================================== -->
+      <!-- TAB 3: LIVE LEDGER & MISSING BILLS RADAR                 -->
+      <!-- ======================================================== -->
+      <section id="tab-ledger" class="tab-pane">
+        <div class="pane-header">
+          <div class="title-wrap">
+            <h2><i class="fa-solid fa-database"></i> All Bills Custody Ledger</h2>
+            <p>Master ledger of every bill across all agents, dates, and payment states</p>
+          </div>
+          <div class="pane-actions">
+            <button id="exportCsvBtn" class="btn btn-outline btn-sm">
+              <i class="fa-solid fa-file-csv"></i> Export CSV
+            </button>
+            <button id="exportExcelBtn" class="btn btn-outline btn-sm">
+              <i class="fa-solid fa-file-excel"></i> Export Sheet
+            </button>
+          </div>
+        </div>
+
+        <!-- Ledger Filter Bar -->
+        <div class="card setup-card">
+          <div class="filter-bar-grid">
+            <div class="form-group">
+              <label><i class="fa-solid fa-magnifying-glass"></i> Search</label>
+              <input type="text" id="ledgerSearchInput" class="form-control" placeholder="Search Bill No or Party..." />
+            </div>
+            <div class="form-group">
+              <label><i class="fa-solid fa-user"></i> Filter Agent</label>
+              <select id="ledgerAgentFilter" class="form-control">
+                <option value="ALL">All Agents</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label><i class="fa-solid fa-flag"></i> Filter Status</label>
+              <select id="ledgerStatusFilter" class="form-control">
+                <option value="ALL">All Statuses</option>
+                <option value="WITH_AGENT">With Agent (Out for Collection)</option>
+                <option value="PAID_FULL">Paid (Full)</option>
+                <option value="PAID_PARTIAL">Paid (Partial)</option>
+                <option value="RETURNED_IN_HAND">Returned In-Hand (Next Round)</option>
+                <option value="MISSING_ALERT">⚠️ Missing / Fraud Risk</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label><i class="fa-solid fa-calendar"></i> Date Range</label>
+              <select id="ledgerDateFilter" class="form-control">
+                <option value="ALL">All Time</option>
+                <option value="TODAY">Today</option>
+                <option value="YESTERDAY">Yesterday</option>
+                <option value="THIS_WEEK">This Week</option>
+                <option value="THIS_MONTH">This Month</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Ledger Master Table -->
+        <div class="card">
+          <div class="table-responsive">
+            <table class="data-table" id="masterLedgerTable">
+              <thead>
+                <tr>
+                  <th>Bill Number</th>
+                  <th>Party Name & ID</th>
+                  <th>Amount</th>
+                  <th>Agent</th>
+                  <th>Dispatch Date</th>
+                  <th>Status</th>
+                  <th>Collected</th>
+                  <th>Payment / Reason</th>
+                  <th>Last Scanned</th>
+                </tr>
+              </thead>
+              <tbody id="masterLedgerTbody">
+                <tr class="empty-row">
+                  <td colspan="9">
+                    <div class="empty-state">
+                      <i class="fa-solid fa-folder-open"></i>
+                      <p>No records found. Bills will appear here once dispatched.</p>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+
+      <!-- ======================================================== -->
+      <!-- TAB 4: SETTINGS, GOOGLE SHEETS SYNC, AGENT MANAGEMENT    -->
+      <!-- ======================================================== -->
+      <section id="tab-settings" class="tab-pane">
+        <div class="pane-header">
+          <div class="title-wrap">
+            <h2><i class="fa-solid fa-sliders"></i> Settings & Integrations</h2>
+            <p>Configure Google Sheets sync, manage sales agents, and test features</p>
+          </div>
+        </div>
+
+        <!-- Google Sheet Integration Card -->
+        <div class="card">
+          <div class="card-header-styled">
+            <i class="fa-brands fa-google-drive icon-green"></i>
+            <div>
+              <h3>Google Sheets Cloud Integration</h3>
+              <p>Connect to your Google Apps Script Web App for automated online entries</p>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="googleScriptUrl">
+              Google Apps Script Web App URL
+              <a href="#appsScriptInstructions" class="learn-link"><i class="fa-solid fa-circle-question"></i> How to get this?</a>
+            </label>
+            <div class="input-with-btn">
+              <input type="url" id="googleScriptUrl" class="form-control font-mono" 
+                     placeholder="https://script.google.com/macros/s/AKfycb.../exec" />
+              <button id="saveScriptUrlBtn" class="btn btn-primary">
+                <i class="fa-solid fa-save"></i> Save URL
+              </button>
+            </div>
+          </div>
+
+          <div class="settings-action-row">
+            <button id="testSheetConnectionBtn" class="btn btn-outline">
+              <i class="fa-solid fa-plug"></i> Test Connection
+            </button>
+            <button id="forceSyncSheetBtn" class="btn btn-success">
+              <i class="fa-solid fa-cloud-arrow-up"></i> Force Full Sync Now
+            </button>
+            <button id="pullFromSheetBtn" class="btn btn-outline">
+              <i class="fa-solid fa-cloud-arrow-down"></i> Pull Latest from Sheet
+            </button>
+          </div>
+
+          <!-- Pending Sync Queue -->
+          <div class="queue-status-box">
+            <div class="queue-info">
+              <i class="fa-solid fa-clock-rotate-left"></i>
+              <span>Offline Changes Pending Cloud Sync: <strong id="offlineQueueCount">0</strong></span>
+            </div>
+            <button id="retryQueueBtn" class="btn-xs btn-outline">Retry Queue</button>
+          </div>
+        </div>
+
+        <!-- Agent Master Management Card -->
+        <div class="card">
+          <div class="card-header-styled">
+            <i class="fa-solid fa-users-gear icon-blue"></i>
+            <div>
+              <h3>Sales Agent Management</h3>
+              <p>Add or remove sales agents who take bills for field collection</p>
+            </div>
+          </div>
+
+          <div class="add-agent-form">
+            <div class="input-with-btn">
+              <input type="text" id="newAgentNameInput" class="form-control" placeholder="Agent Name (e.g. Rahul Sharma)" />
+              <input type="text" id="newAgentPhoneInput" class="form-control" placeholder="WhatsApp / Phone (optional)" />
+              <button id="saveNewAgentBtn" class="btn btn-primary">
+                <i class="fa-solid fa-plus"></i> Add Agent
+              </button>
+            </div>
+          </div>
+
+          <div class="agents-list" id="agentsListContainer">
+            <!-- Dynamically populated -->
+          </div>
+        </div>
+
+        <!-- Developer & Demo Tools -->
+        <div class="card">
+          <div class="card-header-styled">
+            <i class="fa-solid fa-flask icon-indigo"></i>
+            <div>
+              <h3>Demo Data & Diagnostics</h3>
+              <p>Quickly load sample bills matching your QR format to test the workflow</p>
+            </div>
+          </div>
+
+          <div class="demo-actions-row">
+            <button id="loadSampleBillsBtn" class="btn btn-outline">
+              <i class="fa-solid fa-wand-magic-sparkles"></i> Load 5 Sample Test Bills
+            </button>
+            <button id="generateQrCodesBtn" class="btn btn-outline">
+              <i class="fa-solid fa-qrcode"></i> Preview Printable QR Codes
+            </button>
+            <button id="clearAllDataBtn" class="btn btn-outline-danger">
+              <i class="fa-solid fa-trash-can"></i> Reset All Local Data
+            </button>
+          </div>
+        </div>
+
+        <!-- Step-by-Step Google Apps Script Instructions -->
+        <div class="card instructions-card" id="appsScriptInstructions">
+          <div class="card-header-styled">
+            <i class="fa-solid fa-book-open icon-blue"></i>
+            <div>
+              <h3>Google Sheets Setup Guide (3 Simple Steps)</h3>
+              <p>Follow these instructions to connect your free Google Sheet in 2 minutes:</p>
+            </div>
+          </div>
+
+          <ol class="steps-list">
+            <li>
+              <strong>Create a new Google Sheet</strong> at <a href="https://sheets.new" target="_blank" rel="noopener">sheets.new</a> (e.g. name it <em>"Sales Agent Bill Custody"</em>).
+            </li>
+            <li>
+              Click <strong>Extensions &gt; Apps Script</strong> in the Google Sheet menu. Delete any code in the editor, and copy-paste the entire contents of <code>google_apps_script.js</code> (found in this app directory).
+            </li>
+            <li>
+              Click the blue <strong>Deploy &gt; New Deployment</strong> button:
+              <ul>
+                <li>Select type: <strong>Web App</strong></li>
+                <li>Execute as: <strong>Me (your email)</strong></li>
+                <li>Who has access: <strong>Anyone</strong> (necessary for your GitHub Pages app to send updates)</li>
+                <li>Click <strong>Deploy</strong>, grant permissions, and copy the <strong>Web app URL</strong> into the field above!</li>
+              </ul>
+            </li>
+          </ol>
+        </div>
+
+      </section>
+
+    </main>
+
+    <!-- Bottom Mobile Navigation (for mobile screens) -->
+    <nav class="bottom-mobile-nav">
+      <button class="b-nav-item active" data-tab="tab-dispatch">
+        <i class="fa-solid fa-truck-ramp-box"></i>
+        <span>Dispatch</span>
+      </button>
+      <button class="b-nav-item" data-tab="tab-settlement">
+        <i class="fa-solid fa-clipboard-check"></i>
+        <span>Settlement</span>
+      </button>
+      <button class="b-nav-item" data-tab="tab-ledger">
+        <i class="fa-solid fa-table-list"></i>
+        <span>Ledger</span>
+      </button>
+      <button class="b-nav-item" data-tab="tab-settings">
+        <i class="fa-solid fa-gear"></i>
+        <span>Settings</span>
+      </button>
+    </nav>
+
+  </div>
+
+  <!-- ======================================================== -->
+  <!-- MODAL: PAYMENT COLLECTION FORM                           -->
+  <!-- ======================================================== -->
+  <div id="paymentModal" class="modal-backdrop" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div class="modal-title">
+          <i class="fa-solid fa-money-check-dollar icon-green"></i>
+          <h3>Record Bill Payment</h3>
+        </div>
+        <button class="modal-close-btn" id="closePaymentModalBtn">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="bill-summary-banner">
+          <div class="b-row">
+            <span>Bill Number:</span>
+            <strong id="modalBillNo" class="font-mono">-</strong>
+          </div>
+          <div class="b-row">
+            <span>Party Name:</span>
+            <strong id="modalPartyName">-</strong>
+          </div>
+          <div class="b-row">
+            <span>Bill Amount:</span>
+            <strong id="modalBillAmt" class="highlight-amt">₹0.00</strong>
+          </div>
+        </div>
+
+        <form id="paymentRecordForm">
+          <div class="form-group">
+            <label>Payment Settlement Type</label>
+            <div class="radio-pill-group">
+              <label class="radio-pill">
+                <input type="radio" name="paymentType" value="FULL" checked />
+                <span>Full Payment</span>
+              </label>
+              <label class="radio-pill">
+                <input type="radio" name="paymentType" value="PARTIAL" />
+                <span>Partial Payment</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="modalCollectedAmt">Amount Received (₹) *</label>
+            <input type="number" id="modalCollectedAmt" step="0.01" class="form-control font-bold" required />
+            <small id="modalBalanceHint" class="hint text-danger" style="display: none;">Remaining Balance: ₹0.00</small>
+          </div>
+
+          <div class="form-group">
+            <label for="modalPaymentMode">Payment Method *</label>
+            <select id="modalPaymentMode" class="form-control" required>
+              <option value="Cash">💵 Cash</option>
+              <option value="UPI">📱 UPI / QR Code</option>
+              <option value="Cheque">🏦 Cheque</option>
+              <option value="Bank Transfer">💳 Direct NEFT / RTGS</option>
+            </select>
+          </div>
+
+          <div class="form-group" id="modalRefGroup" style="display: none;">
+            <label for="modalRefNo" id="modalRefLabel">Cheque / UTR / Transaction No</label>
+            <input type="text" id="modalRefNo" class="form-control" placeholder="e.g. 000412 or UPI Ref 3819..." />
+          </div>
+
+          <div class="form-group">
+            <label for="modalPaymentRemarks">Remarks / Notes</label>
+            <input type="text" id="modalPaymentRemarks" class="form-control" placeholder="Optional notes e.g. Paid by cashier" />
+          </div>
+
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline" id="cancelPaymentModalBtn">Cancel</button>
+            <button type="submit" class="btn btn-success">
+              <i class="fa-solid fa-check"></i> Save & Settle Bill
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- ======================================================== -->
+  <!-- MODAL: PHYSICAL RETURN CONFIRMATION (NEXT ROUND)         -->
+  <!-- ======================================================== -->
+  <div id="returnModal" class="modal-backdrop" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div class="modal-title">
+          <i class="fa-solid fa-hand-holding-dollar icon-indigo"></i>
+          <h3>Verify Physical Return (Next Round)</h3>
+        </div>
+        <button class="modal-close-btn" id="closeReturnModalBtn">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="verification-badge">
+          <i class="fa-solid fa-circle-check"></i>
+          <span>Physical Bill QR Verified Present In Hand</span>
+        </div>
+
+        <div class="bill-summary-banner">
+          <div class="b-row">
+            <span>Bill Number:</span>
+            <strong id="returnModalBillNo" class="font-mono">-</strong>
+          </div>
+          <div class="b-row">
+            <span>Party Name:</span>
+            <strong id="returnModalParty">-</strong>
+          </div>
+          <div class="b-row">
+            <span>Bill Amount:</span>
+            <strong id="returnModalAmt">₹0.00</strong>
+          </div>
+        </div>
+
+        <form id="returnRecordForm">
+          <div class="form-group">
+            <label for="returnReasonSelect">Reason for Non-Payment *</label>
+            <select id="returnReasonSelect" class="form-control" required>
+              <option value="Shop Closed / Party Absent">Shop Closed / Party Absent</option>
+              <option value="Owner Requested Next Week Round">Owner Requested Next Week Round</option>
+              <option value="Disputed Bill Amount / Goods Return">Disputed Bill Amount / Goods Return</option>
+              <option value="Payment Cheque Post-Dated">Payment Cheque Post-Dated</option>
+              <option value="Out of Cash / Account Issue">Out of Cash / Account Issue</option>
+              <option value="Other">Other (Specify below)</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="returnRemarks">Remarks / Reschedule Date</label>
+            <input type="text" id="returnRemarks" class="form-control" placeholder="e.g. Visit next Tuesday afternoon" />
+          </div>
+
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline" id="cancelReturnModalBtn">Cancel</button>
+            <button type="submit" class="btn btn-primary">
+              <i class="fa-solid fa-check"></i> Confirm Physical Return
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- ======================================================== -->
+  <!-- MODAL: ADD NEW AGENT                                     -->
+  <!-- ======================================================== -->
+  <div id="addAgentModal" class="modal-backdrop" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div class="modal-title">
+          <i class="fa-solid fa-user-plus icon-blue"></i>
+          <h3>Add New Sales Agent</h3>
+        </div>
+        <button class="modal-close-btn" id="closeAddAgentModalBtn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="addAgentModalForm">
+          <div class="form-group">
+            <label for="modalNewAgentName">Agent Full Name *</label>
+            <input type="text" id="modalNewAgentName" class="form-control" placeholder="e.g. Ramesh Kumar" required />
+          </div>
+          <div class="form-group">
+            <label for="modalNewAgentPhone">Phone / WhatsApp Number</label>
+            <input type="tel" id="modalNewAgentPhone" class="form-control" placeholder="e.g. 9876543210" />
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline" id="cancelAddAgentModalBtn">Cancel</button>
+            <button type="submit" class="btn btn-primary">Save Agent</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- ======================================================== -->
+  <!-- MODAL: PRINT / QR CODES PREVIEW                          -->
+  <!-- ======================================================== -->
+  <div id="qrPreviewModal" class="modal-backdrop" style="display: none;">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-header">
+        <div class="modal-title">
+          <i class="fa-solid fa-qrcode icon-blue"></i>
+          <h3>Sample Test QR Codes</h3>
+        </div>
+        <button class="modal-close-btn" id="closeQrPreviewModalBtn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="mb-3">You can scan these QR codes directly with your phone or camera to test the bill workflow:</p>
+        <div class="qr-sample-grid" id="qrSampleGrid">
+          <!-- Populated dynamically via JS using QR code generation API -->
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-outline" id="printTestQrBtn"><i class="fa-solid fa-print"></i> Print Sheet</button>
+          <button class="btn btn-secondary" id="closeQrPreviewBottomBtn">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- Toast Notification Container -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <!-- Main JavaScript App Logic -->
+  <script src="app.js"></script>
+</body>
+</html>
