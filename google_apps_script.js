@@ -1,23 +1,48 @@
 /**
  * ===================================================================
  * BillAudit Pro - Google Apps Script Cloud Backend
+ * 100% READ-ONLY from Master Sheet | WRITING to Dedicated Tracking Sheet
  * ===================================================================
  * 
- * INSTRUCTIONS TO DEPLOY:
- * 1. Open Google Sheets (https://sheets.new).
- * 2. Rename sheet to "Sales Agent Bill Tracking".
- * 3. Go to menu: Extensions > Apps Script.
- * 4. Replace any existing code with this entire file.
- * 5. Click "Deploy" (top right) > "New deployment".
- * 6. Click the gear icon > Select "Web app".
- * 7. Set:
- *    - Description: "BillAudit Pro API"
+ * SETUP INSTRUCTIONS (Takes ~2 minutes):
+ * 
+ * 1. Create a NEW Google Sheet for tracking:
+ *    - Go to https://sheets.new
+ *    - Name it "Sales Bill Daily Tracking & Custody"
+ * 
+ * 2. Add this Apps Script to the NEW Tracking Sheet:
+ *    - In the new sheet, click menu: Extensions > Apps Script
+ *    - Replace all code with this ENTIRE file
+ * 
+ * 3. Deploy as Web App:
+ *    - Click "Deploy" (top right) > "New deployment"
+ *    - Click the gear icon > Select "Web app"
+ *    - Description: "BillAudit API"
  *    - Execute as: "Me"
- *    - Who has access: "Anyone"  <-- (CRITICAL for GitHub Pages to sync)
- * 8. Click "Deploy", Authorize permissions.
- * 9. Copy the "Web app URL" and paste it into the Web App Settings!
+ *    - Who has access: "Anyone"  <-- (CRITICAL so the web app can communicate)
+ *    - Click "Deploy", Authorize permissions
+ * 
+ * 4. Connect with BillAudit:
+ *    - Copy the "Web app URL" (ends in /exec)
+ *    - Paste it in the BillAudit Web App under "Settings & Sheet"
+ * 
+ * 5. SAFETY GUARANTEE:
+ *    - Your Master Sales Sheet (11J3WSXNFfu5aARNMBX3HQazajsfzBjj7wX9MWyVVBRk)
+ *      is STRICTLY READ-ONLY.
+ *    - No edits, rows, or writes will EVER be made to your Master Sales Sheet.
+ *    - All custody, in/out logs, and daily settlements are saved strictly
+ *      in your NEW tracking sheet!
  */
 
+// Master Sales Sheet Configuration (READ-ONLY)
+const MASTER_CONFIG = {
+  SPREADSHEET_ID: '11J3WSXNFfu5aARNMBX3HQazajsfzBjj7wX9MWyVVBRk',
+  GID: '1608276684',
+  INVOICE_COL_LETTER: 'D', // Column D is unique Invoice / Bill No
+  RECEIPT_KEYWORDS: ['receipt', 'receipt col', 'receipt no', 'payment', 'paid']
+};
+
+// Tracking Sheet Tab Names (Written only to the new Tracking Sheet)
 const SHEET_NAMES = {
   CUSTODY: 'Active_Custody',
   AUDIT: 'Audit_Log',
@@ -31,26 +56,30 @@ const SHEET_NAMES = {
 function doGet(e) {
   try {
     const action = e?.parameter?.action || 'PING';
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const trackingSS = SpreadsheetApp.getActiveSpreadsheet();
 
     if (action === 'PING') {
       return respondJSON({
         status: 'OK',
-        message: 'Google Sheets Connected Successfully',
-        spreadsheetName: ss.getName(),
+        message: 'Tracking Sheet Connected Successfully',
+        trackingSheetName: trackingSS.getName(),
+        masterSheetId: MASTER_CONFIG.SPREADSHEET_ID,
+        readOnlySafeguard: 'ACTIVE',
         timestamp: new Date().toISOString()
       });
     }
 
-    if (action === 'GET_DATA') {
-      ensureDatabaseSetup(ss);
-      const bills = getCustodyBills(ss);
-      const agents = getAgentsList(ss);
+    if (action === 'GET_DATA' || action === 'GET_MASTER_SHEET') {
+      ensureDatabaseSetup(trackingSS);
+      const bills = getCustodyBills(trackingSS);
+      const agents = getAgentsList(trackingSS);
+      const masterBills = getMasterBillsFromSheet(trackingSS);
 
       return respondJSON({
         status: 'OK',
         bills: bills,
         agents: agents,
+        masterBills: masterBills,
         timestamp: new Date().toISOString()
       });
     }
@@ -63,11 +92,21 @@ function doGet(e) {
 
 /**
  * Handle POST requests (Batch Sync from Web App)
+ * ONLY writes to the new Tracking Sheet. Never writes to Master Sheet!
  */
 function doPost(e) {
   try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    ensureDatabaseSetup(ss);
+    const trackingSS = SpreadsheetApp.getActiveSpreadsheet();
+
+    // SAFETY CHECK: Ensure we NEVER write to the master sheet!
+    if (trackingSS.getId() === MASTER_CONFIG.SPREADSHEET_ID) {
+      return respondJSON({
+        success: false,
+        error: 'SAFETY BLOCKED: Writing to the Master Sales Sheet is blocked. Please deploy this script inside your NEW Tracking Sheet.'
+      });
+    }
+
+    ensureDatabaseSetup(trackingSS);
 
     let data = {};
     if (e?.postData?.contents) {
@@ -79,19 +118,17 @@ function doPost(e) {
     const action = data.action;
 
     if (action === 'BATCH_SYNC') {
-      // Process queue entries
       if (Array.isArray(data.queue) && data.queue.length > 0) {
-        processQueueItems(ss, data.queue);
+        processQueueItems(trackingSS, data.queue);
       }
 
-      // Update Active Custody table with latest state
       if (Array.isArray(data.bills) && data.bills.length > 0) {
-        syncAllBills(ss, data.bills);
+        syncAllBills(trackingSS, data.bills);
       }
 
       return respondJSON({
         success: true,
-        message: 'Processed batch sync successfully',
+        message: 'Processed batch sync into Tracking Sheet successfully',
         syncedCount: data.bills ? data.bills.length : 0,
         timestamp: new Date().toISOString()
       });
@@ -104,7 +141,82 @@ function doPost(e) {
 }
 
 /**
- * Process granular audit log queue items
+ * STRICTLY READ-ONLY function:
+ * Reads Column D (Invoice No), Receipt Column, Party, Amount, and Agent from Master Sheet
+ */
+function getMasterBillsFromSheet(trackingSS) {
+  let masterSS = null;
+  try {
+    masterSS = SpreadsheetApp.openById(MASTER_CONFIG.SPREADSHEET_ID);
+  } catch (err) {
+    // If not accessible by openById, fallback to active
+    masterSS = trackingSS;
+  }
+
+  if (!masterSS) return [];
+
+  // Find the exact tab matching GID 1608276684
+  let sheet = null;
+  const sheets = masterSS.getSheets();
+  for (let i = 0; i < sheets.length; i++) {
+    if (String(sheets[i].getSheetId()) === String(MASTER_CONFIG.GID)) {
+      sheet = sheets[i];
+      break;
+    }
+  }
+
+  // Fallback if GID changed
+  if (!sheet) {
+    sheet = sheets.find(s => s.getName() !== SHEET_NAMES.CUSTODY && s.getName() !== SHEET_NAMES.AUDIT && s.getName() !== SHEET_NAMES.AGENTS) || sheets[0];
+  }
+
+  if (!sheet) return [];
+
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  if (lastRow <= 1 || lastCol < 1) return [];
+
+  // Read-only batch fetch
+  const values = sheet.getRange(1, 1, lastRow, lastCol).getValues();
+  const headers = values[0].map(h => String(h).trim().toLowerCase());
+
+  // Column D = 0-indexed column 3
+  const colDIndex = MASTER_CONFIG.INVOICE_COL_LETTER.charCodeAt(0) - 65;
+
+  function findColIndex(keys) {
+    for (let i = 0; i < headers.length; i++) {
+      const h = headers[i];
+      if (keys.some(k => h === k || h.includes(k))) return i;
+    }
+    return -1;
+  }
+
+  const idxInv = (colDIndex < headers.length) ? colDIndex : findColIndex(['inv bill no', 'invoice', 'bill']);
+  const idxReceipt = findColIndex(MASTER_CONFIG.RECEIPT_KEYWORDS);
+  const idxAgent = findColIndex(['agent', 'salesman', 'delivery', 'name']);
+  const idxParty = findColIndex(['party', 'customer', 'shop', 'store']);
+  const idxAmt = findColIndex(['amount', 'total', 'net', 'bill']);
+
+  const masterBills = [];
+  for (let r = 1; r < values.length; r++) {
+    const row = values[r];
+    const billNo = String(row[idxInv] || '').trim();
+    if (!billNo) continue;
+
+    masterBills.push({
+      billNo: billNo,
+      agent: String(idxAgent !== -1 ? row[idxAgent] : '').trim(),
+      party: String(idxParty !== -1 ? row[idxParty] : '').trim() || 'General Party',
+      amount: Number(idxAmt !== -1 ? String(row[idxAmt]).replace(/[₹,\s]/g, '') : 0) || 0,
+      receipt: String(idxReceipt !== -1 ? row[idxReceipt] : '').trim()
+    });
+  }
+
+  return masterBills;
+}
+
+/**
+ * Process granular audit log items (Appended to Tracking Sheet only)
  */
 function processQueueItems(ss, queue) {
   const auditSheet = ss.getSheetByName(SHEET_NAMES.AUDIT);
@@ -122,13 +234,13 @@ function processQueueItems(ss, queue) {
         rowsToAppend.push([
           time,
           b.billNo,
-          p.agent,
-          'DISPATCH_HANDOVER',
+          b.agent || p.agent || '',
+          'DISPATCH_OUT',
           b.amount,
           0,
           '',
-          '',
-          `Handed over for route date ${p.dispatchDate}`
+          b.refNo || '',
+          `Dispatched for route date ${p.dispatchDate}`
         ]);
       });
     } else if (type === 'SETTLEMENT_PAYMENT') {
@@ -141,7 +253,7 @@ function processQueueItems(ss, queue) {
         p.collectedAmt,
         p.paymentMode,
         p.refNo,
-        p.remarks || 'Payment collected'
+        p.remarks || 'Payment checked IN'
       ]);
     } else if (type === 'SETTLEMENT_RETURN') {
       rowsToAppend.push([
@@ -153,19 +265,19 @@ function processQueueItems(ss, queue) {
         0,
         '',
         '',
-        `Physical return: ${p.returnReason}. Note: ${p.remarks}`
+        `Return next round: ${p.returnReason}. Note: ${p.remarks}`
       ]);
     } else if (type === 'BILL_FLAG_MISSING') {
       rowsToAppend.push([
         time,
         p.billNo,
         p.agent,
-        'MISSING_ALERT',
+        'LEFT_OUT_ALERT',
         0,
         0,
         '',
         '',
-        'ALERT: Bill not accounted for during settlement'
+        'ALERT: Bill left out / not returned by agent'
       ]);
     }
   });
@@ -176,7 +288,7 @@ function processQueueItems(ss, queue) {
 }
 
 /**
- * Sync Active Custody sheet (upsert rows by Bill Number)
+ * Sync Active Custody sheet (upsert rows by Bill Number in Tracking Sheet)
  */
 function syncAllBills(ss, bills) {
   const sheet = ss.getSheetByName(SHEET_NAMES.CUSTODY);
@@ -185,14 +297,13 @@ function syncAllBills(ss, bills) {
   const lastRow = sheet.getLastRow();
   let existingData = [];
   if (lastRow > 1) {
-    existingData = sheet.getRange(2, 1, lastRow - 1, 11).getValues();
+    existingData = sheet.getRange(2, 1, lastRow - 1, 12).getValues();
   }
 
-  // Map of billNo -> rowIndex in sheet
   const billRowMap = {};
   existingData.forEach((row, idx) => {
     const bNo = String(row[0]).trim();
-    if (bNo) billRowMap[bNo] = idx + 2; // 1-indexed, starts at row 2
+    if (bNo) billRowMap[bNo] = idx + 2;
   });
 
   const newRows = [];
@@ -215,10 +326,8 @@ function syncAllBills(ss, bills) {
 
     const existingRowIdx = billRowMap[b.billNo];
     if (existingRowIdx) {
-      // Update in-place
       sheet.getRange(existingRowIdx, 1, 1, rowValues.length).setValues([rowValues]);
     } else {
-      // Append new
       newRows.push(rowValues);
       billRowMap[b.billNo] = lastRow + newRows.length;
     }
@@ -230,7 +339,7 @@ function syncAllBills(ss, bills) {
 }
 
 /**
- * Retrieve current active bills
+ * Retrieve current active bills from Tracking Sheet
  */
 function getCustodyBills(ss) {
   const sheet = ss.getSheetByName(SHEET_NAMES.CUSTODY);
@@ -257,7 +366,7 @@ function getCustodyBills(ss) {
 }
 
 /**
- * Retrieve agents list
+ * Retrieve agents list from Tracking Sheet
  */
 function getAgentsList(ss) {
   const sheet = ss.getSheetByName(SHEET_NAMES.AGENTS);
@@ -275,7 +384,7 @@ function getAgentsList(ss) {
 }
 
 /**
- * Helper to ensure formatted sheets exist
+ * Setup standard tracking tables in the new Tracking Sheet
  */
 function ensureDatabaseSetup(ss) {
   // 1. Active Custody Sheet
@@ -283,7 +392,7 @@ function ensureDatabaseSetup(ss) {
   if (!custodySheet) {
     custodySheet = ss.insertSheet(SHEET_NAMES.CUSTODY);
     const headers = [
-      ['Bill Number', 'Party Name & ID', 'Bill Amount', 'Assigned Agent', 'Dispatch Date', 'Current Status', 'Collected Amt', 'Payment Mode', 'Reference / Cheque No', 'Return Reason', 'Remarks', 'Last Action Time']
+      ['Bill Number', 'Party Name & ID', 'Bill Amount', 'Assigned Agent', 'Dispatch Date', 'Current Status', 'Collected Amt', 'Payment Mode', 'Receipt / Ref No', 'Return Reason', 'Remarks', 'Last Action Time']
     ];
     custodySheet.getRange(1, 1, 1, headers[0].length).setValues(headers);
     custodySheet.getRange(1, 1, 1, headers[0].length)
@@ -298,7 +407,7 @@ function ensureDatabaseSetup(ss) {
   if (!auditSheet) {
     auditSheet = ss.insertSheet(SHEET_NAMES.AUDIT);
     const headers = [
-      ['Timestamp', 'Bill Number', 'Sales Agent', 'Action Event', 'Bill Amount', 'Collected Amount', 'Payment Mode', 'Ref / Cheque No', 'Audit Notes']
+      ['Timestamp', 'Bill Number', 'Sales Agent', 'Action Event', 'Bill Amount', 'Collected Amount', 'Payment Mode', 'Receipt / Ref No', 'Audit Notes']
     ];
     auditSheet.getRange(1, 1, 1, headers[0].length).setValues(headers);
     auditSheet.getRange(1, 1, 1, headers[0].length)
@@ -320,7 +429,6 @@ function ensureDatabaseSetup(ss) {
       .setFontWeight('bold');
     agentsSheet.setFrozenRows(1);
 
-    // Add default sample agents
     agentsSheet.getRange(2, 1, 3, 3).setValues([
       ['AG-101', 'Rahul Sharma', '9876543210'],
       ['AG-102', 'Vikram Singh', '9812345678'],

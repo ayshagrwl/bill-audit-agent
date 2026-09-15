@@ -1,11 +1,15 @@
 /**
  * Automated Verification Test Suite for BillAudit Pro
- * Tests QR Parsing, Currency Formatting, and Fraud Detection Reconciliation
+ * Tests QR Parsing, Manual Invoice Number Normalization,
+ * Master Sheet Table Parsing (Agent & Receipt Column),
+ * and In & Out Remaining Left-Out Audit Engine.
  */
 
 const assert = require('assert');
 
-// 1. QR Code Parser Unit Under Test
+// ========================================================
+// 1. QR Code & Barcode Parser
+// ========================================================
 function parseQRCodeData(rawText) {
   if (!rawText || typeof rawText !== 'string') return null;
   const text = rawText.trim();
@@ -86,49 +90,155 @@ function parseQRCodeData(rawText) {
   };
 }
 
-// 2. Reconciliation Engine Unit Under Test
-function reconcileAgentBills(dispatchedBills) {
-  let totalDispatchedCount = dispatchedBills.length;
-  let totalDispatchedAmt = 0;
-  let collectedCount = 0;
-  let collectedAmt = 0;
-  let returnedCount = 0;
-  let returnedAmt = 0;
-  let missingCount = 0;
-  let missingAmt = 0;
+// ========================================================
+// 2. Master Sheet Parser & Invoice Normalization
+// ========================================================
+function normalizeInvoiceNumber(val) {
+  if (!val) return '';
+  return String(val).trim().toUpperCase().replace(/[\s\-_/.]/g, '');
+}
 
-  dispatchedBills.forEach(b => {
-    const amt = Number(b.amount) || 0;
-    const colAmt = Number(b.collectedAmt) || 0;
-    totalDispatchedAmt += amt;
+function parseMasterSheetTable(rawText) {
+  if (!rawText || typeof rawText !== 'string') return [];
+  const lines = rawText.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+  if (lines.length < 2) return [];
 
-    if (b.status === 'PAID_FULL') {
-      collectedCount++;
-      collectedAmt += colAmt;
-    } else if (b.status === 'PAID_PARTIAL') {
-      collectedCount++;
-      collectedAmt += colAmt;
-      returnedAmt += (amt - colAmt);
-    } else if (b.status === 'RETURNED_IN_HAND') {
-      returnedCount++;
-      returnedAmt += amt;
-    } else if (b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT') {
-      // Unaccounted bill
-      missingCount++;
-      missingAmt += amt;
+  const firstLine = lines[0];
+  let delimiter = '\t';
+  if (firstLine.includes('\t')) delimiter = '\t';
+  else if (firstLine.includes(',')) delimiter = ',';
+  else if (firstLine.includes(';')) delimiter = ';';
+
+  function splitRow(row) {
+    if (delimiter === '\t') return row.split('\t').map(s => s.trim().replace(/^["']|["']$/g, ''));
+    const cols = [];
+    let cur = '';
+    let inQuotes = false;
+    for (let i = 0; i < row.length; i++) {
+      const c = row[i];
+      if (c === '"' || c === "'") inQuotes = !inQuotes;
+      else if (c === delimiter && !inQuotes) {
+        cols.push(cur.trim().replace(/^["']|["']$/g, ''));
+        cur = '';
+      } else {
+        cur += c;
+      }
     }
-  });
+    cols.push(cur.trim().replace(/^["']|["']$/g, ''));
+    return cols;
+  }
+
+  const headers = splitRow(firstLine).map(h => h.trim().toLowerCase());
+
+  function findColIndex(keys) {
+    // 1. Exact match first
+    for (let i = 0; i < headers.length; i++) {
+      const h = headers[i];
+      if (keys.some(k => h === k)) return i;
+    }
+    // 2. Substring match (skip generic keys like 'paid' matching 'paid-up')
+    for (let i = 0; i < headers.length; i++) {
+      const h = headers[i];
+      if (keys.some(k => k.length > 3 && h.includes(k))) return i;
+    }
+    return -1;
+  }
+
+  const idxInvoice = findColIndex(['invoice number', 'inv bill no', 'invoice', 'bill', 'billno']);
+  const idxAgent = findColIndex(['agent', 'salesman', 'deliveryagent', 'name']);
+  const idxParty = findColIndex(['customer', 'party', 'shop', 'store']);
+  const idxAmount = findColIndex(['amount', 'total', 'net', 'billamount']);
+  const idxReceipt = findColIndex(['receipt', 'receiptno', 'receipt col']);
+  const idxRemarks = findColIndex(['remarks', 'note', 'notes']);
+
+  const parsedBills = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = splitRow(lines[i]);
+    if (!cols || cols.length === 0) continue;
+
+    const billNo = (idxInvoice !== -1 ? cols[idxInvoice] : cols[3]) || cols[0] || '';
+    if (!billNo) continue;
+
+    const agent = (idxAgent !== -1 ? cols[idxAgent] : (cols[15] || '')) || '';
+    const party = (idxParty !== -1 ? cols[idxParty] : (cols[4] || '')) || 'General Party';
+    const rawAmt = (idxAmount !== -1 ? cols[idxAmount] : (cols[5] || '0')) || '0';
+    const cleanAmt = parseFloat(String(rawAmt).replace(/[₹,\s]/g, '')) || 0;
+    
+    let receipt = (idxReceipt !== -1 ? cols[idxReceipt] : '') || '';
+    if (!receipt && idxRemarks !== -1 && cols[idxRemarks]) {
+      receipt = cols[idxRemarks].trim();
+    }
+
+    parsedBills.push({
+      billNo: String(billNo).trim(),
+      agent: String(agent).trim(),
+      party: String(party).trim(),
+      amount: cleanAmt,
+      receipt: String(receipt).trim()
+    });
+  }
+
+  return parsedBills;
+}
+
+function findMasterBill(invoiceInput, masterBills) {
+  if (!invoiceInput || !masterBills.length) return null;
+  const cleanInput = String(invoiceInput).trim();
+  if (!cleanInput) return null;
+
+  const normInput = normalizeInvoiceNumber(cleanInput);
+
+  // 1. Exact string match
+  let found = masterBills.find(b => b.billNo.trim().toUpperCase() === cleanInput.toUpperCase());
+  if (found) return found;
+
+  // 2. Normalized alphanumeric match
+  found = masterBills.find(b => normalizeInvoiceNumber(b.billNo) === normInput);
+  if (found) return found;
+
+  // 3. Number suffix match (e.g. "3921" inside "IN-FY26/27-3921")
+  const digitsOnly = cleanInput.replace(/\D/g, '');
+  if (digitsOnly.length >= 3) {
+    found = masterBills.find(b => {
+      const bDigits = b.billNo.replace(/\D/g, '');
+      return bDigits.endsWith(digitsOnly) || bDigits === digitsOnly;
+    });
+    if (found) return found;
+  }
+
+  // 4. Substring contains
+  found = masterBills.find(b => 
+    b.billNo.toUpperCase().includes(cleanInput.toUpperCase()) ||
+    cleanInput.toUpperCase().includes(b.billNo.toUpperCase())
+  );
+
+  return found || null;
+}
+
+// ========================================================
+// 3. Agent Remaining Left-Out Audit Engine
+// ========================================================
+function computeAgentRemainingAudit(agentName, allBills) {
+  const agentBills = allBills.filter(b => b.agent === agentName);
+  const leftOutBills = agentBills.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT');
+  const checkedInBills = agentBills.filter(b => b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND');
+
+  let totalAmt = 0, checkedInAmt = 0, leftOutAmt = 0;
+
+  agentBills.forEach(b => totalAmt += (Number(b.amount) || 0));
+  checkedInBills.forEach(b => checkedInAmt += (Number(b.collectedAmt) || Number(b.amount) || 0));
+  leftOutBills.forEach(b => leftOutAmt += (Number(b.amount) || 0));
 
   return {
-    totalDispatchedCount,
-    totalDispatchedAmt,
-    collectedCount,
-    collectedAmt,
-    returnedCount,
-    returnedAmt,
-    missingCount,
-    missingAmt,
-    isCleanAudit: missingCount === 0
+    agent: agentName,
+    totalDispatchedCount: agentBills.length,
+    totalDispatchedAmt: totalAmt,
+    checkedInCount: checkedInBills.length,
+    checkedInAmt,
+    leftOutCount: leftOutBills.length,
+    leftOutAmt,
+    leftOutBills
   };
 }
 
@@ -150,7 +260,7 @@ assert.strictEqual(r2.party, 'Mahaveer Super Market (ID: 108)');
 assert.strictEqual(r2.amount, 12850.00);
 console.log('✅ Test 2 Passed!\n');
 
-// Test 3: Large amount with multiple Indian comma separators: 1,25,500.50
+// Test 3: Multi-comma Indian currency parsing
 console.log('Test 3: Multi-comma Indian currency parsing: BILL-888,Wholesale Mega Mart,1,25,500.50');
 const r3 = parseQRCodeData('BILL-888,Wholesale Mega Mart,1,25,500.50');
 assert.strictEqual(r3.billNo, 'BILL-888');
@@ -174,23 +284,83 @@ assert.strictEqual(r5.party, 'Apex Traders');
 assert.strictEqual(r5.amount, 4500.00);
 console.log('✅ Test 5 Passed!\n');
 
-// Test 6: Settlement Reconciliation & Fraud Detection Engine
-console.log('Test 6: Reconciliation Engine - Missing Bill Detection');
-const mockDispatched = [
-  { billNo: 'B1', amount: 5000, collectedAmt: 5000, status: 'PAID_FULL' },
-  { billNo: 'B2', amount: 3000, collectedAmt: 1000, status: 'PAID_PARTIAL' },
-  { billNo: 'B3', amount: 4000, collectedAmt: 0, status: 'RETURNED_IN_HAND' },
-  { billNo: 'B4', amount: 8000, collectedAmt: 0, status: 'WITH_AGENT' } // UNACCOUNTED!
+// Test 6: Master Sheet Table Parsing (Tab and CSV) with Agent and Receipt Columns
+console.log('Test 6: Master Sheet Table Parsing with Agent & Receipt columns');
+const sampleSheetTSV = 
+`Invoice No\tAgent\tParty\tAmount\tReceipt
+IN-FY26/27-3921\tRahul Sharma\tSatguru Provision Store\t5465.00\tRCT-9812
+IN-FY26/27-3922\tRahul Sharma\tMahaveer Super Market\t12850.00\tPaid UPI
+IN-FY26/27-3923\tVikram Singh\tBalaji General Store\t3200.00\tPending`;
+
+const parsedMaster = parseMasterSheetTable(sampleSheetTSV);
+assert.strictEqual(parsedMaster.length, 3);
+assert.strictEqual(parsedMaster[0].billNo, 'IN-FY26/27-3921');
+assert.strictEqual(parsedMaster[0].agent, 'Rahul Sharma');
+assert.strictEqual(parsedMaster[0].receipt, 'RCT-9812');
+assert.strictEqual(parsedMaster[1].agent, 'Rahul Sharma');
+assert.strictEqual(parsedMaster[1].receipt, 'Paid UPI');
+assert.strictEqual(parsedMaster[2].agent, 'Vikram Singh');
+console.log('✅ Test 6 Passed! Agent & Receipt parsed perfectly.\n');
+
+// Test 7: Flexible Manual Invoice Lookup (e.g. typing "3921" or "in-3921" matches full bill number)
+console.log('Test 7: Flexible Invoice Number Matching (e.g. "3921" matches "IN-FY26/27-3921")');
+const match1 = findMasterBill('3921', parsedMaster);
+assert.ok(match1, 'Should find bill by number suffix 3921');
+assert.strictEqual(match1.billNo, 'IN-FY26/27-3921');
+assert.strictEqual(match1.agent, 'Rahul Sharma');
+assert.strictEqual(match1.receipt, 'RCT-9812');
+
+const match2 = findMasterBill('IN-FY26/27-3922', parsedMaster);
+assert.ok(match2, 'Should find bill by exact string');
+assert.strictEqual(match2.party, 'Mahaveer Super Market');
+console.log('✅ Test 7 Passed! Flexible invoice number entry succeeds.\n');
+
+// Test 8: Remaining Left-Out Bill Audit Engine
+console.log('Test 8: Remaining Left-Out Bills Audit (5 dispatched OUT -> 3 checked IN -> 2 Left Out)');
+const mockCustodyBills = [
+  { billNo: 'IN-101', agent: 'Rahul Sharma', party: 'Party A', amount: 5000, collectedAmt: 5000, status: 'PAID_FULL' },
+  { billNo: 'IN-102', agent: 'Rahul Sharma', party: 'Party B', amount: 3000, collectedAmt: 1000, status: 'PAID_PARTIAL' },
+  { billNo: 'IN-103', agent: 'Rahul Sharma', party: 'Party C', amount: 2000, collectedAmt: 0, status: 'RETURNED_IN_HAND' },
+  { billNo: 'IN-104', agent: 'Rahul Sharma', party: 'Party D', amount: 8000, collectedAmt: 0, status: 'WITH_AGENT' }, // LEFT OUT!
+  { billNo: 'IN-105', agent: 'Rahul Sharma', party: 'Party E', amount: 4500, collectedAmt: 0, status: 'MISSING_ALERT' }, // LEFT OUT!
+  { billNo: 'IN-201', agent: 'Vikram Singh', party: 'Party X', amount: 10000, collectedAmt: 10000, status: 'PAID_FULL' }
 ];
 
-const audit = reconcileAgentBills(mockDispatched);
-assert.strictEqual(audit.totalDispatchedCount, 4);
-assert.strictEqual(audit.totalDispatchedAmt, 20000);
-assert.strictEqual(audit.collectedAmt, 6000); // 5000 + 1000
-assert.strictEqual(audit.returnedAmt, 6000); // 2000 remaining on B2 + 4000 on B3
-assert.strictEqual(audit.missingCount, 1);
-assert.strictEqual(audit.missingAmt, 8000);
-assert.strictEqual(audit.isCleanAudit, false);
-console.log('✅ Test 6 Passed! Fraud Risk for B4 correctly detected: ₹8,000 unaccounted!\n');
+const rahulAudit = computeAgentRemainingAudit('Rahul Sharma', mockCustodyBills);
+assert.strictEqual(rahulAudit.totalDispatchedCount, 5, 'Rahul should have 5 total dispatched');
+assert.strictEqual(rahulAudit.totalDispatchedAmt, 22500, 'Total dispatched amount should be 22500');
+assert.strictEqual(rahulAudit.checkedInCount, 3, '3 bills checked in');
+assert.strictEqual(rahulAudit.leftOutCount, 2, 'Exactly 2 bills left out');
+assert.strictEqual(rahulAudit.leftOutAmt, 12500, 'Left out amount should be 8000 + 4500 = 12500');
+assert.strictEqual(rahulAudit.leftOutBills.length, 2);
+assert.strictEqual(rahulAudit.leftOutBills[0].billNo, 'IN-104');
+assert.strictEqual(rahulAudit.leftOutBills[1].billNo, 'IN-105');
+console.log('✅ Test 8 Passed! Agent Remaining Left-Out Audit computed with 100% precision.\n');
 
-console.log('🎉 ALL 6 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+// Test 9: Real User Sheet Sample Parsing (Column D Invoice, Remarks Receipt, Customer, Amount, Agent)
+console.log('Test 9: User Real Sales Sheet Data Verification');
+const realUserSheetCSV =
+`Column 1,Present,DATE,Invoice Number,Customer,Amount,Overdue days,DISCOUNT/CD,PAID-UP,STATUS,MODE,OUTSTANDING,RECEIPT,REMARKS,Beat,Agent
+,FALSE,22 Mar,IN-14015503-0001,Narendr Kirana Stor - 12504210,"₹7,100",0,,"₹7,100",PAID,,₹0,,R163,"PREM NAGAR",Santosh Singh(OM MARKETING)
+DELIVERIED,FALSE,22 Mar,IN-14015503-0003,Ritu Dary - 12254556,"₹2,764",0,,"₹2,764",PAID,,₹0,,RECIPT 87 + 338,"PREM NAGAR",Shiv Kumar Verma(OM MARKETING)`;
+
+const userParsed = parseMasterSheetTable(realUserSheetCSV);
+assert.strictEqual(userParsed.length, 2);
+assert.strictEqual(userParsed[0].billNo, 'IN-14015503-0001');
+assert.strictEqual(userParsed[0].party, 'Narendr Kirana Stor - 12504210');
+assert.strictEqual(userParsed[0].amount, 7100);
+assert.strictEqual(userParsed[0].agent, 'Santosh Singh(OM MARKETING)');
+assert.strictEqual(userParsed[0].receipt, 'R163');
+
+assert.strictEqual(userParsed[1].billNo, 'IN-14015503-0003');
+assert.strictEqual(userParsed[1].receipt, 'RECIPT 87 + 338');
+assert.strictEqual(userParsed[1].agent, 'Shiv Kumar Verma(OM MARKETING)');
+
+// Flexible lookup by suffix on real data
+const suffixMatch = findMasterBill('0003', userParsed);
+assert.ok(suffixMatch);
+assert.strictEqual(suffixMatch.billNo, 'IN-14015503-0003');
+assert.strictEqual(suffixMatch.receipt, 'RECIPT 87 + 338');
+console.log('✅ Test 9 Passed! Real user sales sheet rows & receipt numbers parsed flawlessly!\n');
+
+console.log('🎉 ALL 9 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');

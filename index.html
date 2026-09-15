@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>BillAudit - Sales Bill Tracker</title>
+  <title>BillAudit - Sales Bill Daily In & Out Tracker</title>
   
   <!-- Modern Clean Fonts & Icons -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -28,11 +28,18 @@
         </div>
         <div>
           <h1 class="app-title">BillAudit</h1>
-          <span class="app-subtitle">Daily Bill Custody</span>
+          <span class="app-subtitle">Daily In & Out Bill Custody</span>
         </div>
       </div>
 
       <div class="navbar-right">
+        <!-- Master Sheet Status Pill -->
+        <button id="masterSheetStatusBtn" class="pill-btn sheet-pill" title="Master Sheet Link Status">
+          <i class="fa-solid fa-table-cells"></i>
+          <span id="sheetStatusText">Sheet: Ready</span>
+          <span id="sheetCountBadge" class="badge-count-pill" style="display: none;">0</span>
+        </button>
+
         <!-- Quick Google Sheet Sync Pill -->
         <button id="quickSyncBtn" class="pill-btn sync-btn" title="Sync with Google Sheets">
           <i class="fa-solid fa-arrows-rotate"></i>
@@ -47,15 +54,28 @@
       </div>
     </header>
 
-    <!-- Main Navigation Tabs (Minimalist 2 Primary + 2 Secondary) -->
+    <!-- Master Sheet Banner Alert (when loaded) -->
+    <div id="masterSheetBanner" class="sheet-banner" style="display: none;">
+      <div class="sheet-banner-content">
+        <i class="fa-solid fa-circle-check text-success"></i>
+        <span><strong>Master Sheet Active:</strong> <span id="bannerSheetCount">0</span> bills loaded with Auto-Agent & Receipt mapping.</span>
+      </div>
+      <button id="bannerSettingsBtn" class="text-btn">Edit Mapping</button>
+    </div>
+
+    <!-- Main Navigation Tabs (5 Tabs: OUT, IN, Left Out, Ledger, Settings) -->
     <nav class="main-tabs">
       <button class="tab-item active" data-tab="tab-dispatch">
         <i class="fa-solid fa-file-arrow-up"></i>
-        <span>1. Give Bills</span>
+        <span>📤 1. SCAN OUT</span>
       </button>
       <button class="tab-item" data-tab="tab-settlement">
-        <i class="fa-solid fa-circle-check"></i>
-        <span>2. Return & Cash</span>
+        <i class="fa-solid fa-file-arrow-down"></i>
+        <span>📥 2. SCAN IN</span>
+      </button>
+      <button class="tab-item alert-tab" data-tab="tab-leftout">
+        <i class="fa-solid fa-triangle-exclamation"></i>
+        <span>⚠️ Left Out</span>
       </button>
       <button class="tab-item" data-tab="tab-ledger">
         <i class="fa-solid fa-list-ul"></i>
@@ -63,47 +83,50 @@
       </button>
       <button class="tab-item" data-tab="tab-settings">
         <i class="fa-solid fa-gear"></i>
-        <span>Settings</span>
+        <span>Sheet & Setup</span>
       </button>
     </nav>
 
     <!-- Global Quick Status Strip -->
     <div class="status-strip">
-      <div class="strip-item">
-        <span class="strip-label">With Agents</span>
+      <div class="strip-item info-item">
+        <span class="strip-label">📤 Out with Agents</span>
         <span class="strip-val font-mono" id="statInCustodyAmt">₹0</span>
         <small id="statInCustody">0 bills</small>
       </div>
       <div class="strip-item success-item">
-        <span class="strip-label">Collected</span>
-        <span class="strip-val font-mono" id="statCollectedAmt">₹0</span>
+        <span class="strip-label">📥 Checked In / Paid</span>
+        <span class="strip-val font-mono text-success" id="statCollectedAmt">₹0</span>
         <small id="statCollected">0 bills</small>
       </div>
-      <div class="strip-item info-item">
-        <span class="strip-label">Returned Next Round</span>
+      <div class="strip-item neutral-item">
+        <span class="strip-label">↺ Returned Next Round</span>
         <span class="strip-val font-mono" id="statReturnedAmt">₹0</span>
         <small id="statReturned">0 bills</small>
       </div>
       <div class="strip-item alert-item" id="statCardMissing">
-        <span class="strip-label">⚠️ Missing</span>
-        <span class="strip-val font-mono" id="statMissingAmt">₹0</span>
+        <span class="strip-label">⚠️ Remaining Left Out</span>
+        <span class="strip-val font-mono text-danger" id="statMissingAmt">₹0</span>
         <small id="statMissing">0 bills</small>
       </div>
     </div>
 
 
     <!-- ======================================================== -->
-    <!-- TAB 1: GIVE BILLS (DISPATCH / FILE HANDOVER)            -->
+    <!-- TAB 1: SCAN OUT (DISPATCH / AFTERNOON HANDOVER)          -->
     <!-- ======================================================== -->
     <section id="tab-dispatch" class="tab-view active">
       <!-- Agent & Date Picker Card -->
       <div class="clean-card">
         <div class="card-grid-2">
           <div class="field-wrap">
-            <label for="dispatchAgentSelect"><i class="fa-solid fa-user"></i> Who is taking the file?</label>
+            <label for="dispatchAgentSelect">
+              <i class="fa-solid fa-user"></i> Default Sales Agent
+              <span class="label-hint">(Auto-detected if in Sheet)</span>
+            </label>
             <div class="input-inline">
-              <select id="dispatchAgentSelect" class="form-select" required>
-                <option value="">Select Sales Agent...</option>
+              <select id="dispatchAgentSelect" class="form-select">
+                <option value="AUTO">⚡ Auto-Detect from Master Sheet</option>
               </select>
               <button id="addAgentQuickBtn" class="circle-btn" title="Add New Agent">
                 <i class="fa-solid fa-plus"></i>
@@ -117,7 +140,7 @@
         </div>
       </div>
 
-      <!-- Minimalist Scanner Card -->
+      <!-- Fast Scanner & Manual Invoice Box -->
       <div class="clean-card scanner-box">
         <!-- Camera Selector & Controls Bar -->
         <div class="scanner-top-bar">
@@ -146,29 +169,34 @@
             <div class="scan-box">
               <div class="scan-line"></div>
             </div>
-            <span class="scan-hint-tag">Hold Bill QR in frame</span>
+            <span class="scan-hint-tag">Hold Bill QR / Barcode in frame</span>
           </div>
         </div>
 
         <!-- Camera Launch / Toggle Button -->
         <div class="scanner-main-cta">
           <button id="startScanBtn" class="btn btn-primary btn-block btn-lg">
-            <i class="fa-solid fa-camera"></i> Start Scanner
+            <i class="fa-solid fa-camera"></i> Start Camera Scanner
           </button>
           <button id="stopScanBtn" class="btn btn-danger btn-block btn-lg" style="display: none;">
             <i class="fa-solid fa-stop"></i> Close Camera
           </button>
         </div>
 
-        <!-- Manual Entry or Paste QR (Accordion / Clean Dropdown) -->
-        <div class="manual-entry-section">
+        <!-- Dedicated Fast Manual Invoice Entry (No Barcode / QR needed!) -->
+        <div class="quick-manual-card">
+          <div class="quick-manual-head">
+            <i class="fa-solid fa-keyboard"></i>
+            <span>No Barcode / QR? Type Invoice Number:</span>
+          </div>
           <div class="input-with-button">
-            <input type="text" id="manualQrInput" class="form-input" 
-                   placeholder="Or type/paste QR: IN-FY26/27-3921,Satguru Store,5465" />
-            <button id="addManualBillBtn" class="btn btn-dark">
-              <i class="fa-solid fa-plus"></i> Add
+            <input type="text" id="dispatchInvoiceInput" class="form-input font-mono font-bold" 
+                   placeholder="Enter Invoice No (e.g. 3921 or IN-FY26/27-3921)..." />
+            <button id="dispatchAddInvoiceBtn" class="btn btn-dark">
+              <i class="fa-solid fa-plus"></i> Add OUT
             </button>
           </div>
+          <small class="manual-hint">Press <strong>Enter</strong> to instantly add & fetch details from Sheet.</small>
         </div>
       </div>
 
@@ -176,7 +204,7 @@
       <div class="clean-card">
         <div class="basket-head">
           <div class="head-left">
-            <h3>Bills Ready to Handover</h3>
+            <h3>Bills Ready to Handover (OUT)</h3>
             <span class="count-pill" id="dispatchBasketCount">0</span>
           </div>
           <div class="head-right">
@@ -189,14 +217,14 @@
           <!-- Dynamically populated bill cards -->
           <div class="empty-placeholder">
             <i class="fa-solid fa-qrcode"></i>
-            <p>No bills scanned yet.<br><small>Click "Start Scanner" above or paste QR code.</small></p>
+            <p>No bills added to handover basket yet.<br><small>Click "Start Camera" above or type Invoice Number.</small></p>
           </div>
         </div>
 
         <!-- Handover Actions -->
         <div class="action-footer-sticky">
           <button id="confirmDispatchBtn" class="btn btn-success btn-block btn-lg" disabled>
-            <i class="fa-solid fa-check-double"></i> Confirm Handover to Agent
+            <i class="fa-solid fa-check-double"></i> Confirm Handover (Mark OUT)
           </button>
           <div class="secondary-actions">
             <button id="whatsappHandoverBtn" class="btn btn-outline-whatsapp flex-1" disabled>
@@ -212,66 +240,69 @@
 
 
     <!-- ======================================================== -->
-    <!-- TAB 2: RETURN & SETTLEMENT (EOD RECONCILIATION)          -->
+    <!-- TAB 2: SCAN IN (RETURN & SETTLEMENT / NEXT DAY)          -->
     <!-- ======================================================== -->
     <section id="tab-settlement" class="tab-view">
       <!-- Agent Selector -->
       <div class="clean-card">
         <div class="card-grid-2">
           <div class="field-wrap">
-            <label for="settlementAgentSelect"><i class="fa-solid fa-user-check"></i> Returning Agent</label>
+            <label for="settlementAgentSelect"><i class="fa-solid fa-user-check"></i> Returning Sales Agent</label>
             <select id="settlementAgentSelect" class="form-select" required>
               <option value="">Select Agent returning bills...</option>
             </select>
           </div>
           <div class="field-wrap">
-            <label for="settlementDate"><i class="fa-solid fa-calendar-check"></i> Settlement Date</label>
+            <label for="settlementDate"><i class="fa-solid fa-calendar-check"></i> Return Date</label>
             <input type="date" id="settlementDate" class="form-input" />
           </div>
         </div>
       </div>
 
-      <!-- Fraud & Missing Summary Alert Bar -->
+      <!-- Live Agent Reconciliation Strip (Dispatched vs Checked IN vs LEFT OUT) -->
       <div class="clean-card" id="auditDashboardCard">
         <div class="settlement-stats-3">
           <div class="s-box">
-            <span class="s-label">Dispatched</span>
+            <span class="s-label">Dispatched (OUT)</span>
             <h4 class="font-mono" id="audTotalAmt">₹0</h4>
             <small id="audTotalCount">0 bills</small>
           </div>
           <div class="s-box s-success">
-            <span class="s-label">Collected</span>
+            <span class="s-label">Checked IN / Paid</span>
             <h4 class="font-mono text-success" id="audPaidAmt">₹0</h4>
             <small id="audPaidCount">0 bills</small>
           </div>
-          <div class="s-box s-info">
-            <span class="s-label">Returned In-Hand</span>
-            <h4 class="font-mono text-primary" id="audReturnedAmt">₹0</h4>
-            <small id="audReturnedCount">0 bills</small>
+          <div class="s-box s-danger">
+            <span class="s-label">⚠️ LEFT OUT WITH AGENT</span>
+            <h4 class="font-mono text-danger" id="audMissingAmt">₹0</h4>
+            <small id="audMissingCount">0 bills</small>
           </div>
         </div>
 
-        <!-- Missing Alert Banner -->
+        <!-- Left Out Banner Alert -->
         <div id="missingBillAlertBanner" class="alert-box-crimson" style="display: none;">
           <div class="alert-icon-col">
             <i class="fa-solid fa-triangle-exclamation"></i>
           </div>
           <div class="alert-body-col">
-            <h4><span id="alertMissingCount">0</span> Missing Bills (<span id="audMissingAmt">₹0</span>)</h4>
-            <p>These bills are neither marked as paid nor physically scanned as returned. Check with the sales agent immediately.</p>
+            <h4><span id="alertMissingCount">0</span> Bills Left Out (<span id="alertMissingAmt">₹0</span>)</h4>
+            <p>These bills were scanned OUT to this agent but have NOT been scanned IN today.</p>
           </div>
+          <button id="quickWhatsappLeftOutBtn" class="btn btn-outline-whatsapp btn-sm">
+            <i class="fa-brands fa-whatsapp"></i> Send Alert
+          </button>
         </div>
       </div>
 
-      <!-- Fast Scanner for Settlement -->
+      <!-- Fast Scanner for Checking IN -->
       <div class="clean-card scanner-box">
         <div class="scanner-top-bar">
           <div class="mode-pills-wrap">
             <button class="mode-pill active" id="modePayBtn" data-mode="PAY">
-              <i class="fa-solid fa-money-bill-wave"></i> Receive Payment
+              <i class="fa-solid fa-money-bill-wave"></i> Settle Payment / Paid
             </button>
             <button class="mode-pill" id="modeReturnBtn" data-mode="RETURN">
-              <i class="fa-solid fa-hand-holding-dollar"></i> Physical Return (Unpaid)
+              <i class="fa-solid fa-hand-holding-dollar"></i> Unpaid Return (Next Round)
             </button>
           </div>
 
@@ -289,50 +320,56 @@
             <div class="scan-box">
               <div class="scan-line"></div>
             </div>
-            <span class="scan-hint-tag">Scan bill to process</span>
+            <span class="scan-hint-tag">Scan bill QR / Barcode to check IN</span>
           </div>
         </div>
 
         <div class="scanner-main-cta">
           <button id="startSettlementScanBtn" class="btn btn-primary btn-block btn-lg">
-            <i class="fa-solid fa-camera"></i> Start Settlement Scanner
+            <i class="fa-solid fa-camera"></i> Start Check-IN Scanner
           </button>
           <button id="stopSettlementScanBtn" class="btn btn-danger btn-block btn-lg" style="display: none;">
             <i class="fa-solid fa-stop"></i> Close Camera
           </button>
         </div>
 
-        <div class="manual-entry-section">
+        <!-- Dedicated Fast Manual Invoice Entry for IN -->
+        <div class="quick-manual-card">
+          <div class="quick-manual-head">
+            <i class="fa-solid fa-keyboard"></i>
+            <span>No Barcode / QR? Type Invoice Number:</span>
+          </div>
           <div class="input-with-button">
-            <input type="text" id="settlementManualInput" class="form-input" 
-                   placeholder="Or type/paste Bill QR to settle..." />
-            <button id="settlementManualSubmitBtn" class="btn btn-dark">
-              <i class="fa-solid fa-arrow-right"></i> Settle
+            <input type="text" id="settlementInvoiceInput" class="form-input font-mono font-bold" 
+                   placeholder="Enter Invoice No to Check-IN (e.g. 3921)..." />
+            <button id="settlementManualSubmitBtn" class="btn btn-success">
+              <i class="fa-solid fa-arrow-down-to-bracket"></i> Check IN
             </button>
           </div>
+          <small class="manual-hint">Press <strong>Enter</strong> to instantly check IN and view Sheet Receipt info.</small>
         </div>
       </div>
 
-      <!-- Agent's Bills List -->
+      <!-- Agent's Bills List with Status Filter -->
       <div class="clean-card">
         <div class="basket-head">
           <div class="head-left">
-            <h3>Agent's Bills</h3>
+            <h3>Agent's Bill Breakdown</h3>
             <span class="count-pill" id="agentBillsCount">0</span>
           </div>
           <!-- Filter chips -->
           <div class="filter-chips">
             <button class="chip active" data-filter="ALL">All</button>
-            <button class="chip chip-missing" data-filter="MISSING">Missing</button>
-            <button class="chip chip-paid" data-filter="PAID">Paid</button>
-            <button class="chip chip-returned" data-filter="RETURNED">Returned</button>
+            <button class="chip chip-missing" data-filter="MISSING">⚠️ Left Out</button>
+            <button class="chip chip-paid" data-filter="PAID">✓ Checked IN / Paid</button>
+            <button class="chip chip-returned" data-filter="RETURNED">↺ Next Round</button>
           </div>
         </div>
 
         <div class="bill-list" id="settlementListContainer">
           <div class="empty-placeholder">
             <i class="fa-solid fa-user-check"></i>
-            <p>Select an agent above to view bills and start settlement.</p>
+            <p>Select an agent above to view bills and start Check-IN.</p>
           </div>
         </div>
 
@@ -341,7 +378,7 @@
             <i class="fa-solid fa-lock"></i> Finalize Settlement & Close Day
           </button>
           <button id="shareSettlementWhatsappBtn" class="btn btn-outline-whatsapp btn-block">
-            <i class="fa-brands fa-whatsapp"></i> Send WhatsApp Summary to Agent
+            <i class="fa-brands fa-whatsapp"></i> Send Complete Settlement to Agent
           </button>
         </div>
       </div>
@@ -349,7 +386,59 @@
 
 
     <!-- ======================================================== -->
-    <!-- TAB 3: MASTER LEDGER                                     -->
+    <!-- TAB 3: LEFT OUT AUDIT (DEDICATED REMAINING BILLS VIEW)   -->
+    <!-- ======================================================== -->
+    <section id="tab-leftout" class="tab-view">
+      <div class="clean-card">
+        <div class="card-header-simple">
+          <i class="fa-solid fa-triangle-exclamation icon-accent text-danger"></i>
+          <div>
+            <h3>Remaining Left-Out Bills Audit</h3>
+            <p>Bills dispatched to agents that have NOT been returned or cleared</p>
+          </div>
+        </div>
+
+        <div class="ledger-filter-row mt-3">
+          <select id="leftOutAgentFilter" class="form-select">
+            <option value="ALL">All Agents (Overview)</option>
+          </select>
+          <button id="whatsappAllLeftOutBtn" class="btn btn-outline-whatsapp btn-sm">
+            <i class="fa-brands fa-whatsapp"></i> Send Left-Out Summary
+          </button>
+        </div>
+
+        <!-- Left Out Overview Cards Grid -->
+        <div class="leftout-summary-grid mt-3" id="leftOutSummaryGrid">
+          <!-- Populated dynamically -->
+        </div>
+
+        <!-- Detailed Left Out Table -->
+        <div class="table-wrap mt-3">
+          <table class="minimal-table">
+            <thead>
+              <tr>
+                <th>Invoice No</th>
+                <th>Agent</th>
+                <th>Party Name</th>
+                <th>Amount</th>
+                <th>Dispatched Date</th>
+                <th>Receipt Column</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="leftOutTbody">
+              <tr class="empty-row">
+                <td colspan="7">No left-out bills! All dispatched bills are accounted for.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+
+    <!-- ======================================================== -->
+    <!-- TAB 4: MASTER LEDGER                                     -->
     <!-- ======================================================== -->
     <section id="tab-ledger" class="tab-view">
       <div class="clean-card">
@@ -361,11 +450,11 @@
             </select>
             <select id="ledgerStatusFilter" class="form-select">
               <option value="ALL">All Statuses</option>
-              <option value="WITH_AGENT">With Agent</option>
+              <option value="WITH_AGENT">With Agent (OUT)</option>
               <option value="PAID_FULL">Paid (Full)</option>
               <option value="PAID_PARTIAL">Paid (Partial)</option>
               <option value="RETURNED_IN_HAND">Returned Next Round</option>
-              <option value="MISSING_ALERT">⚠️ Missing / Alert</option>
+              <option value="MISSING_ALERT">⚠️ Left Out / Missing</option>
             </select>
           </div>
         </div>
@@ -381,12 +470,12 @@
           <table class="minimal-table">
             <thead>
               <tr>
-                <th>Bill No</th>
+                <th>Invoice No</th>
                 <th>Party</th>
                 <th>Amount</th>
                 <th>Agent</th>
                 <th>Status</th>
-                <th>Collected</th>
+                <th>Receipt / Payment</th>
                 <th>Details</th>
               </tr>
             </thead>
@@ -402,20 +491,48 @@
 
 
     <!-- ======================================================== -->
-    <!-- TAB 4: SETTINGS & GOOGLE SHEETS                          -->
+    <!-- TAB 5: SHEET & SETUP                                     -->
     <!-- ======================================================== -->
     <section id="tab-settings" class="tab-view">
-      <!-- Google Sheets Connection Card -->
+      <!-- Master Sheet Integration Card -->
       <div class="clean-card">
         <div class="card-header-simple">
-          <i class="fa-brands fa-google-drive icon-accent"></i>
+          <i class="fa-solid fa-table-cells icon-accent"></i>
           <div>
-            <h3>Google Sheets Connection</h3>
-            <p>Connect your Google Sheet Web App URL for automatic cloud entries</p>
+            <h3>Master Sheet Integration (Agent & Receipt Mapping)</h3>
+            <p>Link your master sheet to auto-fetch Agent Name and Receipt info on scan</p>
           </div>
         </div>
 
-        <div class="field-wrap mt-3">
+        <!-- Paste or Connect URL Selector -->
+        <div class="mt-3">
+          <label class="font-bold">1. How do you want to load your Master Sheet?</label>
+          <div class="pill-tabs-small mt-2">
+            <button type="button" class="pill-tab-sub active" id="btnSourcePaste">📋 Paste Sheet / CSV Data</button>
+            <button type="button" class="pill-tab-sub" id="btnSourceScript">⚡ Apps Script Web App</button>
+            <button type="button" class="pill-tab-sub" id="btnSourceCsvUrl">🔗 Google Sheet CSV Link</button>
+          </div>
+        </div>
+
+        <!-- Sub-panel A: Direct Paste -->
+        <div id="panelSourcePaste" class="source-panel mt-3">
+          <label for="masterSheetPasteInput">Paste Rows directly from Google Sheet / Excel (Tab or Comma separated):</label>
+          <textarea id="masterSheetPasteInput" class="form-input font-mono" rows="4" 
+                    placeholder="Invoice No&#9;Agent&#9;Party&#9;Amount&#9;Receipt
+IN-3921&#9;Rahul Sharma&#9;Satguru Store&#9;5465&#9;RCT-9021
+IN-3922&#9;Vikram Singh&#9;Mahaveer Market&#9;12850&#9;Paid UPI"></textarea>
+          <div class="buttons-cluster mt-2">
+            <button id="importPastedSheetBtn" class="btn btn-primary">
+              <i class="fa-solid fa-file-import"></i> Load Pasted Data
+            </button>
+            <button id="loadSampleMasterSheetBtn" class="btn btn-outline btn-sm">
+              <i class="fa-solid fa-wand-magic-sparkles"></i> Load Sample Master Sheet
+            </button>
+          </div>
+        </div>
+
+        <!-- Sub-panel B: Apps Script URL -->
+        <div id="panelSourceScript" class="source-panel mt-3" style="display: none;">
           <label for="googleScriptUrl">Google Apps Script Web App URL</label>
           <div class="input-with-button">
             <input type="url" id="googleScriptUrl" class="form-input font-mono" 
@@ -424,23 +541,63 @@
               <i class="fa-solid fa-save"></i> Save
             </button>
           </div>
+          <div class="buttons-cluster mt-2">
+            <button id="testSheetConnectionBtn" class="btn btn-outline btn-sm">
+              <i class="fa-solid fa-plug"></i> Test Connection
+            </button>
+            <button id="pullFromSheetBtn" class="btn btn-dark btn-sm">
+              <i class="fa-solid fa-cloud-arrow-down"></i> Pull Data from Google Sheet
+            </button>
+            <button id="forceSyncSheetBtn" class="btn btn-success btn-sm">
+              <i class="fa-solid fa-cloud-arrow-up"></i> Sync Audit to Sheet
+            </button>
+          </div>
         </div>
 
-        <div class="buttons-cluster mt-3">
-          <button id="testSheetConnectionBtn" class="btn btn-outline btn-sm">
-            <i class="fa-solid fa-plug"></i> Test Connection
-          </button>
-          <button id="forceSyncSheetBtn" class="btn btn-success btn-sm">
-            <i class="fa-solid fa-cloud-arrow-up"></i> Sync All to Sheet
-          </button>
-          <button id="pullFromSheetBtn" class="btn btn-outline btn-sm">
-            <i class="fa-solid fa-cloud-arrow-down"></i> Pull from Sheet
-          </button>
+        <!-- Sub-panel C: Sheet CSV URL -->
+        <div id="panelSourceCsvUrl" class="source-panel mt-3" style="display: none;">
+          <label for="googleSheetCsvUrl">Published Google Sheet CSV / TSV URL</label>
+          <div class="input-with-button">
+            <input type="url" id="googleSheetCsvUrl" class="form-input font-mono" 
+                   value="https://docs.google.com/spreadsheets/d/11J3WSXNFfu5aARNMBX3HQazajsfzBjj7wX9MWyVVBRk/export?format=csv&gid=1608276684"
+                   placeholder="https://docs.google.com/spreadsheets/d/.../export?format=csv" />
+            <button id="fetchSheetCsvBtn" class="btn btn-primary">
+              <i class="fa-solid fa-download"></i> Fetch
+            </button>
+          </div>
         </div>
 
-        <div class="queue-status-bar mt-3">
-          <span>Offline Queued Changes: <strong id="offlineQueueCount">0</strong></span>
-          <button id="retryQueueBtn" class="text-btn">Retry Sync</button>
+        <!-- Column Mapping Form (Expandable) -->
+        <details class="optional-details mt-3" id="columnMappingDetails">
+          <summary>⚙️ Custom Column Header Mappings (Click to customize column names)</summary>
+          <div class="card-grid-2 mt-2">
+            <div class="field-wrap">
+              <label>Invoice Number Column</label>
+              <input type="text" id="mapColInvoice" class="form-input" value="inv bill no, D, Invoice, Bill, BillNo, InvNo" />
+            </div>
+            <div class="field-wrap">
+              <label>Agent Name Column</label>
+              <input type="text" id="mapColAgent" class="form-input" value="Agent, Salesman, DeliveryAgent, Name" />
+            </div>
+            <div class="field-wrap">
+              <label>Party / Customer Column</label>
+              <input type="text" id="mapColParty" class="form-input" value="Party, Customer, Shop, Store" />
+            </div>
+            <div class="field-wrap">
+              <label>Amount Column</label>
+              <input type="text" id="mapColAmount" class="form-input" value="Amount, Total, Net, BillAmount" />
+            </div>
+            <div class="field-wrap">
+              <label>Receipt / Payment Column</label>
+              <input type="text" id="mapColReceipt" class="form-input" value="receipt, receipt col, receipt no, Receipt, Payment, Paid, Remarks" />
+            </div>
+          </div>
+        </details>
+
+        <!-- Master Sheet Loaded Preview Summary -->
+        <div class="sheet-loaded-summary mt-3" id="sheetSummaryBox">
+          <span id="sheetSummaryText">No Master Sheet data loaded yet. Paste or connect your sheet above.</span>
+          <button id="clearMasterSheetBtn" class="text-btn text-danger" style="display: none;">Clear Master Sheet</button>
         </div>
       </div>
 
@@ -479,7 +636,7 @@
 
         <div class="buttons-cluster mt-3">
           <button id="loadSampleBillsBtn" class="btn btn-outline btn-sm">
-            <i class="fa-solid fa-wand-magic-sparkles"></i> Load 5 Sample Test Bills
+            <i class="fa-solid fa-wand-magic-sparkles"></i> Load 5 Test Bills
           </button>
           <button id="generateQrCodesBtn" class="btn btn-outline btn-sm">
             <i class="fa-solid fa-qrcode"></i> View Test QR Codes
@@ -488,16 +645,6 @@
             <i class="fa-solid fa-trash-can"></i> Reset All Data
           </button>
         </div>
-      </div>
-
-      <!-- Quick 3-Step Guide -->
-      <div class="clean-card info-card">
-        <h4><i class="fa-solid fa-circle-info"></i> How to connect Google Sheets</h4>
-        <ol class="simple-steps">
-          <li>Create a sheet at <a href="https://sheets.new" target="_blank" rel="noopener">sheets.new</a>.</li>
-          <li>Click <strong>Extensions &gt; Apps Script</strong>, paste code from <code>google_apps_script.js</code>.</li>
-          <li>Click <strong>Deploy &gt; New deployment &gt; Web app</strong> (Access: <em>Anyone</em>), and paste URL above!</li>
-        </ol>
       </div>
     </section>
 
@@ -510,7 +657,7 @@
   <div id="paymentModal" class="modal-backdrop" style="display: none;">
     <div class="modal-card">
       <div class="modal-head">
-        <h3>Record Payment</h3>
+        <h3>Record Payment / Check IN</h3>
         <button class="modal-close" id="closePaymentModalBtn">&times;</button>
       </div>
 
@@ -518,6 +665,9 @@
         <div class="m-bill-no font-mono" id="modalBillNo">-</div>
         <div class="m-party" id="modalPartyName">-</div>
         <div class="m-amount font-mono" id="modalBillAmt">₹0.00</div>
+        <div class="m-sheet-info" id="modalSheetReceiptRow" style="display: none;">
+          <span class="badge-receipt"><i class="fa-solid fa-receipt"></i> Sheet Receipt: <strong id="modalSheetReceiptVal">-</strong></span>
+        </div>
       </div>
 
       <form id="paymentRecordForm">
@@ -544,10 +694,10 @@
 
         <!-- Optional Details (Expandable) -->
         <details class="optional-details mt-2">
-          <summary>More options (Cheque No, Remarks)</summary>
+          <summary>More options (Receipt / Cheque No, Remarks)</summary>
           <div class="field-wrap mt-2">
-            <label for="modalRefNo">Cheque No / UPI Reference</label>
-            <input type="text" id="modalRefNo" class="form-input" placeholder="e.g. 004812" />
+            <label for="modalRefNo">Receipt No / Cheque No / UPI Ref</label>
+            <input type="text" id="modalRefNo" class="form-input font-mono" placeholder="e.g. RCT-004812" />
           </div>
           <div class="field-wrap mt-2">
             <label for="modalPaymentRemarks">Remarks / Notes</label>
@@ -558,7 +708,7 @@
         <div class="modal-foot mt-4">
           <button type="button" class="btn btn-outline" id="cancelPaymentModalBtn">Cancel</button>
           <button type="submit" class="btn btn-success flex-1">
-            <i class="fa-solid fa-check"></i> Save Payment
+            <i class="fa-solid fa-check"></i> Confirm Payment & Check IN
           </button>
         </div>
       </form>
@@ -572,13 +722,13 @@
   <div id="returnModal" class="modal-backdrop" style="display: none;">
     <div class="modal-card">
       <div class="modal-head">
-        <h3>Verify Physical Return</h3>
+        <h3>Verify Return (Next Round)</h3>
         <button class="modal-close" id="closeReturnModalBtn">&times;</button>
       </div>
 
       <div class="verified-pill">
         <i class="fa-solid fa-circle-check"></i>
-        <span>Physical Bill QR Verified Present In Hand</span>
+        <span>Bill Verified Returned Unpaid</span>
       </div>
 
       <div class="modal-bill-summary mt-2">
