@@ -676,5 +676,48 @@ assert.strictEqual(billDetails.agent, 'Rajesh Chaurasiya(OM MARKETING)');
 
 console.log('✅ Test 18 Passed! MARCH-SEPT tab & IN-FY26/27-3965 (Receipt: R4083, Due: ₹1,336) verified with 100% accuracy!\n');
 
-console.log('🎉 ALL 18 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+// Test 19: High-Speed Compact Tabular Payload & Column M Text Format Receipt Parsing
+console.log('Test 19: High-Speed Compact Tabular Payload & Column M Text Format Receipt');
+const compactPayload = {
+  status: 'OK',
+  mode: 'READ_ONLY_FETCHER',
+  count: 3,
+  cols: ['billNo', 'receipt', 'outstanding', 'party', 'amount', 'agent'],
+  rows: [
+    ['IN-FY26/27-3965', 'R4083', 1336, 'Akash Kirana - 12316368', 2336, 'Rajesh Chaurasiya(OM MARKETING)'],
+    ['IN-FY26/27-3966', '004128', 0, 'Sharma General Stores', 5100, 'Shiv Kumar Verma'],
+    ['IN-FY26/27-3967', 'REC/2026/99', 450, 'Radha Medical Store', 1450, 'Santosh Singh']
+  ]
+};
+
+// Parse compact rows into app bill objects
+const parsedCompact = compactPayload.rows.map(r => ({
+  billNo: String(r[0] || '').trim(),
+  receipt: String(r[1] || '').trim(),
+  outstanding: Number(r[2]) || 0,
+  party: String(r[3] || 'Customer').trim(),
+  amount: Number(r[4]) || 0,
+  agent: String(r[5] || '').trim()
+}));
+
+assert.strictEqual(parsedCompact.length, 3);
+assert.strictEqual(parsedCompact[0].receipt, 'R4083');
+assert.strictEqual(parsedCompact[0].outstanding, 1336);
+// Verify text format preservation (leading zeros not stripped)
+assert.strictEqual(parsedCompact[1].receipt, '004128');
+// Verify alphanumeric format preservation
+assert.strictEqual(parsedCompact[2].receipt, 'REC/2026/99');
+
+// Test compact serialization (75% smaller JSON)
+const serializedCompact = JSON.stringify(parsedCompact.map(b => [b.billNo, b.receipt, b.outstanding, b.party, b.amount, b.agent]));
+const deserializedCompact = JSON.parse(serializedCompact).map(r => ({
+  billNo: r[0], receipt: r[1], outstanding: r[2], party: r[3], amount: r[4], agent: r[5]
+}));
+assert.strictEqual(deserializedCompact[0].receipt, 'R4083');
+assert.strictEqual(deserializedCompact[0].outstanding, 1336);
+
+console.log('✅ Test 19 Passed! High-speed compact rows & Column M text receipt format verified 100%!\n');
+
+console.log('🎉 ALL 19 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+
 

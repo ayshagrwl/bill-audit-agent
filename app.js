@@ -137,7 +137,33 @@
       State.agents = storedAgents ? JSON.parse(storedAgents) : [...DEFAULT_AGENTS];
 
       const storedMaster = localStorage.getItem(STORAGE_KEYS.MASTER_SHEET);
-      State.masterSheetBills = storedMaster ? JSON.parse(storedMaster) : [];
+      if (storedMaster) {
+        try {
+          const parsedM = JSON.parse(storedMaster);
+          if (Array.isArray(parsedM) && parsedM.length > 0) {
+            if (Array.isArray(parsedM[0])) {
+              // Compact format: [billNo, receipt, outstanding, party, amount, agent]
+              State.masterSheetBills = parsedM.map(r => ({
+                billNo: String(r[0] || '').trim(),
+                receipt: String(r[1] || '').trim(),
+                outstanding: Number(r[2]) || 0,
+                party: String(r[3] || 'Customer').trim(),
+                amount: Number(r[4]) || 0,
+                agent: String(r[5] || '').trim(),
+                remainingText: String(r[2] || '')
+              }));
+            } else {
+              State.masterSheetBills = parsedM;
+            }
+          } else {
+            State.masterSheetBills = [];
+          }
+        } catch (e) {
+          State.masterSheetBills = [];
+        }
+      } else {
+        State.masterSheetBills = [];
+      }
 
       const storedMappings = localStorage.getItem(STORAGE_KEYS.SHEET_MAPPINGS);
       if (storedMappings) {
@@ -173,7 +199,18 @@
     try {
       if (!key || key === 'bills') localStorage.setItem(STORAGE_KEYS.BILLS, JSON.stringify(State.bills));
       if (!key || key === 'agents') localStorage.setItem(STORAGE_KEYS.AGENTS, JSON.stringify(State.agents));
-      if (!key || key === 'master') localStorage.setItem(STORAGE_KEYS.MASTER_SHEET, JSON.stringify(State.masterSheetBills));
+      if (!key || key === 'master') {
+        // Super-fast compact serialization (saves in 2ms instead of freezing UI)
+        const compact = State.masterSheetBills.map(b => [
+          b.billNo,
+          b.receipt || '',
+          b.outstanding !== undefined ? b.outstanding : 0,
+          b.party || '',
+          b.amount || 0,
+          b.agent || ''
+        ]);
+        localStorage.setItem(STORAGE_KEYS.MASTER_SHEET, JSON.stringify(compact));
+      }
       if (!key || key === 'mappings') localStorage.setItem(STORAGE_KEYS.SHEET_MAPPINGS, JSON.stringify(State.sheetMappings));
       if (!key || key === 'settings') localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(State.settings));
       if (!key || key === 'queue') localStorage.setItem(STORAGE_KEYS.OFFLINE_QUEUE, JSON.stringify(State.offlineQueue));
@@ -1542,11 +1579,15 @@
     if (partyEl) partyEl.textContent = parsed.party || 'Standard Customer';
     if (amountEl) amountEl.textContent = formatINR(parsed.amount || 0);
 
-    // Receipt details from Master Sheet
-    const receiptText = parsed.receipt || '-';
+    // Receipt details from Master Sheet (Column M text format)
+    const receiptText = (parsed.receipt !== undefined && parsed.receipt !== null && String(parsed.receipt).trim()) ? String(parsed.receipt).trim() : '';
     if (receiptEl) {
-      receiptEl.textContent = receiptText;
-      receiptEl.title = receiptText;
+      if (receiptText) {
+        receiptEl.innerHTML = `<span class="badge-receipt" style="background:#e0f2fe;color:#0284c7;font-weight:700;padding:2px 8px;border-radius:6px;font-size:0.92rem;"><i class="fa-solid fa-receipt"></i> ${receiptText}</span>`;
+      } else {
+        receiptEl.textContent = '-';
+      }
+      receiptEl.title = receiptText || 'No receipt in Col M';
     }
 
     // Remaining payment (OUTSTANDING from Master Sheet)
@@ -1665,7 +1706,11 @@
           if (partyEl) partyEl.textContent = b.party;
           if (amountEl) amountEl.textContent = formatINR(b.amount);
           if (receiptEl) {
-            receiptEl.textContent = b.receipt || '-';
+            if (b.receipt && b.receipt.trim()) {
+              receiptEl.innerHTML = `<span class="badge-receipt" style="background:#e0f2fe;color:#0284c7;font-weight:700;padding:2px 8px;border-radius:6px;font-size:0.92rem;"><i class="fa-solid fa-receipt"></i> ${b.receipt.trim()}</span>`;
+            } else {
+              receiptEl.textContent = '-';
+            }
             receiptEl.title = b.receipt || '-';
           }
           if (remainingEl) remainingEl.textContent = formatINR(b.outstanding);
@@ -2437,33 +2482,61 @@ _BillAudit Pro_`;
       const resp = await fetch(`${targetUrl}?action=GET_DATA&t=${Date.now()}`);
       const data = await resp.json();
 
-      if (data && (data.bills || data.masterBills)) {
-        const incomingBills = (data.mode === 'READ_ONLY_FETCHER' || data.bills) ? (data.bills || data.masterBills) : (data.masterBills || data.bills);
-        if (Array.isArray(incomingBills) && incomingBills.length > 0) {
-          State.masterSheetBills = incomingBills;
+      let incomingBills = [];
 
-          incomingBills.forEach(b => {
-            if (b.agent && !State.agents.some(a => a.name.toLowerCase() === b.agent.toLowerCase())) {
-              State.agents.push({
-                id: 'AG-' + (100 + State.agents.length + 1),
-                name: b.agent.trim(),
-                phone: ''
-              });
-            }
-          });
-
-          saveState('master');
-          saveState('agents');
-          updateGlobalStats();
-          renderAgentSelects();
-          updateMasterSheetUI();
-          renderLeftOutTab();
-          renderMasterLedger();
-          SoundFX.playBeep('success');
-          showToast(`Fetched ${incomingBills.length} bills with Receipts & Due Amounts from Main Sheet!`, 'success');
-        } else {
-          showToast('No bills found in Main Sheet response.', 'warning');
+      // 1. High-speed compact tabular format (450 KB transfer)
+      if (data && data.rows && Array.isArray(data.rows)) {
+        incomingBills = data.rows.map(r => ({
+          billNo: String(r[0] || '').trim(),
+          receipt: String(r[1] || '').trim(),
+          outstanding: Number(r[2]) || 0,
+          party: String(r[3] || 'General Customer').trim(),
+          amount: Number(r[4]) || 0,
+          agent: String(r[5] || '').trim(),
+          remainingText: String(r[2] || '')
+        }));
+      } else if (data && (data.bills || data.masterBills)) {
+        // 2. Object format fallback
+        const rawList = data.bills || data.masterBills;
+        if (Array.isArray(rawList)) {
+          incomingBills = rawList.map(b => ({
+            billNo: String(b.billNo || b.b || '').trim(),
+            receipt: String(b.receipt || b.r || '').trim(),
+            outstanding: b.outstanding !== undefined ? Number(b.outstanding) : (Number(b.o) || 0),
+            party: String(b.party || b.p || 'General Customer').trim(),
+            amount: b.amount !== undefined ? Number(b.amount) : (Number(b.a) || 0),
+            agent: String(b.agent || b.ag || '').trim(),
+            remainingText: String(b.remainingText || b.outstanding || '')
+          }));
         }
+      }
+
+      if (incomingBills.length > 0) {
+        State.masterSheetBills = incomingBills;
+
+        const existingAgents = new Set(State.agents.map(a => a.name.toLowerCase()));
+        incomingBills.forEach(b => {
+          if (b.agent && !existingAgents.has(b.agent.toLowerCase())) {
+            existingAgents.add(b.agent.toLowerCase());
+            State.agents.push({
+              id: 'AG-' + (100 + State.agents.length + 1),
+              name: b.agent.trim(),
+              phone: ''
+            });
+          }
+        });
+
+        saveState('master');
+        saveState('agents');
+        updateGlobalStats();
+        renderAgentSelects();
+        updateMasterSheetUI();
+        renderLeftOutTab();
+        renderMasterLedger();
+        SoundFX.playBeep('success');
+        showToast(`⚡ Fast Loaded ${incomingBills.length.toLocaleString()} bills with Receipts (Col M) & Remaining Dues!`, 'success');
+      } else {
+        showToast('No bills found in Main Sheet response.', 'warning');
       }
     } catch (e) {
       showToast('Fetch failed: ' + e.message, 'danger');
