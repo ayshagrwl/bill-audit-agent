@@ -434,7 +434,116 @@
       };
     }
 
-    // 2. Structured multi-value formats: CSV, Pipe, Semicolon
+    // 2. Indian GST e-Invoice Signed QR Code (JWT format: header.payload.signature)
+    if (/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(text)) {
+      try {
+        const parts = text.split('.');
+        let base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+        while (base64.length % 4) base64 += '=';
+        let jsonStr = '';
+        if (typeof atob === 'function') {
+          jsonStr = decodeURIComponent(escape(atob(base64)));
+        } else if (typeof Buffer !== 'undefined') {
+          jsonStr = Buffer.from(base64, 'base64').toString('utf8');
+        }
+        if (jsonStr) {
+          const payload = JSON.parse(jsonStr);
+          const billNo = payload.DocNo || payload.docNo || payload.billNo || payload.Irn || text;
+          const party = payload.BuyerGstin || payload.buyerGstin || payload.party || 'Standard Account';
+          const amount = parseFloat(payload.TotInvVal || payload.totInvVal || payload.amount) || 0;
+          const mm = findMasterBill(billNo);
+          return {
+            billNo: String(billNo).trim(),
+            party: mm ? mm.party : party,
+            amount: mm ? mm.amount : amount,
+            agent: mm ? mm.agent : '',
+            receipt: mm ? mm.receipt : '',
+            fromMaster: !!mm,
+            raw: text,
+            isEInvoice: true
+          };
+        }
+      } catch (e) {}
+    }
+
+    // 3. Direct JSON payload (e.g. {"DocNo":"3921","TotInvVal":5465})
+    if ((text.startsWith('{') && text.endsWith('}')) || (text.startsWith('[') && text.endsWith(']'))) {
+      try {
+        const obj = JSON.parse(text);
+        if (typeof obj === 'object' && obj !== null && !Array.isArray(obj)) {
+          const billNo = obj.DocNo || obj.docNo || obj.billNo || obj.bill_no || obj.invoice || obj.invoiceNo || obj.invoice_no || obj.invNo || obj.bill || obj.id || '';
+          const party = obj.party || obj.partyName || obj.party_name || obj.buyer || obj.customer || obj.BuyerGstin || 'Standard Account';
+          const amtStr = String(obj.TotInvVal || obj.amount || obj.amt || obj.total || obj.grandTotal || obj.netAmount || 0);
+          const amount = parseFloat(amtStr.replace(/,/g, '')) || 0;
+          if (billNo) {
+            const mm = findMasterBill(billNo);
+            return {
+              billNo: String(billNo).trim(),
+              party: mm ? mm.party : party,
+              amount: mm ? mm.amount : amount,
+              agent: mm ? mm.agent : '',
+              receipt: mm ? mm.receipt : '',
+              fromMaster: !!mm,
+              raw: text
+            };
+          }
+        }
+      } catch (e) {}
+    }
+
+    // 4. UPI Payment QR (e.g. upi://pay?pa=...&am=5465&tr=3921)
+    if (text.startsWith('upi://pay')) {
+      try {
+        const url = new URL(text);
+        const billNo = url.searchParams.get('tr') || url.searchParams.get('tn') || url.searchParams.get('refId') || text;
+        const party = url.searchParams.get('pn') || 'Standard Account';
+        const amount = parseFloat(url.searchParams.get('am')) || 0;
+        const mm = findMasterBill(billNo);
+        return {
+          billNo: String(billNo).trim(),
+          party: mm ? mm.party : party,
+          amount: mm ? mm.amount : amount,
+          agent: mm ? mm.agent : '',
+          receipt: mm ? mm.receipt : '',
+          fromMaster: !!mm,
+          raw: text
+        };
+      } catch (e) {}
+    }
+
+    // 5. Multi-line Key: Value Text (e.g. "Invoice: 3921\nAmount: 5465")
+    if (text.includes('\n') && (text.toLowerCase().includes('inv') || text.toLowerCase().includes('bill'))) {
+      const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      let billNo = '', party = '', amount = 0;
+      for (const line of lines) {
+        const parts = line.split(/[:=]\s*/);
+        if (parts.length >= 2) {
+          const key = parts[0].toLowerCase();
+          const val = parts.slice(1).join(':').trim();
+          if (key.includes('inv') || key.includes('bill') || key.includes('doc')) {
+            billNo = val;
+          } else if (key.includes('party') || key.includes('customer') || key.includes('name')) {
+            party = val;
+          } else if (key.includes('amount') || key.includes('total') || key.includes('amt')) {
+            amount = parseFloat(val.replace(/,/g, '')) || 0;
+          }
+        }
+      }
+      if (billNo) {
+        const mm = findMasterBill(billNo);
+        return {
+          billNo: String(billNo).trim(),
+          party: mm ? mm.party : (party || 'Standard Account'),
+          amount: mm ? mm.amount : amount,
+          agent: mm ? mm.agent : '',
+          receipt: mm ? mm.receipt : '',
+          fromMaster: !!mm,
+          raw: text
+        };
+      }
+    }
+
+    // 6. Structured multi-value formats: CSV, Pipe, Semicolon
     function parseCSVLine(line) {
       const values = [];
       let current = '';
@@ -465,7 +574,16 @@
         const party = parts[1];
         const amountStr = parts.slice(2).join('');
         const amount = parseFloat(amountStr.replace(/,/g, '')) || 0;
-        return { billNo, party, amount, raw: text };
+        const mm = findMasterBill(billNo);
+        return {
+          billNo,
+          party: mm ? mm.party : party,
+          amount: mm ? mm.amount : amount,
+          agent: mm ? mm.agent : '',
+          receipt: mm ? mm.receipt : '',
+          fromMaster: !!mm,
+          raw: text
+        };
       }
     }
 
@@ -476,7 +594,16 @@
       const party = csvParts[1];
       const amountStr = csvParts[2];
       const amount = parseFloat(amountStr.replace(/,/g, '')) || 0;
-      return { billNo, party, amount, raw: text };
+      const mm = findMasterBill(billNo);
+      return {
+        billNo,
+        party: mm ? mm.party : party,
+        amount: mm ? mm.amount : amount,
+        agent: mm ? mm.agent : '',
+        receipt: mm ? mm.receipt : '',
+        fromMaster: !!mm,
+        raw: text
+      };
     } else if (csvParts.length > 3) {
       const billNo = csvParts[0];
       let amountIndex = csvParts.length - 1;
@@ -494,26 +621,93 @@
       const party = partyParts.join(', ');
       const amountStr = amountParts.join('');
       const amount = parseFloat(amountStr.replace(/,/g, '')) || 0;
-      return { billNo, party, amount, raw: text };
+      const mm = findMasterBill(billNo);
+      return {
+        billNo,
+        party: mm ? mm.party : party,
+        amount: mm ? mm.amount : amount,
+        agent: mm ? mm.agent : '',
+        receipt: mm ? mm.receipt : '',
+        fromMaster: !!mm,
+        raw: text
+      };
     } else if (csvParts.length === 2) {
       const billNo = csvParts[0];
       const amount = parseFloat(csvParts[1].replace(/,/g, '')) || 0;
-      return { billNo, party: 'Standard Account', amount, raw: text };
+      const mm = findMasterBill(billNo);
+      return {
+        billNo,
+        party: mm ? mm.party : 'Standard Account',
+        amount: mm ? mm.amount : amount,
+        agent: mm ? mm.agent : '',
+        receipt: mm ? mm.receipt : '',
+        fromMaster: !!mm,
+        raw: text
+      };
     }
 
-    // Single token (e.g. only invoice number scanned or typed)
+    // 7. Single token (e.g. only invoice number scanned or typed)
+    const mm = findMasterBill(text);
     return {
       billNo: text,
-      party: 'Standard Account',
-      amount: 0,
+      party: mm ? mm.party : 'Standard Account',
+      amount: mm ? mm.amount : 0,
+      agent: mm ? mm.agent : '',
+      receipt: mm ? mm.receipt : '',
+      fromMaster: !!mm,
       raw: text
     };
   }
 
 
   // ========================================================
-  // 4. CAMERA CONTROLLERS (HIGH-SPEED SCANNING)
+  // 4. CAMERA CONTROLLERS (IOS SAFARI OPTIMIZED HIGH-SPEED)
   // ========================================================
+
+  function checkHttpsSecurity() {
+    const banner = document.getElementById('httpsWarningBanner');
+    if (!banner) return;
+    const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    const isSecure = window.isSecureContext || location.protocol === 'https:' || isLocal;
+    banner.style.display = isSecure ? 'none' : 'flex';
+  }
+
+  function createScannerInstance(elementId) {
+    let supportedFormats = undefined;
+    if (typeof Html5QrcodeSupportedFormats !== 'undefined') {
+      supportedFormats = [
+        Html5QrcodeSupportedFormats.QR_CODE,
+        Html5QrcodeSupportedFormats.CODE_128,
+        Html5QrcodeSupportedFormats.CODE_39,
+        Html5QrcodeSupportedFormats.CODE_93,
+        Html5QrcodeSupportedFormats.EAN_13,
+        Html5QrcodeSupportedFormats.EAN_8,
+        Html5QrcodeSupportedFormats.UPC_A,
+        Html5QrcodeSupportedFormats.UPC_E,
+        Html5QrcodeSupportedFormats.DATA_MATRIX
+      ];
+    }
+    return new Html5Qrcode(elementId, {
+      formatsToSupport: supportedFormats,
+      verbose: false,
+      experimentalFeatures: {
+        useBarCodeDetectorIfSupported: false
+      }
+    });
+  }
+
+  function ensureVideoInline(container) {
+    setTimeout(() => {
+      const video = container ? container.querySelector('video') : null;
+      if (video) {
+        video.setAttribute('playsinline', 'true');
+        video.setAttribute('webkit-playsinline', 'true');
+        video.muted = true;
+        video.setAttribute('muted', 'true');
+        if (video.paused) video.play().catch(() => {});
+      }
+    }, 250);
+  }
 
   async function initCameraSelectors() {
     const select = document.getElementById('cameraSourceSelect');
@@ -523,11 +717,22 @@
       const cameras = await Html5Qrcode.getCameras();
       State.availableCameras = cameras || [];
 
+      // Sort cameras on iPhone: put 1x Main Back camera first, demote Ultra Wide (0.5x)
+      State.availableCameras.sort((a, b) => {
+        const aL = (a.label || '').toLowerCase();
+        const bL = (b.label || '').toLowerCase();
+        if (aL.includes('ultra wide') || aL.includes('0.5x')) return 1;
+        if (bL.includes('ultra wide') || bL.includes('0.5x')) return -1;
+        if (aL.includes('back') || aL.includes('rear') || aL.includes('environment')) return -1;
+        if (bL.includes('back') || bL.includes('rear') || bL.includes('environment')) return 1;
+        return 0;
+      });
+
       select.innerHTML = '';
 
       const optBack = document.createElement('option');
       optBack.value = 'environment';
-      optBack.textContent = '📷 Back Camera (Default)';
+      optBack.textContent = '📷 Primary Back Camera (1x Auto)';
       select.appendChild(optBack);
 
       const optFront = document.createElement('option');
@@ -535,21 +740,36 @@
       optFront.textContent = '🤳 Front Camera';
       select.appendChild(optFront);
 
-      if (cameras && cameras.length > 0) {
-        cameras.forEach((cam, idx) => {
+      if (State.availableCameras.length > 0) {
+        State.availableCameras.forEach((cam, idx) => {
           const opt = document.createElement('option');
           opt.value = cam.id;
-          const label = cam.label || `Camera ${idx + 1}`;
+          let label = cam.label || `Camera ${idx + 1}`;
+          if (label.toLowerCase().includes('ultra wide')) {
+            label = `${label} (0.5x - Hard to focus)`;
+          } else if (label.toLowerCase().includes('back') || label.toLowerCase().includes('rear')) {
+            label = `${label} (1x Sharp Focus)`;
+          }
           opt.textContent = `📹 ${label}`;
           select.appendChild(opt);
         });
+
+        // Set default camera to first sharp back camera if available
+        const sharpBack = State.availableCameras.find(c => {
+          const l = (c.label || '').toLowerCase();
+          return !l.includes('ultra wide') && !l.includes('front') && !l.includes('user');
+        });
+        if (sharpBack && !State.settings.preferredCamera) {
+          State.selectedCameraId = sharpBack.id;
+          select.value = sharpBack.id;
+        }
       }
 
-      if (State.selectedCameraId) {
+      if (State.selectedCameraId && select) {
         select.value = State.selectedCameraId;
       }
     } catch (e) {
-      console.warn('Camera enumeration error:', e);
+      console.warn('Camera enumeration error (Safari permissions needed):', e);
     }
   }
 
@@ -572,6 +792,26 @@
     showToast('Camera switched', 'info', 1200);
   }
 
+  function cycleBackLens() {
+    if (!State.availableCameras || State.availableCameras.length <= 1) {
+      flipCamera();
+      return;
+    }
+
+    const backCams = State.availableCameras.filter(c => {
+      const l = (c.label || '').toLowerCase();
+      return !l.includes('front') && !l.includes('user');
+    });
+
+    if (backCams.length > 1) {
+      const curIdx = backCams.findIndex(c => c.id === State.selectedCameraId);
+      const nextIdx = (curIdx + 1) % backCams.length;
+      switchSelectedCamera(backCams[nextIdx].id);
+    } else {
+      flipCamera();
+    }
+  }
+
   function flipCamera() {
     if (State.availableCameras.length > 1) {
       const currentVal = State.selectedCameraId;
@@ -586,10 +826,20 @@
 
   function getCameraConfigForStart() {
     const camId = State.selectedCameraId || 'environment';
-    if (camId === 'environment' || camId === 'user') {
-      return { facingMode: camId };
+    if (camId === 'environment') {
+      return { facingMode: 'environment' };
+    }
+    if (camId === 'user') {
+      return { facingMode: 'user' };
     }
     return { deviceId: { exact: camId } };
+  }
+
+  function getScannerRunConfig() {
+    return {
+      fps: 20,
+      disableFlip: false
+    };
   }
 
   async function startDispatchScanner() {
@@ -599,33 +849,43 @@
 
     if (State.scannerDispatch) return;
 
+    SoundFX.init();
+
     try {
+      if (State.availableCameras.length === 0) {
+        await initCameraSelectors();
+      }
+
       container.style.display = 'block';
       startBtn.style.display = 'none';
       stopBtn.style.display = 'block';
 
-      State.scannerDispatch = new Html5Qrcode('qr-reader');
+      State.scannerDispatch = createScannerInstance('qr-reader');
       const cameraConfig = getCameraConfigForStart();
+      const runConfig = getScannerRunConfig();
 
-      await State.scannerDispatch.start(
-        cameraConfig,
-        {
-          fps: 20, // Increased for ultra-fast scanning
-          qrbox: { width: 240, height: 240 },
-          aspectRatio: 1.333
-        },
-        (decodedText) => {
-          handleScannedCodeDispatch(decodedText);
-        },
-        () => {}
-      );
-
-      if (State.availableCameras.length === 0) {
-        await initCameraSelectors();
+      try {
+        await State.scannerDispatch.start(
+          cameraConfig,
+          runConfig,
+          (decodedText) => handleScannedCodeDispatch(decodedText),
+          () => {}
+        );
+      } catch (errFirst) {
+        console.warn('Initial camera start failed, retrying with flexible constraints:', errFirst);
+        // Fallback for strict iOS Safari
+        await State.scannerDispatch.start(
+          { facingMode: 'environment' },
+          { fps: 15 },
+          (decodedText) => handleScannedCodeDispatch(decodedText),
+          () => {}
+        );
       }
+
+      ensureVideoInline(container);
     } catch (err) {
       console.error('Dispatch scanner error:', err);
-      showToast('Camera error: ' + err.message, 'danger');
+      showToast('Camera error: ' + (err.message || err), 'danger', 4500);
       stopDispatchScanner();
     }
   }
@@ -655,29 +915,42 @@
 
     if (State.scannerSettlement) return;
 
+    SoundFX.init();
+
     try {
+      if (State.availableCameras.length === 0) {
+        await initCameraSelectors();
+      }
+
       container.style.display = 'block';
       startBtn.style.display = 'none';
       stopBtn.style.display = 'block';
 
-      State.scannerSettlement = new Html5Qrcode('qr-reader-settlement');
+      State.scannerSettlement = createScannerInstance('qr-reader-settlement');
       const cameraConfig = getCameraConfigForStart();
+      const runConfig = getScannerRunConfig();
 
-      await State.scannerSettlement.start(
-        cameraConfig,
-        {
-          fps: 20, // Fast response
-          qrbox: { width: 240, height: 240 },
-          aspectRatio: 1.333
-        },
-        (decodedText) => {
-          handleScannedCodeSettlement(decodedText);
-        },
-        () => {}
-      );
+      try {
+        await State.scannerSettlement.start(
+          cameraConfig,
+          runConfig,
+          (decodedText) => handleScannedCodeSettlement(decodedText),
+          () => {}
+        );
+      } catch (errFirst) {
+        console.warn('Settlement camera start retry:', errFirst);
+        await State.scannerSettlement.start(
+          { facingMode: 'environment' },
+          { fps: 15 },
+          (decodedText) => handleScannedCodeSettlement(decodedText),
+          () => {}
+        );
+      }
+
+      ensureVideoInline(container);
     } catch (err) {
       console.error('Settlement scanner error:', err);
-      showToast('Camera error: ' + err.message, 'danger');
+      showToast('Camera error: ' + (err.message || err), 'danger', 4500);
       stopSettlementScanner();
     }
   }
@@ -700,27 +973,67 @@
     if (stopBtn) stopBtn.style.display = 'none';
   }
 
+  /**
+   * Fast Photo Scan Fallback for iPhone (100% Reliable via Native Camera)
+   */
+  async function handlePhotoScan(file, onDecoded) {
+    if (!file) return;
+    showToast('Analyzing bill photo...', 'info', 2000);
+
+    const tempId = 'qr-reader';
+    let tempScanner = null;
+    try {
+      tempScanner = createScannerInstance(tempId);
+      const decodedText = await tempScanner.scanFile(file, false);
+      if (decodedText) {
+        onDecoded(decodedText);
+      } else {
+        throw new Error('No code found');
+      }
+    } catch (err) {
+      console.warn('Photo scan error:', err);
+      showToast('Could not read code. Make sure QR/barcode is clear and well-lit.', 'warning', 4000);
+    } finally {
+      if (tempScanner) {
+        try { tempScanner.clear(); } catch(e) {}
+      }
+    }
+  }
+
 
   // ========================================================
   // 5. TAB 1: SCAN OUT (AFTERNOON HANDOVER)
   // ========================================================
 
   function handleScannedCodeDispatch(decodedText) {
-    const now = Date.now();
-    if (decodedText === State.lastScannedCode && now - State.lastScanTimestamp < 1200) {
-      return;
-    }
-    State.lastScannedCode = decodedText;
-    State.lastScanTimestamp = now;
+    try {
+      const now = Date.now();
+      if (decodedText === State.lastScannedCode && now - State.lastScanTimestamp < 1200) {
+        return;
+      }
+      State.lastScannedCode = decodedText;
+      State.lastScanTimestamp = now;
 
-    const parsed = parseQRCodeData(decodedText);
-    if (!parsed || !parsed.billNo) {
-      SoundFX.playBeep('error');
-      showToast('Unrecognized code', 'warning');
-      return;
-    }
+      // Visual flash on viewfinder box
+      const container = document.getElementById('scannerContainer');
+      const scanBox = container ? container.querySelector('.scan-box') : null;
+      if (scanBox) {
+        scanBox.classList.add('scan-success-glow');
+        setTimeout(() => scanBox.classList.remove('scan-success-glow'), 400);
+      }
 
-    addBillToDispatchBasket(parsed);
+      const parsed = parseQRCodeData(decodedText);
+      if (!parsed || !parsed.billNo) {
+        SoundFX.playBeep('error');
+        showToast('Unrecognized code: ' + (decodedText.slice(0, 30)), 'warning');
+        return;
+      }
+
+      addBillToDispatchBasket(parsed);
+    } catch (err) {
+      console.error('Dispatch scan handler error:', err);
+      showToast('Scan error: ' + (err.message || err), 'danger');
+    }
   }
 
   function handleManualInvoiceDispatch() {
@@ -1087,12 +1400,25 @@
   }
 
   function handleScannedCodeSettlement(decodedText) {
-    const now = Date.now();
-    if (decodedText === State.lastScannedCode && now - State.lastScanTimestamp < 1200) return;
-    State.lastScannedCode = decodedText;
-    State.lastScanTimestamp = now;
+    try {
+      const now = Date.now();
+      if (decodedText === State.lastScannedCode && now - State.lastScanTimestamp < 1200) return;
+      State.lastScannedCode = decodedText;
+      State.lastScanTimestamp = now;
 
-    processCheckInCode(decodedText);
+      // Visual flash on viewfinder box
+      const container = document.getElementById('settlementScannerContainer');
+      const scanBox = container ? container.querySelector('.scan-box') : null;
+      if (scanBox) {
+        scanBox.classList.add('scan-success-glow');
+        setTimeout(() => scanBox.classList.remove('scan-success-glow'), 400);
+      }
+
+      processCheckInCode(decodedText);
+    } catch (err) {
+      console.error('Settlement scan handler error:', err);
+      showToast('Scan error: ' + (err.message || err), 'danger');
+    }
   }
 
   function handleManualInvoiceSettlement() {

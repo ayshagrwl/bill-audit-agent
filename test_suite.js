@@ -10,11 +10,99 @@ const assert = require('assert');
 // ========================================================
 // 1. QR Code & Barcode Parser
 // ========================================================
-function parseQRCodeData(rawText) {
+function parseQRCodeData(rawText, masterList = []) {
   if (!rawText || typeof rawText !== 'string') return null;
   const text = rawText.trim();
   if (!text) return null;
 
+  // 1. Check Master Sheet match
+  if (masterList && masterList.length) {
+    const match = findMasterBill(text, masterList);
+    if (match) {
+      return {
+        billNo: match.billNo,
+        party: match.party,
+        amount: match.amount,
+        agent: match.agent,
+        receipt: match.receipt,
+        fromMaster: true,
+        raw: text
+      };
+    }
+  }
+
+  // 2. Indian GST e-Invoice Signed QR Code (JWT format)
+  if (/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(text)) {
+    try {
+      const parts = text.split('.');
+      let base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      while (base64.length % 4) base64 += '=';
+      const jsonStr = Buffer.from(base64, 'base64').toString('utf8');
+      const payload = JSON.parse(jsonStr);
+      const billNo = payload.DocNo || payload.docNo || payload.billNo || payload.Irn || text;
+      const party = payload.BuyerGstin || payload.buyerGstin || payload.party || 'Standard Account';
+      const amount = parseFloat(payload.TotInvVal || payload.totInvVal || payload.amount) || 0;
+      return {
+        billNo: String(billNo).trim(),
+        party,
+        amount,
+        raw: text,
+        isEInvoice: true
+      };
+    } catch (e) {}
+  }
+
+  // 3. Direct JSON payload
+  if ((text.startsWith('{') && text.endsWith('}')) || (text.startsWith('[') && text.endsWith(']'))) {
+    try {
+      const obj = JSON.parse(text);
+      if (typeof obj === 'object' && obj !== null && !Array.isArray(obj)) {
+        const billNo = obj.DocNo || obj.docNo || obj.billNo || obj.bill_no || obj.invoice || obj.invoiceNo || obj.invoice_no || obj.invNo || obj.bill || obj.id || '';
+        const party = obj.party || obj.partyName || obj.party_name || obj.buyer || obj.customer || obj.BuyerGstin || 'Standard Account';
+        const amtStr = String(obj.TotInvVal || obj.amount || obj.amt || obj.total || obj.grandTotal || obj.netAmount || 0);
+        const amount = parseFloat(amtStr.replace(/,/g, '')) || 0;
+        if (billNo) {
+          return { billNo: String(billNo).trim(), party, amount, raw: text };
+        }
+      }
+    } catch (e) {}
+  }
+
+  // 4. UPI Payment QR
+  if (text.startsWith('upi://pay')) {
+    try {
+      const url = new URL(text);
+      const billNo = url.searchParams.get('tr') || url.searchParams.get('tn') || url.searchParams.get('refId') || text;
+      const party = url.searchParams.get('pn') || 'Standard Account';
+      const amount = parseFloat(url.searchParams.get('am')) || 0;
+      return { billNo: String(billNo).trim(), party, amount, raw: text };
+    } catch (e) {}
+  }
+
+  // 5. Multi-line Key: Value Text
+  if (text.includes('\n') && (text.toLowerCase().includes('inv') || text.toLowerCase().includes('bill'))) {
+    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    let billNo = '', party = '', amount = 0;
+    for (const line of lines) {
+      const parts = line.split(/[:=]\s*/);
+      if (parts.length >= 2) {
+        const key = parts[0].toLowerCase();
+        const val = parts.slice(1).join(':').trim();
+        if (key.includes('inv') || key.includes('bill') || key.includes('doc')) {
+          billNo = val;
+        } else if (key.includes('party') || key.includes('customer') || key.includes('name')) {
+          party = val;
+        } else if (key.includes('amount') || key.includes('total') || key.includes('amt')) {
+          amount = parseFloat(val.replace(/,/g, '')) || 0;
+        }
+      }
+    }
+    if (billNo) {
+      return { billNo: String(billNo).trim(), party: party || 'Standard Account', amount, raw: text };
+    }
+  }
+
+  // 6. Structured multi-value formats: CSV, Pipe, Semicolon
   function parseCSVLine(line) {
     const values = [];
     let current = '';
@@ -84,7 +172,7 @@ function parseQRCodeData(rawText) {
 
   return {
     billNo: text,
-    party: 'Unknown Party',
+    party: 'Standard Account',
     amount: 0,
     raw: text
   };
@@ -363,4 +451,59 @@ assert.strictEqual(suffixMatch.billNo, 'IN-14015503-0003');
 assert.strictEqual(suffixMatch.receipt, 'RECIPT 87 + 338');
 console.log('✅ Test 9 Passed! Real user sales sheet rows & receipt numbers parsed flawlessly!\n');
 
-console.log('🎉 ALL 9 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+// Test 10: GST e-Invoice Signed QR Code (JWT Format)
+console.log('Test 10: Indian GST e-Invoice Signed QR (JWT Payload)');
+const mockJwtHeader = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+const mockJwtPayload = Buffer.from(JSON.stringify({
+  SellerGstin: '07AAAAA0000A1Z5',
+  BuyerGstin: '07BBBBB9999B1Z1',
+  DocNo: 'IN-FY26-4401',
+  TotInvVal: 18450.50
+})).toString('base64url');
+const mockJwtSignature = 'dummySignature123';
+const jwtQr = `${mockJwtHeader}.${mockJwtPayload}.${mockJwtSignature}`;
+const r10 = parseQRCodeData(jwtQr);
+assert.ok(r10);
+assert.strictEqual(r10.billNo, 'IN-FY26-4401');
+assert.strictEqual(r10.amount, 18450.50);
+assert.strictEqual(r10.party, '07BBBBB9999B1Z1');
+assert.strictEqual(r10.isEInvoice, true);
+console.log('✅ Test 10 Passed! GST e-Invoice JWT decoded with DocNo & TotInvVal!\n');
+
+// Test 11: Direct JSON QR Code Payload
+console.log('Test 11: Direct JSON QR Payload');
+const jsonQr = JSON.stringify({
+  DocNo: 'INV-7890',
+  TotInvVal: 9800,
+  party: 'Gupta Traders Pvt Ltd'
+});
+const r11 = parseQRCodeData(jsonQr);
+assert.ok(r11);
+assert.strictEqual(r11.billNo, 'INV-7890');
+assert.strictEqual(r11.amount, 9800);
+assert.strictEqual(r11.party, 'Gupta Traders Pvt Ltd');
+console.log('✅ Test 11 Passed! JSON QR parsed with invoice & amount!\n');
+
+// Test 12: UPI Payment QR Code
+console.log('Test 12: UPI QR Payload');
+const upiQr = 'upi://pay?pa=store@upi&pn=Radhey+Shyam+Store&am=3450.00&tr=BILL-5501';
+const r12 = parseQRCodeData(upiQr);
+assert.ok(r12);
+assert.strictEqual(r12.billNo, 'BILL-5501');
+assert.strictEqual(r12.amount, 3450);
+assert.strictEqual(r12.party, 'Radhey Shyam Store');
+console.log('✅ Test 12 Passed! UPI QR reference and amount extracted!\n');
+
+// Test 13: Multi-line Key-Value Bill Text
+console.log('Test 13: Multi-line Key-Value Text QR');
+const multilineQr = `Invoice No: IN-3322
+Party: Verma General Store
+Amount: 14,200.00`;
+const r13 = parseQRCodeData(multilineQr);
+assert.ok(r13);
+assert.strictEqual(r13.billNo, 'IN-3322');
+assert.strictEqual(r13.amount, 14200);
+assert.strictEqual(r13.party, 'Verma General Store');
+console.log('✅ Test 13 Passed! Multi-line Key:Value format parsed!\n');
+
+console.log('🎉 ALL 13 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');

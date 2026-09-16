@@ -54,6 +54,16 @@
       </div>
     </header>
 
+    <!-- HTTPS Security Warning for iPhone Safari -->
+    <div id="httpsWarningBanner" class="alert-box-crimson" style="display: none; margin-bottom: 12px;">
+      <div class="alert-icon-col"><i class="fa-solid fa-triangle-exclamation"></i></div>
+      <div class="alert-body-col">
+        <h4 style="margin-bottom: 4px;">⚠️ iPhone Safari Camera Blocked (HTTP Detected)</h4>
+        <p style="font-size: 0.8rem; margin: 0;">Apple Safari disables camera streaming on unencrypted HTTP. Open via your secure GitHub Pages link:<br>
+        <a href="https://ayshagrwl.github.io/bill-audit-agent/" style="color: #fff; font-weight: 700; text-decoration: underline;">https://ayshagrwl.github.io/bill-audit-agent/</a></p>
+      </div>
+    </div>
+
     <!-- Master Sheet Banner Alert (when loaded) -->
     <div id="masterSheetBanner" class="sheet-banner" style="display: none;">
       <div class="sheet-banner-content">
@@ -181,6 +191,17 @@
           <button id="stopScanBtn" class="btn btn-danger btn-block btn-lg" style="display: none;">
             <i class="fa-solid fa-stop"></i> Close Camera
           </button>
+          
+          <!-- iPhone Safari Fast Photo Scan / Lens Toggle Fallback -->
+          <div class="ios-camera-helpers mt-2" style="display: flex; gap: 8px;">
+            <input type="file" id="dispatchFileInput" accept="image/*" capture="environment" style="display: none;" />
+            <button type="button" id="snapPhotoDispatchBtn" class="btn btn-outline flex-1 btn-sm">
+              <i class="fa-solid fa-camera-retro"></i> 📸 Snap Photo to Scan (iPhone)
+            </button>
+            <button type="button" id="switchLensDispatchBtn" class="btn btn-outline btn-sm" title="Switch 1x / 0.5x lens">
+              <i class="fa-solid fa-arrows-rotate"></i> Lens
+            </button>
+          </div>
         </div>
 
         <!-- Dedicated Fast Manual Invoice Entry (No Barcode / QR needed!) -->
@@ -331,6 +352,17 @@
           <button id="stopSettlementScanBtn" class="btn btn-danger btn-block btn-lg" style="display: none;">
             <i class="fa-solid fa-stop"></i> Close Camera
           </button>
+          
+          <!-- iPhone Safari Fast Photo Scan / Lens Toggle Fallback -->
+          <div class="ios-camera-helpers mt-2" style="display: flex; gap: 8px;">
+            <input type="file" id="settlementFileInput" accept="image/*" capture="environment" style="display: none;" />
+            <button type="button" id="snapPhotoSettlementBtn" class="btn btn-outline flex-1 btn-sm">
+              <i class="fa-solid fa-camera-retro"></i> 📸 Snap Photo to Scan (iPhone)
+            </button>
+            <button type="button" id="switchLensSettlementBtn" class="btn btn-outline btn-sm" title="Switch 1x / 0.5x lens">
+              <i class="fa-solid fa-arrows-rotate"></i> Lens
+            </button>
+          </div>
         </div>
 
         <!-- Dedicated Fast Manual Invoice Entry for IN -->

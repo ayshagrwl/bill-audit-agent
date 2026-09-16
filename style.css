@@ -466,23 +466,28 @@ body {
   width: 100%;
   max-width: 440px;
   margin: 0 auto 12px auto;
-  aspect-ratio: 4 / 3;
+  min-height: 240px;
   background: #000;
   border-radius: var(--radius-md);
   overflow: hidden;
   box-shadow: var(--shadow-card);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 #qr-reader, #qr-reader-settlement {
   width: 100% !important;
-  height: 100% !important;
   border: none !important;
 }
 
 #qr-reader video, #qr-reader-settlement video {
   width: 100% !important;
-  height: 100% !important;
-  object-fit: cover !important;
+  height: auto !important;
+  max-height: 480px !important;
+  object-fit: contain !important;
+  display: block !important;
+  margin: 0 auto !important;
 }
 
 .viewfinder-overlay {
@@ -502,6 +507,13 @@ body {
   border-radius: 16px;
   position: relative;
   overflow: hidden;
+  transition: all 0.2s ease;
+}
+
+.scan-box.scan-success-glow {
+  border-color: #10b981 !important;
+  box-shadow: 0 0 20px rgba(16, 185, 129, 0.8), inset 0 0 15px rgba(16, 185, 129, 0.5) !important;
+  transform: scale(1.04);
 }
 
 .scan-line {
