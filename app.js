@@ -187,7 +187,12 @@
       if (!State.settings.scriptUrl) {
         State.settings.scriptUrl = DEFAULT_SETTINGS.scriptUrl;
       }
-      State.selectedCameraId = State.settings.preferredCamera || 'environment';
+      if (State.settings.preferredCamera === 'user') {
+        State.selectedCameraId = 'user';
+      } else {
+        // Always default to back camera (cleanses any old corrupted device ID)
+        State.selectedCameraId = 'environment';
+      }
 
       const storedQueue = localStorage.getItem(STORAGE_KEYS.OFFLINE_QUEUE);
       State.offlineQueue = storedQueue ? JSON.parse(storedQueue) : [];
@@ -920,7 +925,7 @@
     }, 250);
   }
 
-  async function initCameraSelectors() {
+  async function initCameraSelectors(hasPermission = false) {
     const select = document.getElementById('cameraSourceSelect');
     if (!select) return;
 
@@ -928,22 +933,12 @@
       const cameras = await Html5Qrcode.getCameras();
       State.availableCameras = cameras || [];
 
-      // Sort cameras on iPhone: put 1x Main Back camera first, demote Ultra Wide (0.5x)
-      State.availableCameras.sort((a, b) => {
-        const aL = (a.label || '').toLowerCase();
-        const bL = (b.label || '').toLowerCase();
-        if (aL.includes('ultra wide') || aL.includes('0.5x')) return 1;
-        if (bL.includes('ultra wide') || bL.includes('0.5x')) return -1;
-        if (aL.includes('back') || aL.includes('rear') || aL.includes('environment')) return -1;
-        if (bL.includes('back') || bL.includes('rear') || bL.includes('environment')) return 1;
-        return 0;
-      });
-
       select.innerHTML = '';
 
+      // 1. Always provide clean Primary Back & Front options (100% reliable cross-platform)
       const optBack = document.createElement('option');
       optBack.value = 'environment';
-      optBack.textContent = '📷 Primary Back Camera (1x Auto)';
+      optBack.textContent = '📷 Back Camera (Primary 1x)';
       select.appendChild(optBack);
 
       const optFront = document.createElement('option');
@@ -951,34 +946,33 @@
       optFront.textContent = '🤳 Front Camera';
       select.appendChild(optFront);
 
-      if (State.availableCameras.length > 0) {
-        State.availableCameras.forEach((cam, idx) => {
+      // 2. Only add specific lens devices if real labels are available (permissions granted)
+      const hasRealLabels = State.availableCameras.some(c => (c.label || '').trim().length > 0);
+      if (hasRealLabels) {
+        State.availableCameras.forEach((cam) => {
+          const rawLabel = (cam.label || '').trim();
+          if (!rawLabel) return;
           const opt = document.createElement('option');
           opt.value = cam.id;
-          let label = cam.label || `Camera ${idx + 1}`;
-          if (label.toLowerCase().includes('ultra wide')) {
-            label = `${label} (0.5x - Hard to focus)`;
-          } else if (label.toLowerCase().includes('back') || label.toLowerCase().includes('rear')) {
-            label = `${label} (1x Sharp Focus)`;
+          const l = rawLabel.toLowerCase();
+          if (l.includes('ultra wide') || l.includes('0.5x')) {
+            opt.textContent = `📹 ${rawLabel} (Wide 0.5x)`;
+          } else if (l.includes('front') || l.includes('user') || l.includes('selfie')) {
+            opt.textContent = `🤳 ${rawLabel}`;
+          } else if (l.includes('back') || l.includes('rear') || l.includes('environment')) {
+            opt.textContent = `📷 ${rawLabel} (1x Sharp)`;
+          } else {
+            opt.textContent = `📹 ${rawLabel}`;
           }
-          opt.textContent = `📹 ${label}`;
           select.appendChild(opt);
         });
-
-        // Set default camera to first sharp back camera if available
-        const sharpBack = State.availableCameras.find(c => {
-          const l = (c.label || '').toLowerCase();
-          return !l.includes('ultra wide') && !l.includes('front') && !l.includes('user');
-        });
-        if (sharpBack && !State.settings.preferredCamera) {
-          State.selectedCameraId = sharpBack.id;
-          select.value = sharpBack.id;
-        }
       }
 
-      if (State.selectedCameraId && select) {
-        select.value = State.selectedCameraId;
+      // Default to back camera ('environment') unless user specifically chose 'user'
+      if (!State.selectedCameraId || (State.selectedCameraId !== 'user' && !hasRealLabels)) {
+        State.selectedCameraId = 'environment';
       }
+      select.value = State.selectedCameraId;
     } catch (e) {
       console.warn('Camera enumeration error (Safari permissions needed):', e);
     }
@@ -997,25 +991,27 @@
     const select = document.getElementById('cameraSourceSelect');
     if (select) select.value = newCameraId;
 
-    if (State.scannerDispatch) {
+    const isDispatch = !!State.scannerDispatch;
+    const isSettlement = !!State.scannerSettlement;
+
+    if (isDispatch) {
       await stopDispatchScanner();
+      await new Promise(r => setTimeout(r, 250)); // Allow hardware sensor release
       await startDispatchScanner();
-    } else if (State.scannerSettlement) {
+    } else if (isSettlement) {
       await stopSettlementScanner();
+      await new Promise(r => setTimeout(r, 250)); // Allow hardware sensor release
       await startSettlementScanner();
     }
-    showToast('Camera switched', 'info', 1200);
+
+    const camName = newCameraId === 'user' ? 'Front Camera' : (newCameraId === 'environment' ? 'Back Camera (1x)' : 'Camera');
+    showToast(`Switched to ${camName}`, 'info', 1200);
   }
 
   function cycleBackLens() {
-    if (!State.availableCameras || State.availableCameras.length <= 1) {
-      flipCamera();
-      return;
-    }
-
     const backCams = State.availableCameras.filter(c => {
       const l = (c.label || '').toLowerCase();
-      return !l.includes('front') && !l.includes('user');
+      return l.includes('back') || l.includes('rear') || l.includes('environment');
     });
 
     if (backCams.length > 1) {
@@ -1028,27 +1024,39 @@
   }
 
   function flipCamera() {
-    if (State.availableCameras.length > 1) {
-      const currentVal = State.selectedCameraId;
-      let currentIndex = State.availableCameras.findIndex(c => c.id === currentVal);
-      let nextIndex = (currentIndex + 1) % State.availableCameras.length;
-      switchSelectedCamera(State.availableCameras[nextIndex].id);
+    // Check if current camera is front-facing
+    const isCurrentlyFront = State.selectedCameraId === 'user' ||
+      (State.availableCameras.find(c => c.id === State.selectedCameraId)?.label || '').toLowerCase().includes('front');
+
+    if (isCurrentlyFront) {
+      switchSelectedCamera('environment');
     } else {
-      const nextMode = (State.selectedCameraId === 'environment') ? 'user' : 'environment';
-      switchSelectedCamera(nextMode);
+      switchSelectedCamera('user');
     }
   }
 
-  function getCameraConfigForStart() {
-    const camId = State.selectedCameraId || 'environment';
-    if (camId === 'environment') {
-      return { facingMode: 'environment' };
-    }
+  function getCameraConfigsToTry(camId) {
+    const list = [];
     if (camId === 'user') {
-      return { facingMode: 'user' };
+      // User explicitly wants Front Camera
+      list.push({ facingMode: { exact: 'user' } });
+      list.push({ facingMode: 'user' });
+    } else if (camId === 'environment') {
+      // User explicitly wants Back Camera
+      // Exact forces mobile browsers to switch to rear lens instead of defaulting to front
+      list.push({ facingMode: { exact: 'environment' } });
+      list.push({ facingMode: 'environment' });
+    } else if (camId) {
+      // Specific camera device ID
+      list.push({ deviceId: { exact: camId } });
+      list.push({ deviceId: camId });
+      list.push({ facingMode: { exact: 'environment' } });
+      list.push({ facingMode: 'environment' });
+    } else {
+      list.push({ facingMode: { exact: 'environment' } });
+      list.push({ facingMode: 'environment' });
     }
-    // Specific camera ID string supported directly by Html5Qrcode
-    return camId;
+    return list;
   }
 
   function getScannerRunConfig() {
@@ -1063,12 +1071,7 @@
           height: Math.min(Math.floor(boxSize * 0.8), viewfinderHeight - 20)
         };
       },
-      aspectRatio: 1.0,
-      disableFlip: false,
-      videoConstraints: {
-        width: { ideal: 1280 },
-        height: { ideal: 720 }
-      }
+      disableFlip: false
     };
   }
 
@@ -1123,36 +1126,45 @@
         stopBtn.disabled = false;
       }
 
-      // 3. Create fresh scanner instance
-      const scanner = createScannerInstance('qr-reader');
-      State.scannerDispatch = scanner;
-      const cameraConfig = getCameraConfigForStart();
+      // 3. Start scanner attempting candidate configs in order
+      const configsToTry = getCameraConfigsToTry(State.selectedCameraId);
       const runConfig = getScannerRunConfig();
+      let scanner = createScannerInstance('qr-reader');
+      State.scannerDispatch = scanner;
+      let startedSuccessfully = false;
+      let lastErr = null;
 
-      try {
-        await scanner.start(
-          cameraConfig,
-          runConfig,
-          (decodedText) => handleScannedCodeDispatch(decodedText),
-          () => {}
-        );
-      } catch (errFirst) {
-        console.warn('Initial camera start failed, retrying with fresh fallback instance:', errFirst);
-        // Tear down the failed instance cleanly to reset Html5Qrcode state machine
-        await safeStopScanner(scanner, 'qr-reader');
+      for (let i = 0; i < configsToTry.length; i++) {
+        const config = configsToTry[i];
+        try {
+          await scanner.start(
+            config,
+            runConfig,
+            (decodedText) => handleScannedCodeDispatch(decodedText),
+            () => {}
+          );
+          startedSuccessfully = true;
+          break;
+        } catch (attemptErr) {
+          lastErr = attemptErr;
+          console.warn(`[Camera] Dispatch start attempt ${i + 1} failed:`, config, attemptErr);
+          await safeStopScanner(scanner, 'qr-reader');
+          await new Promise(r => setTimeout(r, 150));
+          scanner = createScannerInstance('qr-reader');
+          State.scannerDispatch = scanner;
+        }
+      }
 
-        // Create a FRESH instance for retry to prevent "already under transition" error
-        const fallbackScanner = createScannerInstance('qr-reader');
-        State.scannerDispatch = fallbackScanner;
-        await fallbackScanner.start(
-          { facingMode: 'environment' },
-          { fps: 15, aspectRatio: 1.0 },
-          (decodedText) => handleScannedCodeDispatch(decodedText),
-          () => {}
-        );
+      if (!startedSuccessfully) {
+        throw lastErr || new Error('Could not access requested camera');
       }
 
       ensureVideoInline(container);
+
+      // Camera active and permissions granted: update selector with real camera labels
+      setTimeout(() => {
+        initCameraSelectors(true).catch(() => {});
+      }, 500);
     } catch (err) {
       console.error('Dispatch scanner error:', err);
       if (State.scannerDispatch) {
@@ -1270,34 +1282,44 @@
         stopBtn.disabled = false;
       }
 
-      // 3. Create fresh scanner instance
-      const scanner = createScannerInstance('qr-reader-settlement');
-      State.scannerSettlement = scanner;
-      const cameraConfig = getCameraConfigForStart();
+      // 3. Start scanner attempting candidate configs in order
+      const configsToTry = getCameraConfigsToTry(State.selectedCameraId);
       const runConfig = getScannerRunConfig();
+      let scanner = createScannerInstance('qr-reader-settlement');
+      State.scannerSettlement = scanner;
+      let startedSuccessfully = false;
+      let lastErr = null;
 
-      try {
-        await scanner.start(
-          cameraConfig,
-          runConfig,
-          (decodedText) => handleScannedCodeSettlement(decodedText),
-          () => {}
-        );
-      } catch (errFirst) {
-        console.warn('Settlement camera start retry with fresh fallback instance:', errFirst);
-        await safeStopScanner(scanner, 'qr-reader-settlement');
+      for (let i = 0; i < configsToTry.length; i++) {
+        const config = configsToTry[i];
+        try {
+          await scanner.start(
+            config,
+            runConfig,
+            (decodedText) => handleScannedCodeSettlement(decodedText),
+            () => {}
+          );
+          startedSuccessfully = true;
+          break;
+        } catch (attemptErr) {
+          lastErr = attemptErr;
+          console.warn(`[Camera] Settlement start attempt ${i + 1} failed:`, config, attemptErr);
+          await safeStopScanner(scanner, 'qr-reader-settlement');
+          await new Promise(r => setTimeout(r, 150));
+          scanner = createScannerInstance('qr-reader-settlement');
+          State.scannerSettlement = scanner;
+        }
+      }
 
-        const fallbackScanner = createScannerInstance('qr-reader-settlement');
-        State.scannerSettlement = fallbackScanner;
-        await fallbackScanner.start(
-          { facingMode: 'environment' },
-          { fps: 15, aspectRatio: 1.0 },
-          (decodedText) => handleScannedCodeSettlement(decodedText),
-          () => {}
-        );
+      if (!startedSuccessfully) {
+        throw lastErr || new Error('Could not access requested camera');
       }
 
       ensureVideoInline(container);
+
+      setTimeout(() => {
+        initCameraSelectors(true).catch(() => {});
+      }, 500);
     } catch (err) {
       console.error('Settlement scanner error:', err);
       if (State.scannerSettlement) {

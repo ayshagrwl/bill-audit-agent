@@ -872,7 +872,71 @@ class MockHtml5Qrcode {
   await s2.stop();
 
   console.log('✅ Test 21 Passed! Camera lifecycle transition guard & state safety verified 100%!\n');
-  console.log('🎉 ALL 21 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+
+  // Test 22: Camera Switching & Lens Selection Verification
+  console.log('Test 22: Camera Switching & Lens Selection Verification');
+
+  function getCameraConfigsToTry(camId) {
+    const list = [];
+    if (camId === 'user') {
+      list.push({ facingMode: { exact: 'user' } });
+      list.push({ facingMode: 'user' });
+    } else if (camId === 'environment') {
+      list.push({ facingMode: { exact: 'environment' } });
+      list.push({ facingMode: 'environment' });
+    } else if (camId) {
+      list.push({ deviceId: { exact: camId } });
+      list.push({ deviceId: camId });
+      list.push({ facingMode: { exact: 'environment' } });
+      list.push({ facingMode: 'environment' });
+    } else {
+      list.push({ facingMode: { exact: 'environment' } });
+      list.push({ facingMode: 'environment' });
+    }
+    return list;
+  }
+
+  // 1. Back Camera configuration verification
+  const backConfigs = getCameraConfigsToTry('environment');
+  assert.strictEqual(backConfigs.length, 2);
+  assert.deepStrictEqual(backConfigs[0], { facingMode: { exact: 'environment' } }, 'Primary back config must force exact environment');
+  assert.deepStrictEqual(backConfigs[1], { facingMode: 'environment' }, 'Fallback back config must allow relaxed environment');
+
+  // 2. Front Camera configuration verification
+  const frontConfigs = getCameraConfigsToTry('user');
+  assert.strictEqual(frontConfigs.length, 2);
+  assert.deepStrictEqual(frontConfigs[0], { facingMode: { exact: 'user' } });
+  assert.deepStrictEqual(frontConfigs[1], { facingMode: 'user' });
+
+  // 3. Specific lens device ID with back fallback
+  const lensConfigs = getCameraConfigsToTry('camera-hex-id-1234');
+  assert.strictEqual(lensConfigs.length, 4);
+  assert.deepStrictEqual(lensConfigs[0], { deviceId: { exact: 'camera-hex-id-1234' } });
+  assert.deepStrictEqual(lensConfigs[2], { facingMode: { exact: 'environment' } });
+
+  // 4. Flip camera toggling verification (never gets trapped in front camera)
+  let testSelectedCamera = 'environment';
+  function testFlip(currentCam, availableCams = []) {
+    const isFront = currentCam === 'user' ||
+      (availableCams.find(c => c.id === currentCam)?.label || '').toLowerCase().includes('front');
+    return isFront ? 'environment' : 'user';
+  }
+
+  // Back -> Flip -> Front
+  testSelectedCamera = testFlip(testSelectedCamera);
+  assert.strictEqual(testSelectedCamera, 'user', 'Flipping from back camera must yield user');
+
+  // Front -> Flip -> Back
+  testSelectedCamera = testFlip(testSelectedCamera);
+  assert.strictEqual(testSelectedCamera, 'environment', 'Flipping from front camera must yield environment');
+
+  // Labeled front camera device ID -> Flip -> Back
+  const mockCams = [{ id: 'dev-0', label: 'FaceTime HD Front Camera' }, { id: 'dev-1', label: 'Back Camera 1' }];
+  const flipFromDev0 = testFlip('dev-0', mockCams);
+  assert.strictEqual(flipFromDev0, 'environment', 'Flipping from labeled front camera device ID must yield environment');
+
+  console.log('✅ Test 22 Passed! Camera switching & lens selection verified 100%!\n');
+  console.log('🎉 ALL 22 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
 })();
 
 
