@@ -41,7 +41,8 @@
     agent: 'Agent,Salesman,DeliveryAgent,AgentName,Name,Sales Agent',
     party: 'Customer,Party,Shop,Store,PartyName,Customer Name',
     amount: 'Amount,Total,Net,BillAmount,Net Total',
-    receipt: 'RECEIPT,REMARKS,receipt col,receipt no,Receipt,Payment,Paid'
+    receipt: 'RECEIPT,REMARKS,receipt col,receipt no,Receipt,Payment,Paid',
+    outstanding: 'OUTSTANDING,outstanding,payment remaining,remaining,balance,pending,due'
   };
 
   const State = {
@@ -63,7 +64,10 @@
     lastScanTimestamp: 0,
     currentPaymentBill: null,
     currentReturnBill: null,
-    settlementScanMode: 'PAY' // 'PAY' or 'RETURN'
+    settlementScanMode: 'PAY', // 'PAY' or 'RETURN'
+    isConfirmModalOpen: false,
+    pendingScannedBill: null,
+    pendingScanSource: null // 'DISPATCH' or 'SETTLEMENT'
   };
 
   // Web Audio Synthesizer for Fast Scan Feedback
@@ -327,6 +331,7 @@
     const idxParty = findColIndex(State.sheetMappings.party);
     const idxAmount = findColIndex(State.sheetMappings.amount);
     const idxReceipt = findColIndex(State.sheetMappings.receipt);
+    const idxOutstanding = findColIndex(State.sheetMappings.outstanding || 'OUTSTANDING,outstanding,payment remaining,remaining,balance,pending,due');
     const idxRemarks = findColIndex('remarks,note,notes');
 
     const parsedBills = [];
@@ -348,7 +353,12 @@
       let receipt = (idxReceipt !== -1 ? cols[idxReceipt] : '') || '';
       if (!receipt && idxRemarks !== -1 && cols[idxRemarks]) {
         receipt = cols[idxRemarks].trim();
+      } else if (receipt && idxRemarks !== -1 && cols[idxRemarks] && cols[idxRemarks].trim() !== receipt) {
+        receipt = receipt + ' / ' + cols[idxRemarks].trim();
       }
+
+      const rawOutstanding = (idxOutstanding !== -1 ? cols[idxOutstanding] : (cols[11] || '')) || '';
+      const cleanOutstanding = rawOutstanding ? (parseFloat(String(rawOutstanding).replace(/[₹,\s]/g, '')) || 0) : 0;
 
       if (agent) detectedAgents.add(agent.trim());
 
@@ -357,7 +367,9 @@
         agent: String(agent).trim(),
         party: String(party).trim(),
         amount: cleanAmt,
-        receipt: String(receipt).trim()
+        receipt: String(receipt).trim(),
+        outstanding: cleanOutstanding,
+        remainingText: rawOutstanding ? String(rawOutstanding).trim() : ''
       });
     }
 
@@ -429,6 +441,8 @@
         amount: masterMatch.amount,
         agent: masterMatch.agent,
         receipt: masterMatch.receipt,
+        outstanding: masterMatch.outstanding !== undefined ? masterMatch.outstanding : 0,
+        remainingText: masterMatch.remainingText || '',
         fromMaster: true,
         raw: text
       };
@@ -657,6 +671,28 @@
       fromMaster: !!mm,
       raw: text
     };
+  }
+
+  /**
+   * Enriches parsed bill with full Master Sheet columns (Receipt, Outstanding / Remaining, Agent, Party)
+   */
+  function enrichWithMaster(parsed) {
+    if (!parsed || !parsed.billNo) return parsed;
+    const mm = findMasterBill(parsed.billNo) || (parsed.raw ? findMasterBill(parsed.raw) : null);
+    if (mm) {
+      if (!parsed.party || parsed.party === 'Standard Account' || parsed.party === 'General Party') {
+        parsed.party = mm.party;
+      }
+      if (!parsed.amount || parsed.amount === 0) {
+        parsed.amount = mm.amount;
+      }
+      if (!parsed.agent) parsed.agent = mm.agent;
+      if (!parsed.receipt) parsed.receipt = mm.receipt;
+      parsed.outstanding = mm.outstanding !== undefined ? mm.outstanding : 0;
+      parsed.remainingText = mm.remainingText || '';
+      parsed.fromMaster = true;
+    }
+    return parsed;
   }
 
 
@@ -1006,9 +1042,10 @@
   // ========================================================
 
   function handleScannedCodeDispatch(decodedText) {
+    if (State.isConfirmModalOpen) return;
     try {
       const now = Date.now();
-      if (decodedText === State.lastScannedCode && now - State.lastScanTimestamp < 1200) {
+      if (decodedText === State.lastScannedCode && now - State.lastScanTimestamp < 1500) {
         return;
       }
       State.lastScannedCode = decodedText;
@@ -1022,14 +1059,17 @@
         setTimeout(() => scanBox.classList.remove('scan-success-glow'), 400);
       }
 
-      const parsed = parseQRCodeData(decodedText);
+      let parsed = parseQRCodeData(decodedText);
       if (!parsed || !parsed.billNo) {
         SoundFX.playBeep('error');
         showToast('Unrecognized code: ' + (decodedText.slice(0, 30)), 'warning');
         return;
       }
 
-      addBillToDispatchBasket(parsed);
+      parsed = enrichWithMaster(parsed);
+      SoundFX.playBeep('success');
+      SoundFX.vibrate(50);
+      showBillScannedConfirmation(parsed, 'DISPATCH');
     } catch (err) {
       console.error('Dispatch scan handler error:', err);
       showToast('Scan error: ' + (err.message || err), 'danger');
@@ -1041,23 +1081,11 @@
     const val = input.value.trim();
     if (!val) return;
 
-    // Search Master Sheet first
-    const masterMatch = findMasterBill(val);
-    let parsed = null;
-
-    if (masterMatch) {
-      parsed = {
-        billNo: masterMatch.billNo,
-        party: masterMatch.party,
-        amount: masterMatch.amount,
-        agent: masterMatch.agent,
-        receipt: masterMatch.receipt,
-        fromMaster: true,
-        raw: val
-      };
-    } else {
-      parsed = parseQRCodeData(val);
+    let parsed = parseQRCodeData(val);
+    if (!parsed || !parsed.billNo) {
+      parsed = { billNo: val, party: 'Standard Account', amount: 0, raw: val };
     }
+    parsed = enrichWithMaster(parsed);
 
     if (!parsed || !parsed.billNo) {
       SoundFX.playBeep('error');
@@ -1065,9 +1093,9 @@
       return;
     }
 
-    addBillToDispatchBasket(parsed);
     input.value = '';
-    input.focus();
+    SoundFX.playBeep('success');
+    showBillScannedConfirmation(parsed, 'DISPATCH');
   }
 
   function addBillToDispatchBasket(parsed) {
@@ -1400,9 +1428,10 @@
   }
 
   function handleScannedCodeSettlement(decodedText) {
+    if (State.isConfirmModalOpen) return;
     try {
       const now = Date.now();
-      if (decodedText === State.lastScannedCode && now - State.lastScanTimestamp < 1200) return;
+      if (decodedText === State.lastScannedCode && now - State.lastScanTimestamp < 1500) return;
       State.lastScannedCode = decodedText;
       State.lastScanTimestamp = now;
 
@@ -1432,21 +1461,11 @@
   }
 
   function processCheckInCode(rawInput) {
-    let parsed = null;
-    const masterMatch = findMasterBill(rawInput);
-
-    if (masterMatch) {
-      parsed = {
-        billNo: masterMatch.billNo,
-        party: masterMatch.party,
-        amount: masterMatch.amount,
-        agent: masterMatch.agent,
-        receipt: masterMatch.receipt,
-        raw: rawInput
-      };
-    } else {
-      parsed = parseQRCodeData(rawInput);
+    let parsed = parseQRCodeData(rawInput);
+    if (!parsed || !parsed.billNo) {
+      parsed = { billNo: rawInput.trim(), party: 'Standard Account', amount: 0, raw: rawInput };
     }
+    parsed = enrichWithMaster(parsed);
 
     if (!parsed || !parsed.billNo) {
       SoundFX.playBeep('error');
@@ -1454,54 +1473,224 @@
       return;
     }
 
-    // Look for existing bill in custody
-    let bill = State.bills.find(b => b.billNo === parsed.billNo) ||
-               State.bills.find(b => normalizeInvoiceNumber(b.billNo) === normalizeInvoiceNumber(parsed.billNo));
-
-    if (!bill) {
-      // Auto-register if returning without previous scan OUT
-      const targetAgent = State.activeSettlementAgent || parsed.agent || (State.agents[0] ? State.agents[0].name : 'Sales Agent');
-      bill = {
-        billNo: parsed.billNo,
-        party: parsed.party || 'Standard Account',
-        amount: parsed.amount || 0,
-        agent: targetAgent,
-        dispatchDate: getTodayDateString(),
-        status: 'WITH_AGENT',
-        collectedAmt: 0,
-        paymentMode: '',
-        refNo: parsed.receipt || '',
-        returnReason: '',
-        remarks: 'Scanned at Check-IN',
-        lastActionDate: new Date().toISOString(),
-        history: []
-      };
-      State.bills.unshift(bill);
-      saveState('bills');
-    } else {
-      // If bill has receipt in master sheet and not recorded yet, update it
-      if (parsed.receipt && !bill.refNo) {
-        bill.refNo = parsed.receipt;
+    // If bill already exists in State.bills, enrich with custody data
+    const existing = State.bills.find(b => b.billNo === parsed.billNo) ||
+                     State.bills.find(b => normalizeInvoiceNumber(b.billNo) === normalizeInvoiceNumber(parsed.billNo));
+    if (existing) {
+      if (!parsed.party || parsed.party === 'Standard Account' || parsed.party === 'General Party') {
+        parsed.party = existing.party;
       }
-      // If agent is not selected yet, auto-select this bill's agent
-      if (!State.activeSettlementAgent && bill.agent) {
-        const sel = document.getElementById('settlementAgentSelect');
-        if (sel) {
-          sel.value = bill.agent;
-          State.activeSettlementAgent = bill.agent;
-          loadSettlementForSelectedAgent();
-        }
+      if (!parsed.amount || parsed.amount === 0) {
+        parsed.amount = existing.amount;
+      }
+      if (!parsed.agent) parsed.agent = existing.agent;
+      if (!parsed.receipt && existing.refNo) parsed.receipt = existing.refNo;
+      if (parsed.outstanding === undefined) {
+        parsed.outstanding = Math.max(0, existing.amount - (existing.collectedAmt || 0));
       }
     }
 
     SoundFX.playBeep('success');
     SoundFX.vibrate(50);
+    showBillScannedConfirmation(parsed, 'SETTLEMENT');
+  }
 
-    if (State.settlementScanMode === 'PAY') {
-      openPaymentModal(bill);
-    } else {
-      openReturnModal(bill);
+
+  // ========================================================
+  // 6. INSTANT BILL DETAILS CONFIRMATION & MOVE AHEAD MODAL
+  // ========================================================
+
+  function showBillScannedConfirmation(parsed, source = 'DISPATCH') {
+    if (!parsed || !parsed.billNo) return;
+    State.pendingScannedBill = parsed;
+    State.pendingScanSource = source;
+    State.isConfirmModalOpen = true;
+
+    const modal = document.getElementById('billDetailConfirmModal');
+    const modeBadge = document.getElementById('bdModeBadge');
+    const billNoEl = document.getElementById('bdBillNo');
+    const partyEl = document.getElementById('bdParty');
+    const amountEl = document.getElementById('bdAmount');
+    const receiptEl = document.getElementById('bdReceipt');
+    const remainingEl = document.getElementById('bdRemaining');
+    const remainingBox = document.getElementById('bdRemainingBox');
+    const remainingStatus = document.getElementById('bdRemainingStatus');
+    const agentEl = document.getElementById('bdAgent');
+    const advancedBtn = document.getElementById('bdAdvancedBtn');
+    const confirmBtn = document.getElementById('bdConfirmMoveAheadBtn');
+
+    if (!modal) return;
+
+    if (billNoEl) billNoEl.textContent = parsed.billNo;
+    if (partyEl) partyEl.textContent = parsed.party || 'Standard Customer';
+    if (amountEl) amountEl.textContent = formatINR(parsed.amount || 0);
+
+    // Receipt details from Master Sheet
+    const receiptText = parsed.receipt || '-';
+    if (receiptEl) {
+      receiptEl.textContent = receiptText;
+      receiptEl.title = receiptText;
     }
+
+    // Remaining payment (OUTSTANDING from Master Sheet)
+    const billAmt = parseFloat(parsed.amount) || 0;
+    let outstanding = 0;
+    if (parsed.outstanding !== undefined && parsed.outstanding !== null) {
+      outstanding = parseFloat(parsed.outstanding);
+    } else if (source === 'SETTLEMENT') {
+      const existing = State.bills.find(b => b.billNo === parsed.billNo);
+      if (existing) {
+        outstanding = Math.max(0, existing.amount - (existing.collectedAmt || 0));
+      }
+    }
+
+    if (remainingEl) remainingEl.textContent = formatINR(outstanding);
+
+    if (remainingBox) {
+      if (outstanding <= 0) {
+        remainingBox.classList.remove('has-due');
+        if (remainingStatus) remainingStatus.textContent = 'Fully Paid / No Due';
+      } else {
+        remainingBox.classList.add('has-due');
+        if (remainingStatus) remainingStatus.textContent = `⚠️ Pending Due (${formatINR(outstanding)})`;
+      }
+    }
+
+    // Sales Agent
+    let agentName = parsed.agent;
+    if (!agentName) {
+      if (source === 'DISPATCH') {
+        const sel = document.getElementById('dispatchAgentSelect');
+        agentName = (sel && sel.value !== 'AUTO') ? sel.value : 'Auto-Detect';
+      } else {
+        agentName = State.activeSettlementAgent || 'Auto-Detect';
+      }
+    }
+    if (agentEl) agentEl.textContent = agentName || 'General Agent';
+
+    // Badge styling
+    if (modeBadge) {
+      if (source === 'DISPATCH') {
+        modeBadge.className = 'bd-badge badge-dispatch';
+        modeBadge.innerHTML = '<i class="fa-solid fa-arrow-up-from-bracket"></i> SCAN OUT';
+      } else {
+        modeBadge.className = 'bd-badge badge-settlement';
+        modeBadge.innerHTML = '<i class="fa-solid fa-arrow-down-to-bracket"></i> SCAN IN';
+      }
+    }
+
+    // Button label: "Next"
+    if (confirmBtn) {
+      confirmBtn.innerHTML = '<span>Next</span> <i class="fa-solid fa-arrow-right"></i>';
+    }
+
+    // Advanced adjustments option
+    if (advancedBtn) {
+      advancedBtn.style.display = (source === 'SETTLEMENT') ? 'inline-block' : 'none';
+    }
+
+    modal.style.display = 'flex';
+  }
+
+  function confirmPendingScannedBill() {
+    const parsed = State.pendingScannedBill;
+    const source = State.pendingScanSource;
+    if (!parsed) {
+      closeBillConfirmModal();
+      return;
+    }
+
+    if (source === 'DISPATCH') {
+      addBillToDispatchBasket(parsed);
+    } else {
+      // SETTLEMENT Check-IN
+      let bill = State.bills.find(b => b.billNo === parsed.billNo) ||
+                 State.bills.find(b => normalizeInvoiceNumber(b.billNo) === normalizeInvoiceNumber(parsed.billNo));
+
+      const billAmt = parseFloat(parsed.amount) || 0;
+      const outstanding = (parsed.outstanding !== undefined && parsed.outstanding !== null)
+        ? parseFloat(parsed.outstanding)
+        : 0;
+
+      const collectedAmt = Math.max(0, billAmt - outstanding);
+
+      if (!bill) {
+        const targetAgent = parsed.agent || State.activeSettlementAgent || (State.agents[0] ? State.agents[0].name : 'Sales Agent');
+        bill = {
+          billNo: parsed.billNo,
+          party: parsed.party || 'Standard Account',
+          amount: billAmt,
+          agent: targetAgent,
+          dispatchDate: getTodayDateString(),
+          status: 'WITH_AGENT',
+          collectedAmt: 0,
+          paymentMode: '',
+          refNo: parsed.receipt || '',
+          returnReason: '',
+          remarks: 'Scanned at Check-IN',
+          lastActionDate: new Date().toISOString(),
+          history: []
+        };
+        State.bills.unshift(bill);
+      }
+
+      if (State.settlementScanMode === 'RETURN') {
+        bill.status = 'RETURNED_IN_HAND';
+        bill.returnReason = 'Verified Return (Next Round)';
+        bill.remarks = 'Scanned return';
+        const timestamp = new Date().toISOString();
+        bill.lastActionDate = timestamp;
+        bill.history.push({ action: 'RETURNED_IN_HAND', timestamp });
+
+        queueSyncAction('SETTLEMENT_RETURN', {
+          billNo: bill.billNo,
+          agent: bill.agent,
+          status: 'RETURNED_IN_HAND',
+          returnReason: bill.returnReason,
+          remarks: bill.remarks,
+          timestamp
+        });
+        showToast(`Marked Return: ${bill.billNo}`, 'info');
+      } else {
+        bill.collectedAmt = collectedAmt;
+        bill.status = (collectedAmt >= bill.amount && bill.amount > 0) ? 'PAID_FULL' : (collectedAmt > 0 ? 'PAID_PARTIAL' : 'WITH_AGENT');
+        bill.paymentMode = parsed.receipt ? 'Receipt/Sheet' : 'Cash';
+        bill.refNo = parsed.receipt || bill.refNo;
+        bill.remarks = (parsed.receipt ? (`Receipt: ${parsed.receipt}`) : 'Checked IN') + (parsed.outstanding !== undefined ? ` | Remaining: ${formatINR(parsed.outstanding)}` : '');
+        const timestamp = new Date().toISOString();
+        bill.lastActionDate = timestamp;
+        bill.history.push({ action: bill.status, amount: collectedAmt, mode: bill.paymentMode, ref: bill.refNo, timestamp });
+
+        queueSyncAction('SETTLEMENT_PAYMENT', {
+          billNo: bill.billNo,
+          agent: bill.agent,
+          status: bill.status,
+          collectedAmt,
+          paymentMode: bill.paymentMode,
+          refNo: bill.refNo,
+          remarks: bill.remarks,
+          timestamp
+        });
+        showToast(`Checked IN ${bill.billNo} (${formatINR(collectedAmt)})`, 'success');
+      }
+
+      saveState();
+      updateGlobalStats();
+      loadSettlementForSelectedAgent();
+      renderLeftOutTab();
+      SoundFX.playBeep('success');
+    }
+
+    closeBillConfirmModal();
+  }
+
+  function closeBillConfirmModal() {
+    const modal = document.getElementById('billDetailConfirmModal');
+    if (modal) modal.style.display = 'none';
+    State.pendingScannedBill = null;
+    State.pendingScanSource = null;
+    State.isConfirmModalOpen = false;
+    State.lastScanTimestamp = Date.now();
   }
 
 
@@ -2130,14 +2319,14 @@ _BillAudit Pro_`;
 
   function loadSampleMasterSheet() {
     const sampleTSV = 
-`Invoice No\tAgent\tParty\tAmount\tReceipt
-IN-FY26/27-3921\tRahul Sharma\tSatguru Provision Store\t5465.00\tRCT-9812
-IN-FY26/27-3922\tRahul Sharma\tMahaveer Super Market\t12850.00\tPaid UPI
-IN-FY26/27-3923\tVikram Singh\tBalaji General Store\t3200.00\tPending
-IN-FY26/27-3924\tVikram Singh\tKailash Kirana & Oil Depot\t28400.00\tRCT-9815
-IN-FY26/27-3925\tAmit Patel\tShree Ganesh Retailers\t8950.50\tCheque #4412
-IN-FY26/27-3926\tAmit Patel\tNational Mart & Dry Fruits\t15200.00\tCash Received
-IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820`;
+`Invoice No\tAgent\tParty\tAmount\tReceipt\tOutstanding
+IN-FY26/27-3921\tRahul Sharma\tSatguru Provision Store\t5465.00\tRCT-9812\t0.00
+IN-FY26/27-3922\tRahul Sharma\tMahaveer Super Market\t12850.00\tPaid UPI\t0.00
+IN-FY26/27-3923\tVikram Singh\tBalaji General Store\t3200.00\tPending\t3200.00
+IN-FY26/27-3924\tVikram Singh\tKailash Kirana & Oil Depot\t28400.00\tRCT-9815\t5000.00
+IN-FY26/27-3925\tAmit Patel\tShree Ganesh Retailers\t8950.50\tCheque #4412\t0.00
+IN-FY26/27-3926\tAmit Patel\tNational Mart & Dry Fruits\t15200.00\tCash Received\t0.00
+IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.00`;
 
     const input = document.getElementById('masterSheetPasteInput');
     if (input) input.value = sampleTSV;
@@ -2337,26 +2526,15 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820`;
       }
     });
 
-    const inCustodyAmtEl = document.getElementById('statInCustodyAmt');
-    const inCustodyEl = document.getElementById('statInCustody');
-    const collectedAmtEl = document.getElementById('statCollectedAmt');
-    const collectedEl = document.getElementById('statCollected');
-    const returnedAmtEl = document.getElementById('statReturnedAmt');
-    const returnedEl = document.getElementById('statReturned');
-    const missingAmtEl = document.getElementById('statMissingAmt');
-    const missingEl = document.getElementById('statMissing');
-
-    if (inCustodyAmtEl) inCustodyAmtEl.textContent = formatINR(inCustodyAmt);
-    if (inCustodyEl) inCustodyEl.textContent = `${inCustodyCount} bills`;
-    if (collectedAmtEl) collectedAmtEl.textContent = formatINR(collectedAmt);
-    if (collectedEl) collectedEl.textContent = `${collectedCount} bills`;
-    if (returnedAmtEl) returnedAmtEl.textContent = formatINR(returnedAmt);
-    if (returnedEl) returnedEl.textContent = `${returnedCount} bills`;
-    if (missingAmtEl) missingAmtEl.textContent = formatINR(missingAmt);
-    if (missingEl) missingEl.textContent = `${missingCount} bills`;
-
-    const cardMissing = document.getElementById('statCardMissing');
-    if (cardMissing) cardMissing.classList.toggle('has-missing', missingCount > 0);
+    document.querySelectorAll('.statInCustodyAmt, #statInCustodyAmt').forEach(el => el.textContent = formatINR(inCustodyAmt));
+    document.querySelectorAll('.statInCustody, #statInCustody').forEach(el => el.textContent = `${inCustodyCount} bills`);
+    document.querySelectorAll('.statCollectedAmt, #statCollectedAmt').forEach(el => el.textContent = formatINR(collectedAmt));
+    document.querySelectorAll('.statCollected, #statCollected').forEach(el => el.textContent = `${collectedCount} bills`);
+    document.querySelectorAll('.statReturnedAmt, #statReturnedAmt').forEach(el => el.textContent = formatINR(returnedAmt));
+    document.querySelectorAll('.statReturned, #statReturned').forEach(el => el.textContent = `${returnedCount} bills`);
+    document.querySelectorAll('.statMissingAmt, #statMissingAmt').forEach(el => el.textContent = formatINR(missingAmt));
+    document.querySelectorAll('.statMissing, #statMissing').forEach(el => el.textContent = `${missingCount} bills`);
+    document.querySelectorAll('.statCardMissing, #statCardMissing').forEach(card => card.classList.toggle('has-missing', missingCount > 0));
   }
 
   function updateOfflineQueueBadge() {
@@ -2379,10 +2557,18 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820`;
     if (tabId !== 'tab-dispatch' && State.scannerDispatch) stopDispatchScanner();
     if (tabId !== 'tab-settlement' && State.scannerSettlement) stopSettlementScanner();
 
-    if (tabId === 'tab-ledger') renderMasterLedger();
-    else if (tabId === 'tab-settlement') loadSettlementForSelectedAgent();
-    else if (tabId === 'tab-leftout') renderLeftOutTab();
-    else if (tabId === 'tab-settings') renderAgentsManager();
+    if (tabId === 'tab-dispatch') {
+      startDispatchScanner().catch(() => {});
+    } else if (tabId === 'tab-settlement') {
+      loadSettlementForSelectedAgent();
+      startSettlementScanner().catch(() => {});
+    } else if (tabId === 'tab-ledger') {
+      renderMasterLedger();
+    } else if (tabId === 'tab-leftout') {
+      renderLeftOutTab();
+    } else if (tabId === 'tab-settings') {
+      renderAgentsManager();
+    }
   }
 
   function setupEventListeners() {
@@ -2565,12 +2751,14 @@ _BillAudit Pro_`;
     const mapParty = document.getElementById('mapColParty');
     const mapAmount = document.getElementById('mapColAmount');
     const mapReceipt = document.getElementById('mapColReceipt');
+    const mapOutstanding = document.getElementById('mapColOutstanding');
 
     if (mapInvoice) mapInvoice.value = State.sheetMappings.invoice;
     if (mapAgent) mapAgent.value = State.sheetMappings.agent;
     if (mapParty) mapParty.value = State.sheetMappings.party;
     if (mapAmount) mapAmount.value = State.sheetMappings.amount;
     if (mapReceipt) mapReceipt.value = State.sheetMappings.receipt;
+    if (mapOutstanding) mapOutstanding.value = State.sheetMappings.outstanding || DEFAULT_MAPPINGS.outstanding;
 
     function saveMappingsFromInputs() {
       State.sheetMappings.invoice = mapInvoice?.value || DEFAULT_MAPPINGS.invoice;
@@ -2578,10 +2766,11 @@ _BillAudit Pro_`;
       State.sheetMappings.party = mapParty?.value || DEFAULT_MAPPINGS.party;
       State.sheetMappings.amount = mapAmount?.value || DEFAULT_MAPPINGS.amount;
       State.sheetMappings.receipt = mapReceipt?.value || DEFAULT_MAPPINGS.receipt;
+      State.sheetMappings.outstanding = mapOutstanding?.value || DEFAULT_MAPPINGS.outstanding;
       saveState('mappings');
     }
 
-    [mapInvoice, mapAgent, mapParty, mapAmount, mapReceipt].forEach(inp => {
+    [mapInvoice, mapAgent, mapParty, mapAmount, mapReceipt, mapOutstanding].forEach(inp => {
       inp?.addEventListener('change', saveMappingsFromInputs);
     });
 
@@ -2627,6 +2816,53 @@ _BillAudit Pro_`;
         renderLeftOutTab();
         renderMasterLedger();
         showToast('All local data reset', 'info');
+      }
+    });
+
+    // Instant Bill Details Confirmation & Move Ahead Modal Listeners
+    document.getElementById('bdConfirmMoveAheadBtn')?.addEventListener('click', confirmPendingScannedBill);
+    document.getElementById('bdCancelBtn')?.addEventListener('click', closeBillConfirmModal);
+    document.getElementById('closeBdModalBtn')?.addEventListener('click', closeBillConfirmModal);
+    document.getElementById('bdAdvancedBtn')?.addEventListener('click', () => {
+      const parsed = State.pendingScannedBill;
+      closeBillConfirmModal();
+      if (!parsed) return;
+      let bill = State.bills.find(b => b.billNo === parsed.billNo);
+      if (!bill) {
+        bill = {
+          billNo: parsed.billNo,
+          party: parsed.party || 'Standard Account',
+          amount: parsed.amount || 0,
+          agent: parsed.agent || State.activeSettlementAgent || 'Sales Agent',
+          dispatchDate: getTodayDateString(),
+          status: 'WITH_AGENT',
+          collectedAmt: 0,
+          paymentMode: '',
+          refNo: parsed.receipt || '',
+          returnReason: '',
+          remarks: 'Scanned at Check-IN',
+          lastActionDate: new Date().toISOString(),
+          history: []
+        };
+        State.bills.unshift(bill);
+      }
+      if (State.settlementScanMode === 'RETURN') {
+        openReturnModal(bill);
+      } else {
+        openPaymentModal(bill);
+      }
+    });
+
+    // Keyboard Shortcuts: Enter to Move Ahead, Escape to Cancel
+    window.addEventListener('keydown', (e) => {
+      if (State.isConfirmModalOpen) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          confirmPendingScannedBill();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          closeBillConfirmModal();
+        }
       }
     });
 
@@ -2692,6 +2928,9 @@ _BillAudit Pro_`;
 
     setupEventListeners();
     initCameraSelectors();
+
+    // Auto-launch camera for camera-first rapid scanning
+    startDispatchScanner().catch(() => {});
   });
 
 })();

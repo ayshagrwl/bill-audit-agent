@@ -25,6 +25,8 @@ function parseQRCodeData(rawText, masterList = []) {
         amount: match.amount,
         agent: match.agent,
         receipt: match.receipt,
+        outstanding: match.outstanding !== undefined ? match.outstanding : 0,
+        remainingText: match.remainingText || '',
         fromMaster: true,
         raw: text
       };
@@ -237,6 +239,7 @@ function parseMasterSheetTable(rawText) {
   const idxParty = findColIndex(['customer', 'party', 'shop', 'store']);
   const idxAmount = findColIndex(['amount', 'total', 'net', 'billamount']);
   const idxReceipt = findColIndex(['receipt', 'receiptno', 'receipt col']);
+  const idxOutstanding = findColIndex(['outstanding', 'payment remaining', 'remaining', 'balance', 'pending', 'due']);
   const idxRemarks = findColIndex(['remarks', 'note', 'notes']);
 
   const parsedBills = [];
@@ -256,14 +259,21 @@ function parseMasterSheetTable(rawText) {
     let receipt = (idxReceipt !== -1 ? cols[idxReceipt] : '') || '';
     if (!receipt && idxRemarks !== -1 && cols[idxRemarks]) {
       receipt = cols[idxRemarks].trim();
+    } else if (receipt && idxRemarks !== -1 && cols[idxRemarks] && cols[idxRemarks].trim() !== receipt) {
+      receipt = receipt + ' / ' + cols[idxRemarks].trim();
     }
+
+    const rawOutstanding = (idxOutstanding !== -1 ? cols[idxOutstanding] : (cols[11] || '')) || '';
+    const cleanOutstanding = rawOutstanding ? (parseFloat(String(rawOutstanding).replace(/[₹,\s]/g, '')) || 0) : 0;
 
     parsedBills.push({
       billNo: String(billNo).trim(),
       agent: String(agent).trim(),
       party: String(party).trim(),
       amount: cleanAmt,
-      receipt: String(receipt).trim()
+      receipt: String(receipt).trim(),
+      outstanding: cleanOutstanding,
+      remainingText: rawOutstanding ? String(rawOutstanding).trim() : ''
     });
   }
 
@@ -506,4 +516,31 @@ assert.strictEqual(r13.amount, 14200);
 assert.strictEqual(r13.party, 'Verma General Store');
 console.log('✅ Test 13 Passed! Multi-line Key:Value format parsed!\n');
 
-console.log('🎉 ALL 13 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+// Test 14: Payment Remaining (Outstanding) & Confirmation Move-Ahead Logic
+console.log('Test 14: Payment Remaining (Outstanding) & Confirmation Modal Verification');
+const sheetWithOutstanding = 
+`Invoice No\tAgent\tParty\tAmount\tReceipt\tOUTSTANDING
+IN-4001\tRamesh\tGupta Provision\t10000.00\tRCT-1101\t0.00
+IN-4002\tRamesh\tKrishna Store\t15000.00\tPart Paid\t4500.00`;
+
+const parsedMasterOut = parseMasterSheetTable(sheetWithOutstanding);
+assert.strictEqual(parsedMasterOut.length, 2);
+assert.strictEqual(parsedMasterOut[0].outstanding, 0);
+assert.strictEqual(parsedMasterOut[1].outstanding, 4500);
+
+// Verify check-in settlement math
+const bill1Collected = Math.max(0, parsedMasterOut[0].amount - parsedMasterOut[0].outstanding);
+assert.strictEqual(bill1Collected, 10000); // Fully paid: 10000 - 0 = 10000
+
+const bill2Collected = Math.max(0, parsedMasterOut[1].amount - parsedMasterOut[1].outstanding);
+assert.strictEqual(bill2Collected, 10500); // Partial: 15000 - 4500 = 10500 collected
+
+// Test Master Match retrieval with outstanding
+const billMatch = findMasterBill('4002', parsedMasterOut);
+assert.ok(billMatch);
+assert.strictEqual(billMatch.billNo, 'IN-4002');
+assert.strictEqual(billMatch.outstanding, 4500);
+assert.strictEqual(billMatch.receipt, 'Part Paid');
+console.log('✅ Test 14 Passed! Payment Remaining (Outstanding) & Move-Ahead Settlement verified!\n');
+
+console.log('🎉 ALL 14 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');

@@ -1074,6 +1074,177 @@ body {
 
 .modal-wide { max-width: 600px; }
 
+/* Bill Details Confirmation Modal (Fast Move Ahead) */
+.bill-confirm-card {
+  max-width: 440px;
+  padding: 20px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-medium);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.25);
+  animation: popIn 0.18s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.bd-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.bd-badge {
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.bd-badge.badge-dispatch {
+  background: var(--primary);
+  color: #fff;
+}
+
+.bd-badge.badge-settlement {
+  background: #0284c7;
+  color: #fff;
+}
+
+.bd-invoice-hero {
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.07), rgba(14, 165, 233, 0.04));
+  border: 1px solid rgba(37, 99, 235, 0.18);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  text-align: center;
+  margin-bottom: 14px;
+}
+
+.bd-hero-sub {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.bd-invoice-no {
+  font-size: 1.4rem;
+  font-weight: 800;
+  color: var(--primary);
+  letter-spacing: 0.5px;
+  word-break: break-all;
+}
+
+.bd-party {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text-main);
+  margin-top: 4px;
+}
+
+.bd-details-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.bd-detail-box {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.bd-box-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.bd-box-val {
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: var(--text-main);
+  word-break: break-word;
+}
+
+.bd-box-highlight {
+  background: rgba(16, 185, 129, 0.08);
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+.bd-box-highlight.has-due {
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.bd-box-sub {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #10b981;
+}
+
+.bd-box-highlight.has-due .bd-box-sub {
+  color: #ef4444;
+}
+
+.btn-xl {
+  font-size: 1.15rem;
+  font-weight: 800;
+  padding: 14px 20px;
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  letter-spacing: 0.3px;
+  transition: all 0.15s ease;
+}
+
+.btn-xl:active {
+  transform: scale(0.98);
+}
+
+.bd-action-cluster {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.bd-secondary-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 0 4px;
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--primary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 4px;
+}
+
 @keyframes popIn {
   from { opacity: 0; transform: scale(0.96); }
   to { opacity: 1; transform: scale(1); }

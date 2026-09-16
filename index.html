@@ -97,60 +97,11 @@
       </button>
     </nav>
 
-    <!-- Global Quick Status Strip -->
-    <div class="status-strip">
-      <div class="strip-item info-item">
-        <span class="strip-label">📤 Out with Agents</span>
-        <span class="strip-val font-mono" id="statInCustodyAmt">₹0</span>
-        <small id="statInCustody">0 bills</small>
-      </div>
-      <div class="strip-item success-item">
-        <span class="strip-label">📥 Checked In / Paid</span>
-        <span class="strip-val font-mono text-success" id="statCollectedAmt">₹0</span>
-        <small id="statCollected">0 bills</small>
-      </div>
-      <div class="strip-item neutral-item">
-        <span class="strip-label">↺ Returned Next Round</span>
-        <span class="strip-val font-mono" id="statReturnedAmt">₹0</span>
-        <small id="statReturned">0 bills</small>
-      </div>
-      <div class="strip-item alert-item" id="statCardMissing">
-        <span class="strip-label">⚠️ Remaining Left Out</span>
-        <span class="strip-val font-mono text-danger" id="statMissingAmt">₹0</span>
-        <small id="statMissing">0 bills</small>
-      </div>
-    </div>
-
-
     <!-- ======================================================== -->
     <!-- TAB 1: SCAN OUT (DISPATCH / AFTERNOON HANDOVER)          -->
     <!-- ======================================================== -->
     <section id="tab-dispatch" class="tab-view active">
-      <!-- Agent & Date Picker Card -->
-      <div class="clean-card">
-        <div class="card-grid-2">
-          <div class="field-wrap">
-            <label for="dispatchAgentSelect">
-              <i class="fa-solid fa-user"></i> Default Sales Agent
-              <span class="label-hint">(Auto-detected if in Sheet)</span>
-            </label>
-            <div class="input-inline">
-              <select id="dispatchAgentSelect" class="form-select">
-                <option value="AUTO">⚡ Auto-Detect from Master Sheet</option>
-              </select>
-              <button id="addAgentQuickBtn" class="circle-btn" title="Add New Agent">
-                <i class="fa-solid fa-plus"></i>
-              </button>
-            </div>
-          </div>
-          <div class="field-wrap">
-            <label for="dispatchDate"><i class="fa-solid fa-calendar"></i> Route Date</label>
-            <input type="date" id="dispatchDate" class="form-input" />
-          </div>
-        </div>
-      </div>
-
-      <!-- Fast Scanner & Manual Invoice Box -->
+      <!-- Fast Scanner & Manual Invoice Box (Directly at Top for Instant Camera Access) -->
       <div class="clean-card scanner-box">
         <!-- Camera Selector & Controls Bar -->
         <div class="scanner-top-bar">
@@ -221,6 +172,30 @@
         </div>
       </div>
 
+      <!-- Agent & Date Picker Card (Compact below camera) -->
+      <div class="clean-card mt-2">
+        <div class="card-grid-2">
+          <div class="field-wrap">
+            <label for="dispatchAgentSelect">
+              <i class="fa-solid fa-user"></i> Default Sales Agent
+              <span class="label-hint">(Auto-detected per bill from Sheet)</span>
+            </label>
+            <div class="input-inline">
+              <select id="dispatchAgentSelect" class="form-select">
+                <option value="AUTO">⚡ Auto-Detect from Master Sheet</option>
+              </select>
+              <button id="addAgentQuickBtn" class="circle-btn" title="Add New Agent">
+                <i class="fa-solid fa-plus"></i>
+              </button>
+            </div>
+          </div>
+          <div class="field-wrap">
+            <label for="dispatchDate"><i class="fa-solid fa-calendar"></i> Route Date</label>
+            <input type="date" id="dispatchDate" class="form-input" />
+          </div>
+        </div>
+      </div>
+
       <!-- Scanned Bills Basket Card -->
       <div class="clean-card">
         <div class="basket-head">
@@ -264,58 +239,7 @@
     <!-- TAB 2: SCAN IN (RETURN & SETTLEMENT / NEXT DAY)          -->
     <!-- ======================================================== -->
     <section id="tab-settlement" class="tab-view">
-      <!-- Agent Selector -->
-      <div class="clean-card">
-        <div class="card-grid-2">
-          <div class="field-wrap">
-            <label for="settlementAgentSelect"><i class="fa-solid fa-user-check"></i> Returning Sales Agent</label>
-            <select id="settlementAgentSelect" class="form-select" required>
-              <option value="">Select Agent returning bills...</option>
-            </select>
-          </div>
-          <div class="field-wrap">
-            <label for="settlementDate"><i class="fa-solid fa-calendar-check"></i> Return Date</label>
-            <input type="date" id="settlementDate" class="form-input" />
-          </div>
-        </div>
-      </div>
-
-      <!-- Live Agent Reconciliation Strip (Dispatched vs Checked IN vs LEFT OUT) -->
-      <div class="clean-card" id="auditDashboardCard">
-        <div class="settlement-stats-3">
-          <div class="s-box">
-            <span class="s-label">Dispatched (OUT)</span>
-            <h4 class="font-mono" id="audTotalAmt">₹0</h4>
-            <small id="audTotalCount">0 bills</small>
-          </div>
-          <div class="s-box s-success">
-            <span class="s-label">Checked IN / Paid</span>
-            <h4 class="font-mono text-success" id="audPaidAmt">₹0</h4>
-            <small id="audPaidCount">0 bills</small>
-          </div>
-          <div class="s-box s-danger">
-            <span class="s-label">⚠️ LEFT OUT WITH AGENT</span>
-            <h4 class="font-mono text-danger" id="audMissingAmt">₹0</h4>
-            <small id="audMissingCount">0 bills</small>
-          </div>
-        </div>
-
-        <!-- Left Out Banner Alert -->
-        <div id="missingBillAlertBanner" class="alert-box-crimson" style="display: none;">
-          <div class="alert-icon-col">
-            <i class="fa-solid fa-triangle-exclamation"></i>
-          </div>
-          <div class="alert-body-col">
-            <h4><span id="alertMissingCount">0</span> Bills Left Out (<span id="alertMissingAmt">₹0</span>)</h4>
-            <p>These bills were scanned OUT to this agent but have NOT been scanned IN today.</p>
-          </div>
-          <button id="quickWhatsappLeftOutBtn" class="btn btn-outline-whatsapp btn-sm">
-            <i class="fa-brands fa-whatsapp"></i> Send Alert
-          </button>
-        </div>
-      </div>
-
-      <!-- Fast Scanner for Checking IN -->
+      <!-- Fast Scanner for Checking IN (Directly at Top for Instant Camera Access) -->
       <div class="clean-card scanner-box">
         <div class="scanner-top-bar">
           <div class="mode-pills-wrap">
@@ -382,6 +306,57 @@
         </div>
       </div>
 
+      <!-- Agent Selector (Below Camera) -->
+      <div class="clean-card mt-2">
+        <div class="card-grid-2">
+          <div class="field-wrap">
+            <label for="settlementAgentSelect"><i class="fa-solid fa-user-check"></i> Filter by Agent</label>
+            <select id="settlementAgentSelect" class="form-select">
+              <option value="">All Returning Sales Agents</option>
+            </select>
+          </div>
+          <div class="field-wrap">
+            <label for="settlementDate"><i class="fa-solid fa-calendar-check"></i> Return Date</label>
+            <input type="date" id="settlementDate" class="form-input" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Live Agent Reconciliation Strip (Dispatched vs Checked IN vs LEFT OUT) -->
+      <div class="clean-card" id="auditDashboardCard">
+        <div class="settlement-stats-3">
+          <div class="s-box">
+            <span class="s-label">Dispatched (OUT)</span>
+            <h4 class="font-mono" id="audTotalAmt">₹0</h4>
+            <small id="audTotalCount">0 bills</small>
+          </div>
+          <div class="s-box s-success">
+            <span class="s-label">Checked IN / Paid</span>
+            <h4 class="font-mono text-success" id="audPaidAmt">₹0</h4>
+            <small id="audPaidCount">0 bills</small>
+          </div>
+          <div class="s-box s-danger">
+            <span class="s-label">⚠️ LEFT OUT WITH AGENT</span>
+            <h4 class="font-mono text-danger" id="audMissingAmt">₹0</h4>
+            <small id="audMissingCount">0 bills</small>
+          </div>
+        </div>
+
+        <!-- Left Out Banner Alert -->
+        <div id="missingBillAlertBanner" class="alert-box-crimson" style="display: none;">
+          <div class="alert-icon-col">
+            <i class="fa-solid fa-triangle-exclamation"></i>
+          </div>
+          <div class="alert-body-col">
+            <h4><span id="alertMissingCount">0</span> Bills Left Out (<span id="alertMissingAmt">₹0</span>)</h4>
+            <p>These bills were scanned OUT to this agent but have NOT been scanned IN today.</p>
+          </div>
+          <button id="quickWhatsappLeftOutBtn" class="btn btn-outline-whatsapp btn-sm">
+            <i class="fa-brands fa-whatsapp"></i> Send Alert
+          </button>
+        </div>
+      </div>
+
       <!-- Agent's Bills List with Status Filter -->
       <div class="clean-card">
         <div class="basket-head">
@@ -427,6 +402,30 @@
           <div>
             <h3>Remaining Left-Out Bills Audit</h3>
             <p>Bills dispatched to agents that have NOT been returned or cleared</p>
+          </div>
+        </div>
+
+        <!-- Daily Status Summary Strip -->
+        <div class="status-strip mt-3">
+          <div class="strip-item info-item">
+            <span class="strip-label">📤 Out with Agents</span>
+            <span class="strip-val font-mono statInCustodyAmt" id="statInCustodyAmt">₹0</span>
+            <small class="statInCustody" id="statInCustody">0 bills</small>
+          </div>
+          <div class="strip-item success-item">
+            <span class="strip-label">📥 Checked In / Paid</span>
+            <span class="strip-val font-mono text-success statCollectedAmt" id="statCollectedAmt">₹0</span>
+            <small class="statCollected" id="statCollected">0 bills</small>
+          </div>
+          <div class="strip-item neutral-item">
+            <span class="strip-label">↺ Returned Next Round</span>
+            <span class="strip-val font-mono statReturnedAmt" id="statReturnedAmt">₹0</span>
+            <small class="statReturned" id="statReturned">0 bills</small>
+          </div>
+          <div class="strip-item alert-item statCardMissing" id="statCardMissing">
+            <span class="strip-label">⚠️ Remaining Left Out</span>
+            <span class="strip-val font-mono text-danger statMissingAmt" id="statMissingAmt">₹0</span>
+            <small class="statMissing" id="statMissing">0 bills</small>
           </div>
         </div>
 
@@ -623,6 +622,10 @@ IN-3922&#9;Vikram Singh&#9;Mahaveer Market&#9;12850&#9;Paid UPI"></textarea>
               <label>Receipt / Payment Column</label>
               <input type="text" id="mapColReceipt" class="form-input" value="receipt, receipt col, receipt no, Receipt, Payment, Paid, Remarks" />
             </div>
+            <div class="field-wrap">
+              <label>Payment Remaining / Outstanding Column</label>
+              <input type="text" id="mapColOutstanding" class="form-input" value="OUTSTANDING, outstanding, payment remaining, remaining, balance, pending, due" />
+            </div>
           </div>
         </details>
 
@@ -682,6 +685,73 @@ IN-3922&#9;Vikram Singh&#9;Mahaveer Market&#9;12850&#9;Paid UPI"></textarea>
 
   </div>
 
+
+  <!-- ======================================================== -->
+  <!-- MODAL: INSTANT BILL DETAILS CONFIRMATION & MOVE AHEAD    -->
+  <!-- ======================================================== -->
+  <div id="billDetailConfirmModal" class="modal-backdrop" style="display: none;">
+    <div class="modal-card bill-confirm-card">
+      <div class="modal-head">
+        <div class="bd-title-wrap">
+          <span class="bd-badge badge-dispatch" id="bdModeBadge"><i class="fa-solid fa-camera"></i> SCAN OUT</span>
+          <h3 id="bdModalTitle">Bill Details</h3>
+        </div>
+        <button class="modal-close" id="closeBdModalBtn">&times;</button>
+      </div>
+
+      <!-- Invoice Hero Number & Customer -->
+      <div class="bd-invoice-hero">
+        <div class="bd-hero-sub">INVOICE NUMBER</div>
+        <div class="bd-invoice-no font-mono" id="bdBillNo">IN-0000</div>
+        <div class="bd-party" id="bdParty">Customer Name</div>
+      </div>
+
+      <!-- Key Details Grid: Amount, Payment Remaining, Receipt, Agent -->
+      <div class="bd-details-grid">
+        <!-- Bill Amount -->
+        <div class="bd-detail-box">
+          <span class="bd-box-label"><i class="fa-solid fa-file-invoice"></i> Total Amount</span>
+          <span class="bd-box-val font-mono" id="bdAmount">₹0.00</span>
+        </div>
+
+        <!-- Payment Remaining (OUTSTANDING) -->
+        <div class="bd-detail-box bd-box-highlight" id="bdRemainingBox">
+          <span class="bd-box-label"><i class="fa-solid fa-coins"></i> Payment Remaining</span>
+          <span class="bd-box-val font-mono" id="bdRemaining">₹0.00</span>
+          <small class="bd-box-sub" id="bdRemainingStatus">Fully Paid</small>
+        </div>
+
+        <!-- Receipt Details (RECEIPT / REMARKS) -->
+        <div class="bd-detail-box">
+          <span class="bd-box-label"><i class="fa-solid fa-receipt"></i> Receipt Details</span>
+          <span class="bd-box-val font-mono text-accent" id="bdReceipt">-</span>
+        </div>
+
+        <!-- Sales Agent -->
+        <div class="bd-detail-box">
+          <span class="bd-box-label"><i class="fa-solid fa-user-tie"></i> Sales Agent</span>
+          <span class="bd-box-val" id="bdAgent">-</span>
+        </div>
+      </div>
+
+      <!-- Single Big Thumb-Friendly Next Button -->
+      <div class="bd-action-cluster mt-3">
+        <button type="button" class="btn btn-success btn-xl w-100" id="bdConfirmMoveAheadBtn">
+          <span>Next</span>
+          <i class="fa-solid fa-arrow-right"></i>
+        </button>
+        
+        <div class="bd-secondary-actions mt-2">
+          <button type="button" class="btn btn-outline btn-sm" id="bdCancelBtn">
+            <i class="fa-solid fa-xmark"></i> Cancel / Retake
+          </button>
+          <button type="button" class="btn btn-link btn-sm" id="bdAdvancedBtn" style="display: none;">
+            <i class="fa-solid fa-sliders"></i> Adjust Payment
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- ======================================================== -->
   <!-- MODAL: 1-TAP PAYMENT SETTLEMENT                         -->
