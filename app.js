@@ -61,6 +61,8 @@
     settlementBills: [],
     scannerDispatch: null,
     scannerSettlement: null,
+    isCameraTransitioning: false,
+    activeTab: 'tab-dispatch',
     availableCameras: [],
     selectedCameraId: 'environment',
     lastScannedCode: null,
@@ -843,13 +845,66 @@
         Html5QrcodeSupportedFormats.DATA_MATRIX
       ];
     }
+    const experimental = {};
+    if (typeof window !== 'undefined' && 'BarcodeDetector' in window) {
+      experimental.useBarCodeDetectorIfSupported = true;
+    }
     return new Html5Qrcode(elementId, {
       formatsToSupport: supportedFormats,
       verbose: false,
-      experimentalFeatures: {
-        useBarCodeDetectorIfSupported: true // Native hardware acceleration (GPU / Neural Engine)
-      }
+      experimentalFeatures: experimental
     });
+  }
+
+  /**
+   * Hardware safety: Force-stop any active MediaStream tracks inside a container
+   */
+  function forceStopContainerTracks(elementId) {
+    try {
+      const el = document.getElementById(elementId);
+      if (!el) return;
+      const videos = el.querySelectorAll('video');
+      videos.forEach(v => {
+        try {
+          if (v.srcObject && typeof v.srcObject.getTracks === 'function') {
+            v.srcObject.getTracks().forEach(t => {
+              try { t.stop(); } catch (e) {}
+            });
+            v.srcObject = null;
+          }
+        } catch (e) {}
+      });
+      el.innerHTML = '';
+    } catch (e) {}
+  }
+
+  /**
+   * Safely stop and clear a Html5Qrcode instance without throwing state transition errors
+   */
+  async function safeStopScanner(scannerInstance, elementId) {
+    if (!scannerInstance) {
+      forceStopContainerTracks(elementId);
+      return null;
+    }
+
+    try {
+      const state = typeof scannerInstance.getState === 'function' ? scannerInstance.getState() : null;
+      // State 2 is SCANNING, 3 is PAUSED
+      if (state === 2 || state === 3 || scannerInstance.isScanning) {
+        await scannerInstance.stop();
+      }
+    } catch (e) {
+      console.warn(`[Camera] Stop warning on ${elementId} (handled):`, e);
+    }
+
+    try {
+      await scannerInstance.clear();
+    } catch (e) {
+      console.warn(`[Camera] Clear warning on ${elementId} (handled):`, e);
+    }
+
+    forceStopContainerTracks(elementId);
+    return null;
   }
 
   function ensureVideoInline(container) {
@@ -930,6 +985,11 @@
   }
 
   async function switchSelectedCamera(newCameraId) {
+    if (State.isCameraTransitioning) {
+      showToast('Camera busy, please wait...', 'warning', 1000);
+      return;
+    }
+
     State.selectedCameraId = newCameraId;
     State.settings.preferredCamera = newCameraId;
     saveState('settings');
@@ -940,8 +1000,7 @@
     if (State.scannerDispatch) {
       await stopDispatchScanner();
       await startDispatchScanner();
-    }
-    if (State.scannerSettlement) {
+    } else if (State.scannerSettlement) {
       await stopSettlementScanner();
       await startSettlementScanner();
     }
@@ -982,17 +1041,14 @@
 
   function getCameraConfigForStart() {
     const camId = State.selectedCameraId || 'environment';
-    const videoConstraints = {
-      width: { ideal: 1280 },
-      height: { ideal: 720 }
-    };
     if (camId === 'environment') {
-      return { facingMode: 'environment', ...videoConstraints };
+      return { facingMode: 'environment' };
     }
     if (camId === 'user') {
-      return { facingMode: 'user', ...videoConstraints };
+      return { facingMode: 'user' };
     }
-    return { deviceId: { exact: camId }, ...videoConstraints };
+    // Specific camera ID string supported directly by Html5Qrcode
+    return camId;
   }
 
   function getScannerRunConfig() {
@@ -1008,45 +1064,89 @@
         };
       },
       aspectRatio: 1.0,
-      disableFlip: false
+      disableFlip: false,
+      videoConstraints: {
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      }
     };
   }
 
   async function startDispatchScanner() {
+    if (State.isCameraTransitioning) {
+      console.warn('[Camera] Dispatch start ignored: transition already in progress');
+      return;
+    }
+    if (State.scannerDispatch) {
+      return;
+    }
+
+    State.isCameraTransitioning = true;
     const container = document.getElementById('scannerContainer');
     const startBtn = document.getElementById('startScanBtn');
     const stopBtn = document.getElementById('stopScanBtn');
 
-    if (State.scannerDispatch) return;
+    if (startBtn) {
+      startBtn.disabled = true;
+      startBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Starting...';
+    }
 
     SoundFX.init();
 
     try {
+      // 1. If settlement scanner is running, safely stop it first
+      if (State.scannerSettlement) {
+        State.scannerSettlement = await safeStopScanner(State.scannerSettlement, 'qr-reader-settlement');
+        const sContainer = document.getElementById('settlementScannerContainer');
+        const sStartBtn = document.getElementById('startSettlementScanBtn');
+        const sStopBtn = document.getElementById('stopSettlementScanBtn');
+        if (sContainer) sContainer.style.display = 'none';
+        if (sStartBtn) sStartBtn.style.display = 'block';
+        if (sStopBtn) sStopBtn.style.display = 'none';
+      }
+
+      // 2. Clean leftover scanner instance or orphan video tracks
+      if (State.scannerDispatch) {
+        State.scannerDispatch = await safeStopScanner(State.scannerDispatch, 'qr-reader');
+      } else {
+        forceStopContainerTracks('qr-reader');
+      }
+
       if (State.availableCameras.length === 0) {
         await initCameraSelectors();
       }
 
-      container.style.display = 'block';
-      startBtn.style.display = 'none';
-      stopBtn.style.display = 'block';
+      if (container) container.style.display = 'block';
+      if (startBtn) startBtn.style.display = 'none';
+      if (stopBtn) {
+        stopBtn.style.display = 'block';
+        stopBtn.disabled = false;
+      }
 
-      State.scannerDispatch = createScannerInstance('qr-reader');
+      // 3. Create fresh scanner instance
+      const scanner = createScannerInstance('qr-reader');
+      State.scannerDispatch = scanner;
       const cameraConfig = getCameraConfigForStart();
       const runConfig = getScannerRunConfig();
 
       try {
-        await State.scannerDispatch.start(
+        await scanner.start(
           cameraConfig,
           runConfig,
           (decodedText) => handleScannedCodeDispatch(decodedText),
           () => {}
         );
       } catch (errFirst) {
-        console.warn('Initial camera start failed, retrying with flexible constraints:', errFirst);
-        // Fallback for strict iOS Safari
-        await State.scannerDispatch.start(
+        console.warn('Initial camera start failed, retrying with fresh fallback instance:', errFirst);
+        // Tear down the failed instance cleanly to reset Html5Qrcode state machine
+        await safeStopScanner(scanner, 'qr-reader');
+
+        // Create a FRESH instance for retry to prevent "already under transition" error
+        const fallbackScanner = createScannerInstance('qr-reader');
+        State.scannerDispatch = fallbackScanner;
+        await fallbackScanner.start(
           { facingMode: 'environment' },
-          { fps: 15 },
+          { fps: 15, aspectRatio: 1.0 },
           (decodedText) => handleScannedCodeDispatch(decodedText),
           () => {}
         );
@@ -1055,63 +1155,143 @@
       ensureVideoInline(container);
     } catch (err) {
       console.error('Dispatch scanner error:', err);
-      showToast('Camera error: ' + (err.message || err), 'danger', 4500);
-      stopDispatchScanner();
+      if (State.scannerDispatch) {
+        State.scannerDispatch = await safeStopScanner(State.scannerDispatch, 'qr-reader');
+      } else {
+        forceStopContainerTracks('qr-reader');
+      }
+      if (container) container.style.display = 'none';
+      if (startBtn) {
+        startBtn.style.display = 'block';
+        startBtn.disabled = false;
+        startBtn.innerHTML = '<i class="fa-solid fa-camera"></i> Start Camera Scanner';
+      }
+      if (stopBtn) stopBtn.style.display = 'none';
+
+      const errMsg = err?.message || String(err);
+      if (!errMsg.includes('already under transition')) {
+        showToast('Camera error: ' + errMsg, 'danger', 4500);
+      }
+    } finally {
+      State.isCameraTransitioning = false;
+      if (startBtn) {
+        startBtn.disabled = false;
+        startBtn.innerHTML = '<i class="fa-solid fa-camera"></i> Start Camera Scanner';
+      }
     }
   }
 
   async function stopDispatchScanner() {
+    if (State.isCameraTransitioning) {
+      console.warn('[Camera] Dispatch stop waiting for in-flight transition...');
+      await new Promise(r => setTimeout(r, 250));
+    }
+
+    State.isCameraTransitioning = true;
     const container = document.getElementById('scannerContainer');
     const startBtn = document.getElementById('startScanBtn');
     const stopBtn = document.getElementById('stopScanBtn');
 
-    if (State.scannerDispatch) {
-      try {
-        await State.scannerDispatch.stop();
-        State.scannerDispatch.clear();
-      } catch (e) {}
-      State.scannerDispatch = null;
+    if (stopBtn) {
+      stopBtn.disabled = true;
+      stopBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Stopping...';
     }
 
-    if (container) container.style.display = 'none';
-    if (startBtn) startBtn.style.display = 'block';
-    if (stopBtn) stopBtn.style.display = 'none';
+    try {
+      if (State.scannerDispatch) {
+        State.scannerDispatch = await safeStopScanner(State.scannerDispatch, 'qr-reader');
+      } else {
+        forceStopContainerTracks('qr-reader');
+      }
+    } finally {
+      if (container) container.style.display = 'none';
+      if (startBtn) {
+        startBtn.style.display = 'block';
+        startBtn.disabled = false;
+        startBtn.innerHTML = '<i class="fa-solid fa-camera"></i> Start Camera Scanner';
+      }
+      if (stopBtn) {
+        stopBtn.style.display = 'none';
+        stopBtn.disabled = false;
+        stopBtn.innerHTML = '<i class="fa-solid fa-stop"></i> Stop Camera';
+      }
+      State.isCameraTransitioning = false;
+    }
   }
 
   async function startSettlementScanner() {
+    if (State.isCameraTransitioning) {
+      console.warn('[Camera] Settlement start ignored: transition already in progress');
+      return;
+    }
+    if (State.scannerSettlement) {
+      return;
+    }
+
+    State.isCameraTransitioning = true;
     const container = document.getElementById('settlementScannerContainer');
     const startBtn = document.getElementById('startSettlementScanBtn');
     const stopBtn = document.getElementById('stopSettlementScanBtn');
 
-    if (State.scannerSettlement) return;
+    if (startBtn) {
+      startBtn.disabled = true;
+      startBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Starting...';
+    }
 
     SoundFX.init();
 
     try {
+      // 1. If dispatch scanner is running, safely stop it first
+      if (State.scannerDispatch) {
+        State.scannerDispatch = await safeStopScanner(State.scannerDispatch, 'qr-reader');
+        const dContainer = document.getElementById('scannerContainer');
+        const dStartBtn = document.getElementById('startScanBtn');
+        const dStopBtn = document.getElementById('stopScanBtn');
+        if (dContainer) dContainer.style.display = 'none';
+        if (dStartBtn) dStartBtn.style.display = 'block';
+        if (dStopBtn) dStopBtn.style.display = 'none';
+      }
+
+      // 2. Clean leftover scanner instance or orphan video tracks
+      if (State.scannerSettlement) {
+        State.scannerSettlement = await safeStopScanner(State.scannerSettlement, 'qr-reader-settlement');
+      } else {
+        forceStopContainerTracks('qr-reader-settlement');
+      }
+
       if (State.availableCameras.length === 0) {
         await initCameraSelectors();
       }
 
-      container.style.display = 'block';
-      startBtn.style.display = 'none';
-      stopBtn.style.display = 'block';
+      if (container) container.style.display = 'block';
+      if (startBtn) startBtn.style.display = 'none';
+      if (stopBtn) {
+        stopBtn.style.display = 'block';
+        stopBtn.disabled = false;
+      }
 
-      State.scannerSettlement = createScannerInstance('qr-reader-settlement');
+      // 3. Create fresh scanner instance
+      const scanner = createScannerInstance('qr-reader-settlement');
+      State.scannerSettlement = scanner;
       const cameraConfig = getCameraConfigForStart();
       const runConfig = getScannerRunConfig();
 
       try {
-        await State.scannerSettlement.start(
+        await scanner.start(
           cameraConfig,
           runConfig,
           (decodedText) => handleScannedCodeSettlement(decodedText),
           () => {}
         );
       } catch (errFirst) {
-        console.warn('Settlement camera start retry:', errFirst);
-        await State.scannerSettlement.start(
+        console.warn('Settlement camera start retry with fresh fallback instance:', errFirst);
+        await safeStopScanner(scanner, 'qr-reader-settlement');
+
+        const fallbackScanner = createScannerInstance('qr-reader-settlement');
+        State.scannerSettlement = fallbackScanner;
+        await fallbackScanner.start(
           { facingMode: 'environment' },
-          { fps: 15 },
+          { fps: 15, aspectRatio: 1.0 },
           (decodedText) => handleScannedCodeSettlement(decodedText),
           () => {}
         );
@@ -1120,27 +1300,68 @@
       ensureVideoInline(container);
     } catch (err) {
       console.error('Settlement scanner error:', err);
-      showToast('Camera error: ' + (err.message || err), 'danger', 4500);
-      stopSettlementScanner();
+      if (State.scannerSettlement) {
+        State.scannerSettlement = await safeStopScanner(State.scannerSettlement, 'qr-reader-settlement');
+      } else {
+        forceStopContainerTracks('qr-reader-settlement');
+      }
+      if (container) container.style.display = 'none';
+      if (startBtn) {
+        startBtn.style.display = 'block';
+        startBtn.disabled = false;
+        startBtn.innerHTML = '<i class="fa-solid fa-camera"></i> Start Camera Scanner';
+      }
+      if (stopBtn) stopBtn.style.display = 'none';
+
+      const errMsg = err?.message || String(err);
+      if (!errMsg.includes('already under transition')) {
+        showToast('Camera error: ' + errMsg, 'danger', 4500);
+      }
+    } finally {
+      State.isCameraTransitioning = false;
+      if (startBtn) {
+        startBtn.disabled = false;
+        startBtn.innerHTML = '<i class="fa-solid fa-camera"></i> Start Camera Scanner';
+      }
     }
   }
 
   async function stopSettlementScanner() {
+    if (State.isCameraTransitioning) {
+      console.warn('[Camera] Settlement stop waiting for in-flight transition...');
+      await new Promise(r => setTimeout(r, 250));
+    }
+
+    State.isCameraTransitioning = true;
     const container = document.getElementById('settlementScannerContainer');
     const startBtn = document.getElementById('startSettlementScanBtn');
     const stopBtn = document.getElementById('stopSettlementScanBtn');
 
-    if (State.scannerSettlement) {
-      try {
-        await State.scannerSettlement.stop();
-        State.scannerSettlement.clear();
-      } catch (e) {}
-      State.scannerSettlement = null;
+    if (stopBtn) {
+      stopBtn.disabled = true;
+      stopBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Stopping...';
     }
 
-    if (container) container.style.display = 'none';
-    if (startBtn) startBtn.style.display = 'block';
-    if (stopBtn) stopBtn.style.display = 'none';
+    try {
+      if (State.scannerSettlement) {
+        State.scannerSettlement = await safeStopScanner(State.scannerSettlement, 'qr-reader-settlement');
+      } else {
+        forceStopContainerTracks('qr-reader-settlement');
+      }
+    } finally {
+      if (container) container.style.display = 'none';
+      if (startBtn) {
+        startBtn.style.display = 'block';
+        startBtn.disabled = false;
+        startBtn.innerHTML = '<i class="fa-solid fa-camera"></i> Start Camera Scanner';
+      }
+      if (stopBtn) {
+        stopBtn.style.display = 'none';
+        stopBtn.disabled = false;
+        stopBtn.innerHTML = '<i class="fa-solid fa-stop"></i> Stop Camera';
+      }
+      State.isCameraTransitioning = false;
+    }
   }
 
   /**
@@ -3003,7 +3224,10 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     }
   }
 
-  function switchTab(tabId) {
+  async function switchTab(tabId) {
+    if (State.activeTab === tabId && !State.isCameraTransitioning) return;
+    State.activeTab = tabId;
+
     document.querySelectorAll('.tab-item').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.tab === tabId);
     });
@@ -3011,14 +3235,18 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       view.classList.toggle('active', view.id === tabId);
     });
 
-    if (tabId !== 'tab-dispatch' && State.scannerDispatch) stopDispatchScanner();
-    if (tabId !== 'tab-settlement' && State.scannerSettlement) stopSettlementScanner();
+    if (tabId !== 'tab-dispatch' && State.scannerDispatch) {
+      await stopDispatchScanner();
+    }
+    if (tabId !== 'tab-settlement' && State.scannerSettlement) {
+      await stopSettlementScanner();
+    }
 
     if (tabId === 'tab-dispatch') {
-      startDispatchScanner().catch(() => {});
+      await startDispatchScanner();
     } else if (tabId === 'tab-settlement') {
       loadSettlementForSelectedAgent();
-      startSettlementScanner().catch(() => {});
+      await startSettlementScanner();
     } else if (tabId === 'tab-ledger') {
       renderMasterLedger();
     } else if (tabId === 'tab-leftout') {
@@ -3400,10 +3628,14 @@ _BillAudit Pro_`;
     if (csvUrlInput) csvUrlInput.value = State.settings.sheetCsvUrl || '';
 
     setupEventListeners();
-    initCameraSelectors();
 
-    // Auto-launch camera for camera-first rapid scanning
-    startDispatchScanner().catch(() => {});
+    // Auto-launch camera for camera-first rapid scanning cleanly
+    (async () => {
+      try {
+        await initCameraSelectors();
+      } catch (e) {}
+      startDispatchScanner().catch(() => {});
+    })();
   });
 
 })();

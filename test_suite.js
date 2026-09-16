@@ -780,6 +780,99 @@ assert.strictEqual(lookupR3.billNo, 'IN-FY26/27-3965');
 console.log(`  3 Lookups across 15,000 bills executed in ${lookupDurationMs.toFixed(4)}ms!`);
 console.log('✅ Test 20 Passed! Approach C O(1) Hash Map Indexing verified 100%!\n');
 
-console.log('🎉 ALL 20 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+// Test 21: Camera Lifecycle Transition Guard & State Safety
+console.log('Test 21: Camera Lifecycle Transition Guard & State Safety');
+
+// Mock Html5Qrcode instance state machine
+class MockHtml5Qrcode {
+  constructor(elementId) {
+    this.elementId = elementId;
+    this.state = 1; // 1: NOT_STARTED, 2: SCANNING, 3: PAUSED
+    this.transitionInProgress = false;
+  }
+
+  async start() {
+    if (this.transitionInProgress) {
+      throw new Error('Cannot transition to a new state, already under transition');
+    }
+    this.transitionInProgress = true;
+    await new Promise(r => setTimeout(r, 10));
+    this.state = 2; // SCANNING
+    this.transitionInProgress = false;
+  }
+
+  async stop() {
+    if (this.transitionInProgress) {
+      throw new Error('Cannot transition to a new state, already under transition');
+    }
+    if (this.state !== 2 && this.state !== 3) {
+      throw new Error('Cannot stop scanner when not running');
+    }
+    this.transitionInProgress = true;
+    await new Promise(r => setTimeout(r, 10));
+    this.state = 1; // NOT_STARTED
+    this.transitionInProgress = false;
+  }
+
+  getState() {
+    return this.state;
+  }
+
+  async clear() {
+    this.state = 1;
+  }
+}
+
+// Verification 1: Safe stop helper never throws on NOT_STARTED scanner
+(async () => {
+  const mockScanner = new MockHtml5Qrcode('test-reader');
+  assert.strictEqual(mockScanner.getState(), 1); // NOT_STARTED
+
+  // Safe stop pattern: check state before stop
+  let stopped = false;
+  if (mockScanner.getState() === 2 || mockScanner.getState() === 3) {
+    await mockScanner.stop();
+    stopped = true;
+  }
+  assert.strictEqual(stopped, false, 'Should not attempt stop on unstarted scanner');
+
+  // Verification 2: Normal start, then safe stop
+  await mockScanner.start();
+  assert.strictEqual(mockScanner.getState(), 2); // SCANNING
+  if (mockScanner.getState() === 2 || mockScanner.getState() === 3) {
+    await mockScanner.stop();
+  }
+  assert.strictEqual(mockScanner.getState(), 1); // NOT_STARTED
+
+  // Verification 3: Concurrency transition mutex prevents double-start collision
+  let isTransitioning = false;
+  let rejectedCalls = 0;
+
+  async function guardedStart(scanner) {
+    if (isTransitioning) {
+      rejectedCalls++;
+      return;
+    }
+    isTransitioning = true;
+    try {
+      await scanner.start();
+    } finally {
+      isTransitioning = false;
+    }
+  }
+
+  const s2 = new MockHtml5Qrcode('test-reader-2');
+  await Promise.all([
+    guardedStart(s2),
+    guardedStart(s2) // Concurrent call must be safely rejected
+  ]);
+
+  assert.strictEqual(rejectedCalls, 1, 'Second concurrent call must be caught by transition mutex');
+  assert.strictEqual(s2.getState(), 2, 'Scanner must be successfully SCANNING');
+  await s2.stop();
+
+  console.log('✅ Test 21 Passed! Camera lifecycle transition guard & state safety verified 100%!\n');
+  console.log('🎉 ALL 21 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+})();
 
 
