@@ -29,7 +29,9 @@
   ];
 
   const DEFAULT_SETTINGS = {
-    scriptUrl: '',
+    scriptUrl: 'https://script.google.com/macros/s/AKfycbxwXs1kxh8LKPE3YcPRzQlYk25VhgasfrGMKtA7KP9pYwoy9lJNI581TUiQ09ssSkQa/exec',
+    mainSheetScriptUrl: 'https://script.google.com/macros/s/AKfycbxwXs1kxh8LKPE3YcPRzQlYk25VhgasfrGMKtA7KP9pYwoy9lJNI581TUiQ09ssSkQa/exec',
+    trackingSheetScriptUrl: 'https://script.google.com/macros/s/AKfycbxZ9jDxeFTNXH5hdvN_PsuWH76iOJkZ4JZFKEgIAVFzjonrpJyRt783HZLucXdhlZcr/exec',
     sheetCsvUrl: 'https://docs.google.com/spreadsheets/d/11J3WSXNFfu5aARNMBX3HQazajsfzBjj7wX9MWyVVBRk/export?format=csv&gid=1608276684',
     theme: 'light',
     audioSound: true,
@@ -145,6 +147,15 @@
       const storedSettings = localStorage.getItem(STORAGE_KEYS.SETTINGS);
       if (storedSettings) {
         State.settings = { ...DEFAULT_SETTINGS, ...JSON.parse(storedSettings) };
+      }
+      if (!State.settings.mainSheetScriptUrl) {
+        State.settings.mainSheetScriptUrl = DEFAULT_SETTINGS.mainSheetScriptUrl;
+      }
+      if (!State.settings.trackingSheetScriptUrl) {
+        State.settings.trackingSheetScriptUrl = DEFAULT_SETTINGS.trackingSheetScriptUrl;
+      }
+      if (!State.settings.scriptUrl) {
+        State.settings.scriptUrl = DEFAULT_SETTINGS.scriptUrl;
       }
       State.selectedCameraId = State.settings.preferredCamera || 'environment';
 
@@ -1140,6 +1151,7 @@
       amount: parsed.amount || 0,
       agent: assignedAgent,
       receipt: parsed.receipt || '',
+      outstanding: parsed.outstanding !== undefined ? parsed.outstanding : (parsed.amount || 0),
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       raw: parsed.raw
     });
@@ -1185,12 +1197,13 @@
       row.className = 'bill-card-row';
       row.innerHTML = `
         <div class="bill-info-main">
-          <div style="display: flex; align-items: center; gap: 8px;">
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
             <span class="b-num font-mono">${item.billNo}</span>
             <span class="count-pill" style="font-size: 0.68rem; background: var(--bg-subtle); color: var(--text-main);">
               <i class="fa-solid fa-user"></i> ${item.agent || 'Unassigned'}
             </span>
             ${item.receipt ? `<span class="badge-receipt"><i class="fa-solid fa-receipt"></i> ${item.receipt}</span>` : ''}
+            ${(item.outstanding !== undefined && item.outstanding > 0) ? `<span class="badge-pending" style="font-size: 0.68rem; background: #fef2f2; color: #dc2626; padding: 1px 6px; border-radius: 4px; font-weight: 600;"><i class="fa-solid fa-coins"></i> Due: ${formatINR(item.outstanding)}</span>` : ''}
           </div>
           <span class="b-party">${item.party}</span>
         </div>
@@ -1238,8 +1251,10 @@
           dispatchDate: date,
           status: 'WITH_AGENT',
           collectedAmt: 0,
+          outstanding: b.outstanding !== undefined ? b.outstanding : b.amount,
           paymentMode: '',
           refNo: b.receipt || '',
+          receipt: b.receipt || '',
           returnReason: '',
           remarks: 'Dispatched for route',
           lastActionDate: timestamp,
@@ -1251,8 +1266,10 @@
         record.dispatchDate = date;
         record.status = 'WITH_AGENT';
         record.collectedAmt = 0;
+        record.outstanding = b.outstanding !== undefined ? b.outstanding : record.outstanding;
         record.paymentMode = '';
         record.refNo = b.receipt || record.refNo;
+        record.receipt = b.receipt || record.receipt || '';
         record.returnReason = '';
         record.lastActionDate = timestamp;
       }
@@ -1261,7 +1278,7 @@
       newBills.push({ ...record });
     });
 
-    // Cloud Sync Queue
+    // Cloud Sync Queue for Tracking Sheet
     queueSyncAction('BATCH_DISPATCH', { dispatchDate: date, timestamp, bills: newBills });
 
     saveState();
@@ -1590,6 +1607,101 @@
     }
 
     modal.style.display = 'flex';
+
+    // If bill details were not pre-loaded in local cache, fetch directly from MARCH-SEPT tab
+    if (!parsed.fromMaster && (State.settings.mainSheetScriptUrl || State.settings.scriptUrl)) {
+      fetchSingleBillDetailsFromSheet(parsed.billNo, source);
+    }
+  }
+
+  /**
+   * Fast asynchronous fetch of single bill details from MARCH-SEPT tab
+   */
+  async function fetchSingleBillDetailsFromSheet(billNo, source) {
+    const targetUrl = State.settings.mainSheetScriptUrl || State.settings.scriptUrl;
+    if (!targetUrl || !billNo) return;
+
+    const receiptEl = document.getElementById('bdReceipt');
+    const remainingEl = document.getElementById('bdRemaining');
+    const remainingBox = document.getElementById('bdRemainingBox');
+    const remainingStatus = document.getElementById('bdRemainingStatus');
+    const partyEl = document.getElementById('bdParty');
+    const amountEl = document.getElementById('bdAmount');
+    const agentEl = document.getElementById('bdAgent');
+
+    if (receiptEl && (!State.pendingScannedBill?.receipt || receiptEl.textContent === '-')) {
+      receiptEl.innerHTML = '<span class="text-muted"><i class="fa-solid fa-spinner fa-spin"></i> Fetching...</span>';
+    }
+
+    try {
+      const resp = await fetch(`${targetUrl}?action=FIND_BILL&billNo=${encodeURIComponent(billNo)}&t=${Date.now()}`);
+      const data = await resp.json();
+
+      if (data && data.found && data.bill) {
+        const b = data.bill;
+
+        // Update / Insert into master bills cache
+        const idx = State.masterSheetBills.findIndex(x => normalizeInvoiceNumber(x.billNo) === normalizeInvoiceNumber(b.billNo));
+        if (idx >= 0) {
+          State.masterSheetBills[idx] = b;
+        } else {
+          State.masterSheetBills.push(b);
+        }
+        saveState('master');
+
+        // Update modal in real time if currently open for this bill
+        if (State.isConfirmModalOpen && State.pendingScannedBill &&
+            (normalizeInvoiceNumber(State.pendingScannedBill.billNo) === normalizeInvoiceNumber(billNo) ||
+             State.pendingScannedBill.billNo === b.billNo)) {
+          
+          State.pendingScannedBill.party = b.party;
+          State.pendingScannedBill.amount = b.amount;
+          State.pendingScannedBill.agent = b.agent;
+          State.pendingScannedBill.receipt = b.receipt;
+          State.pendingScannedBill.outstanding = b.outstanding;
+          State.pendingScannedBill.remainingText = b.remainingText;
+          State.pendingScannedBill.fromMaster = true;
+
+          if (partyEl) partyEl.textContent = b.party;
+          if (amountEl) amountEl.textContent = formatINR(b.amount);
+          if (receiptEl) {
+            receiptEl.textContent = b.receipt || '-';
+            receiptEl.title = b.receipt || '-';
+          }
+          if (remainingEl) remainingEl.textContent = formatINR(b.outstanding);
+          if (remainingBox) {
+            if (b.outstanding <= 0) {
+              remainingBox.classList.remove('has-due');
+              if (remainingStatus) remainingStatus.textContent = 'Fully Paid / No Due';
+            } else {
+              remainingBox.classList.add('has-due');
+              if (remainingStatus) remainingStatus.textContent = `⚠️ Pending Due (${formatINR(b.outstanding)})`;
+            }
+          }
+          if (agentEl && b.agent) agentEl.textContent = b.agent;
+        }
+
+        // Also update in dispatch basket if already confirmed
+        const basketItem = State.dispatchBasket.find(x => normalizeInvoiceNumber(x.billNo) === normalizeInvoiceNumber(billNo));
+        if (basketItem) {
+          basketItem.party = b.party;
+          basketItem.amount = b.amount;
+          if (b.agent) basketItem.agent = b.agent;
+          basketItem.receipt = b.receipt;
+          basketItem.outstanding = b.outstanding;
+          renderDispatchBasket();
+        }
+      } else {
+        if (receiptEl && receiptEl.innerHTML.includes('Fetching')) {
+          receiptEl.textContent = '-';
+        }
+      }
+    } catch (e) {
+      console.warn('Fast bill lookup from sheet failed:', e);
+      if (receiptEl && receiptEl.innerHTML.includes('Fetching')) {
+        receiptEl.textContent = '-';
+      }
+    }
   }
 
   function confirmPendingScannedBill() {
@@ -1653,6 +1765,7 @@
         showToast(`Marked Return: ${bill.billNo}`, 'info');
       } else {
         bill.collectedAmt = collectedAmt;
+        bill.outstanding = (parsed.outstanding !== undefined && parsed.outstanding !== null) ? Number(parsed.outstanding) : Math.max(0, bill.amount - collectedAmt);
         bill.status = (collectedAmt >= bill.amount && bill.amount > 0) ? 'PAID_FULL' : (collectedAmt > 0 ? 'PAID_PARTIAL' : 'WITH_AGENT');
         bill.paymentMode = parsed.receipt ? 'Receipt/Sheet' : 'Cash';
         bill.refNo = parsed.receipt || bill.refNo;
@@ -1664,8 +1777,11 @@
         queueSyncAction('SETTLEMENT_PAYMENT', {
           billNo: bill.billNo,
           agent: bill.agent,
+          party: bill.party,
+          totalAmount: bill.amount,
           status: bill.status,
           collectedAmt,
+          remainingDue: bill.outstanding,
           paymentMode: bill.paymentMode,
           refNo: bill.refNo,
           remarks: bill.remarks,
@@ -1718,8 +1834,33 @@
       if (receiptRow) receiptRow.style.display = 'none';
     }
 
+    // Show Remaining Due / Outstanding
+    const remainingRow = document.getElementById('modalRemainingDueRow');
+    const remainingVal = document.getElementById('modalRemainingDueVal');
+    const currentDue = (bill.outstanding !== undefined && bill.outstanding !== null)
+      ? Number(bill.outstanding)
+      : Math.max(0, bill.amount - (bill.collectedAmt || 0));
+
+    if (remainingRow && remainingVal) {
+      remainingRow.style.display = 'block';
+      remainingVal.textContent = formatINR(currentDue);
+    }
+
     const input = document.getElementById('modalCollectedAmt');
     input.value = bill.amount;
+
+    const balanceHint = document.getElementById('modalBalanceHint');
+    const updateBalanceHint = () => {
+      const entered = parseFloat(input.value) || 0;
+      const remainingAfter = Math.max(0, bill.amount - entered);
+      if (balanceHint) {
+        balanceHint.style.display = 'block';
+        balanceHint.textContent = `Remaining Due After This: ${formatINR(remainingAfter)}`;
+        balanceHint.className = remainingAfter > 0 ? 'hint text-danger' : 'hint text-success';
+      }
+    };
+    input.oninput = updateBalanceHint;
+    updateBalanceHint();
 
     document.getElementById('modalPaymentRemarks').value = '';
     setQuickPaymentMode('Cash');
@@ -1750,9 +1891,11 @@
     const refNo = document.getElementById('modalRefNo').value.trim();
     const remarks = document.getElementById('modalPaymentRemarks').value.trim();
     const timestamp = new Date().toISOString();
+    const remainingDue = Math.max(0, bill.amount - collectedAmt);
 
-    bill.status = (collectedAmt >= bill.amount) ? 'PAID_FULL' : 'PAID_PARTIAL';
+    bill.status = (collectedAmt >= bill.amount) ? 'PAID_FULL' : (collectedAmt > 0 ? 'PAID_PARTIAL' : 'WITH_AGENT');
     bill.collectedAmt = collectedAmt;
+    bill.outstanding = remainingDue;
     bill.paymentMode = mode;
     bill.refNo = refNo || bill.refNo;
     bill.remarks = remarks || `Checked IN / Paid via ${mode}`;
@@ -1763,8 +1906,11 @@
     queueSyncAction('SETTLEMENT_PAYMENT', {
       billNo: bill.billNo,
       agent: bill.agent,
+      party: bill.party,
+      totalAmount: bill.amount,
       status: bill.status,
       collectedAmt,
+      remainingDue,
       paymentMode: mode,
       refNo: bill.refNo,
       remarks: bill.remarks,
@@ -2147,13 +2293,15 @@ _BillAudit Pro_`;
     saveState('queue');
     updateOfflineQueueBadge();
 
-    if (navigator.onLine && State.settings.scriptUrl) {
+    const targetUrl = State.settings.trackingSheetScriptUrl || State.settings.scriptUrl;
+    if (navigator.onLine && targetUrl) {
       processOfflineQueue();
     }
   }
 
   async function processOfflineQueue() {
-    if (!State.settings.scriptUrl || State.offlineQueue.length === 0) return;
+    const targetUrl = State.settings.trackingSheetScriptUrl || State.settings.scriptUrl;
+    if (!targetUrl || State.offlineQueue.length === 0) return;
 
     const btn = document.getElementById('quickSyncBtn');
     const text = document.getElementById('syncStatusText');
@@ -2163,7 +2311,7 @@ _BillAudit Pro_`;
     const queueSnapshot = [...State.offlineQueue];
 
     try {
-      const resp = await fetch(State.settings.scriptUrl, {
+      const resp = await fetch(targetUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({
@@ -2180,7 +2328,7 @@ _BillAudit Pro_`;
         saveState('queue');
         updateOfflineQueueBadge();
         if (text) text.textContent = 'Synced';
-        showToast('Google Sheet updated!', 'success');
+        showToast('Tracking Sheet updated successfully!', 'success');
       }
     } catch (e) {
       console.warn('Sync failed, queued offline:', e);
@@ -2193,7 +2341,7 @@ _BillAudit Pro_`;
   async function testSheetConnection() {
     const url = (document.getElementById('googleScriptUrl').value || '').trim();
     if (!url) {
-      showToast('Enter your Google Apps Script URL first', 'warning');
+      showToast('Enter your Main Sheet Apps Script URL first', 'warning');
       return;
     }
 
@@ -2207,24 +2355,78 @@ _BillAudit Pro_`;
 
       if (data && data.status === 'OK') {
         SoundFX.playBeep('success');
-        showToast('Connected to Google Sheet successfully!', 'success');
+        showToast(`Connected to Main Sheet (${data.sheetTitle || 'Fetcher Active'})!`, 'success');
+        State.settings.mainSheetScriptUrl = url;
         State.settings.scriptUrl = url;
         saveState('settings');
+        updateMasterSheetUI();
       } else {
         throw new Error(data?.message || 'Invalid response');
       }
     } catch (err) {
       SoundFX.playBeep('error');
-      alert(`Could not connect: ${err.message}\nMake sure your Web App deployment access is set to 'Anyone'.`);
+      alert(`Could not connect to Main Sheet: ${err.message}\nMake sure your Web App deployment access is set to 'Anyone'.`);
     } finally {
       btn.disabled = false;
       btn.innerHTML = '<i class="fa-solid fa-plug"></i> Test Connection';
     }
   }
 
+  async function testTrackingSheetConnection() {
+    const url = (document.getElementById('trackingSheetScriptUrl')?.value || '').trim();
+    if (!url) {
+      showToast('Enter your Tracking Sheet Apps Script URL first', 'warning');
+      return;
+    }
+
+    const btn = document.getElementById('testTrackingSheetBtn');
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Connecting...';
+    }
+
+    try {
+      const resp = await fetch(`${url}?action=PING&t=${Date.now()}`);
+      const data = await resp.json();
+
+      if (data && data.status === 'OK') {
+        SoundFX.playBeep('success');
+        showToast(`Connected to Tracking Sheet (${data.sheetTitle || 'Recorder Active'})!`, 'success');
+        State.settings.trackingSheetScriptUrl = url;
+        saveState('settings');
+        updateTrackingSheetUI();
+      } else {
+        throw new Error(data?.message || 'Invalid response');
+      }
+    } catch (err) {
+      SoundFX.playBeep('error');
+      alert(`Could not connect to Tracking Sheet: ${err.message}\nMake sure your Web App deployment access is set to 'Anyone'.`);
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fa-solid fa-plug"></i> Test Tracking Connection';
+      }
+    }
+  }
+
+  function updateTrackingSheetUI() {
+    const summaryText = document.getElementById('trackingSheetSummaryText');
+    const trackingUrl = State.settings.trackingSheetScriptUrl;
+    if (trackingUrl) {
+      if (summaryText) {
+        summaryText.innerHTML = `<strong>Tracking Sheet Active:</strong> Connected to live cloud recorder. Scan-Out and Scan-In logs will be automatically recorded.`;
+      }
+    } else {
+      if (summaryText) {
+        summaryText.textContent = 'Tracking Sheet: Ready to link. Enter your Tracking Web App URL above.';
+      }
+    }
+  }
+
   async function pullFromSheet() {
-    if (!State.settings.scriptUrl) {
-      showToast('Enter Google Apps Script URL in Settings', 'warning');
+    const targetUrl = State.settings.mainSheetScriptUrl || State.settings.scriptUrl;
+    if (!targetUrl) {
+      showToast('Enter Main Sheet Apps Script URL in Settings', 'warning');
       return;
     }
     const btn = document.getElementById('pullFromSheetBtn');
@@ -2232,27 +2434,42 @@ _BillAudit Pro_`;
     btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Fetching...';
 
     try {
-      const resp = await fetch(`${State.settings.scriptUrl}?action=GET_DATA&t=${Date.now()}`);
+      const resp = await fetch(`${targetUrl}?action=GET_DATA&t=${Date.now()}`);
       const data = await resp.json();
 
       if (data && (data.bills || data.masterBills)) {
-        if (data.bills) State.bills = data.bills;
-        if (data.masterBills) State.masterSheetBills = data.masterBills;
-        if (data.agents && data.agents.length > 0) State.agents = data.agents;
+        const incomingBills = (data.mode === 'READ_ONLY_FETCHER' || data.bills) ? (data.bills || data.masterBills) : (data.masterBills || data.bills);
+        if (Array.isArray(incomingBills) && incomingBills.length > 0) {
+          State.masterSheetBills = incomingBills;
 
-        saveState();
-        updateGlobalStats();
-        renderAgentSelects();
-        updateMasterSheetUI();
-        renderLeftOutTab();
-        renderMasterLedger();
-        showToast(`Pulled data successfully from Sheet!`, 'success');
+          incomingBills.forEach(b => {
+            if (b.agent && !State.agents.some(a => a.name.toLowerCase() === b.agent.toLowerCase())) {
+              State.agents.push({
+                id: 'AG-' + (100 + State.agents.length + 1),
+                name: b.agent.trim(),
+                phone: ''
+              });
+            }
+          });
+
+          saveState('master');
+          saveState('agents');
+          updateGlobalStats();
+          renderAgentSelects();
+          updateMasterSheetUI();
+          renderLeftOutTab();
+          renderMasterLedger();
+          SoundFX.playBeep('success');
+          showToast(`Fetched ${incomingBills.length} bills with Receipts & Due Amounts from Main Sheet!`, 'success');
+        } else {
+          showToast('No bills found in Main Sheet response.', 'warning');
+        }
       }
     } catch (e) {
-      showToast('Pull failed: ' + e.message, 'danger');
+      showToast('Fetch failed: ' + e.message, 'danger');
     } finally {
       btn.disabled = false;
-      btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down"></i> Pull Data from Google Sheet';
+      btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down"></i> Fetch Details from Main Sheet';
     }
   }
 
@@ -2778,13 +2995,23 @@ _BillAudit Pro_`;
     document.getElementById('quickSyncBtn')?.addEventListener('click', processOfflineQueue);
     document.getElementById('saveScriptUrlBtn')?.addEventListener('click', () => {
       const url = (document.getElementById('googleScriptUrl').value || '').trim();
+      State.settings.mainSheetScriptUrl = url;
       State.settings.scriptUrl = url;
       saveState('settings');
-      showToast('Google Apps Script URL saved', 'success');
+      showToast('Main Sheet Apps Script URL saved', 'success');
     });
     document.getElementById('testSheetConnectionBtn')?.addEventListener('click', testSheetConnection);
-    document.getElementById('forceSyncSheetBtn')?.addEventListener('click', processOfflineQueue);
     document.getElementById('pullFromSheetBtn')?.addEventListener('click', pullFromSheet);
+
+    document.getElementById('saveTrackingScriptUrlBtn')?.addEventListener('click', () => {
+      const url = (document.getElementById('trackingSheetScriptUrl')?.value || '').trim();
+      State.settings.trackingSheetScriptUrl = url;
+      saveState('settings');
+      updateTrackingSheetUI();
+      showToast('Tracking Sheet Apps Script URL saved', 'success');
+    });
+    document.getElementById('testTrackingSheetBtn')?.addEventListener('click', testTrackingSheetConnection);
+    document.getElementById('forceSyncSheetBtn')?.addEventListener('click', processOfflineQueue);
 
     document.getElementById('saveNewAgentBtn')?.addEventListener('click', () => {
       const nameInput = document.getElementById('newAgentNameInput');
@@ -2921,7 +3148,12 @@ _BillAudit Pro_`;
     renderLeftOutTab();
 
     const scriptInput = document.getElementById('googleScriptUrl');
-    if (scriptInput) scriptInput.value = State.settings.scriptUrl || '';
+    if (scriptInput) scriptInput.value = State.settings.mainSheetScriptUrl || State.settings.scriptUrl || '';
+
+    const trackingInput = document.getElementById('trackingSheetScriptUrl');
+    if (trackingInput) trackingInput.value = State.settings.trackingSheetScriptUrl || '';
+
+    updateTrackingSheetUI();
 
     const csvUrlInput = document.getElementById('googleSheetCsvUrl');
     if (csvUrlInput) csvUrlInput.value = State.settings.sheetCsvUrl || '';
