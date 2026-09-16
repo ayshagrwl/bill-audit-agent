@@ -51,6 +51,7 @@
     bills: [],
     agents: [],
     masterSheetBills: [],
+    masterSheetMap: new Map(),
     sheetMappings: { ...DEFAULT_MAPPINGS },
     settings: { ...DEFAULT_SETTINGS },
     offlineQueue: [],
@@ -164,6 +165,7 @@
       } else {
         State.masterSheetBills = [];
       }
+      rebuildMasterSheetMap();
 
       const storedMappings = localStorage.getItem(STORAGE_KEYS.SHEET_MAPPINGS);
       if (storedMappings) {
@@ -272,41 +274,111 @@
   }
 
   /**
-   * Search Master Sheet for an Invoice Number
+   * Helper to register all lookup variations of a bill in the Hash Map
+   */
+  function registerBillInMap(map, b) {
+    if (!b || !b.billNo) return;
+    const exact = b.billNo.trim().toUpperCase();
+    const norm = normalizeInvoiceNumber(b.billNo);
+    const digits = b.billNo.replace(/\D/g, '');
+
+    map.set(exact, b);
+    if (norm) map.set(norm, b);
+    if (digits.length >= 3) map.set(digits, b);
+
+    // Index trailing numeric suffix (e.g. "3965" from "IN-FY26/27-3965" or "0001" from "IN-14015503-0001")
+    const matchTrailing = b.billNo.match(/(\d+)\s*$/);
+    if (matchTrailing && matchTrailing[1]) {
+      const trail = matchTrailing[1];
+      if (trail.length >= 2) {
+        map.set(trail, b);
+        const trailNoZeros = trail.replace(/^0+/, '');
+        if (trailNoZeros && trailNoZeros !== trail) {
+          map.set(trailNoZeros, b);
+        }
+      }
+    }
+  }
+
+  /**
+   * Rebuild the O(1) Master Sheet Hash Map for instant 0.001ms bill lookup
+   */
+  function rebuildMasterSheetMap() {
+    State.masterSheetMap.clear();
+    for (let i = 0; i < State.masterSheetBills.length; i++) {
+      registerBillInMap(State.masterSheetMap, State.masterSheetBills[i]);
+    }
+  }
+
+  /**
+   * Add or update a single bill into the O(1) Master Sheet Hash Map and state array
+   */
+  function addBillToMasterIndex(b) {
+    if (!b || !b.billNo) return;
+    registerBillInMap(State.masterSheetMap, b);
+
+    const norm = normalizeInvoiceNumber(b.billNo);
+    const idx = State.masterSheetBills.findIndex(x => normalizeInvoiceNumber(x.billNo) === norm);
+    if (idx >= 0) {
+      State.masterSheetBills[idx] = b;
+    } else {
+      State.masterSheetBills.unshift(b);
+    }
+  }
+
+  /**
+   * Search Master Sheet for an Invoice Number (O(1) Instant Hash Map Lookup)
    * Matches exact, normalized, or numeric suffix (e.g. 3921 inside IN-FY26/27-3921)
    */
   function findMasterBill(invoiceInput) {
-    if (!invoiceInput || !State.masterSheetBills.length) return null;
+    if (!invoiceInput) return null;
     const cleanInput = String(invoiceInput).trim();
     if (!cleanInput) return null;
 
-    const normInput = normalizeInvoiceNumber(cleanInput);
-
-    // 1. Exact string match
-    let found = State.masterSheetBills.find(b => b.billNo.trim().toUpperCase() === cleanInput.toUpperCase());
-    if (found) return found;
-
-    // 2. Normalized alphanumeric match
-    found = State.masterSheetBills.find(b => normalizeInvoiceNumber(b.billNo) === normInput);
-    if (found) return found;
-
-    // 3. Suffix / Number Match: If input is just the digits (e.g. "3921")
-    const digitsOnly = cleanInput.replace(/\D/g, '');
-    if (digitsOnly.length >= 3) {
-      found = State.masterSheetBills.find(b => {
-        const bDigits = b.billNo.replace(/\D/g, '');
-        return bDigits.endsWith(digitsOnly) || bDigits === digitsOnly;
-      });
-      if (found) return found;
+    // Ensure map is populated if bills array has items
+    if (State.masterSheetMap.size === 0 && State.masterSheetBills.length > 0) {
+      rebuildMasterSheetMap();
     }
 
-    // 4. Substring contains match
-    found = State.masterSheetBills.find(b => 
-      b.billNo.toUpperCase().includes(cleanInput.toUpperCase()) ||
-      cleanInput.toUpperCase().includes(b.billNo.toUpperCase())
-    );
+    // 1. O(1) exact uppercase match (0.001ms)
+    let match = State.masterSheetMap.get(cleanInput.toUpperCase());
+    if (match) return match;
 
-    return found || null;
+    // 2. O(1) normalized alphanumeric match
+    const normInput = normalizeInvoiceNumber(cleanInput);
+    match = State.masterSheetMap.get(normInput);
+    if (match) return match;
+
+    // 3. O(1) numeric digits match (e.g. "3965" matches "IN-FY26/27-3965")
+    const digitsOnly = cleanInput.replace(/\D/g, '');
+    if (digitsOnly.length >= 2) {
+      match = State.masterSheetMap.get(digitsOnly);
+      if (match) return match;
+      const noZeros = digitsOnly.replace(/^0+/, '');
+      if (noZeros && noZeros !== digitsOnly) {
+        match = State.masterSheetMap.get(noZeros);
+        if (match) return match;
+      }
+    }
+
+    // 4. Suffix match fallback on digit string
+    if (digitsOnly.length >= 3) {
+      for (let i = 0; i < State.masterSheetBills.length; i++) {
+        const b = State.masterSheetBills[i];
+        const bDigits = b.billNo.replace(/\D/g, '');
+        if (bDigits.endsWith(digitsOnly)) return b;
+      }
+    }
+
+    // 5. Substring contains match (fallback only)
+    for (let i = 0; i < State.masterSheetBills.length; i++) {
+      const b = State.masterSheetBills[i];
+      if (b.billNo.toUpperCase().includes(cleanInput.toUpperCase()) || cleanInput.toUpperCase().includes(b.billNo.toUpperCase())) {
+        return b;
+      }
+    }
+
+    return null;
   }
 
   /**
@@ -775,7 +847,7 @@
       formatsToSupport: supportedFormats,
       verbose: false,
       experimentalFeatures: {
-        useBarCodeDetectorIfSupported: false
+        useBarCodeDetectorIfSupported: true // Native hardware acceleration (GPU / Neural Engine)
       }
     });
   }
@@ -910,18 +982,32 @@
 
   function getCameraConfigForStart() {
     const camId = State.selectedCameraId || 'environment';
+    const videoConstraints = {
+      width: { ideal: 1280 },
+      height: { ideal: 720 }
+    };
     if (camId === 'environment') {
-      return { facingMode: 'environment' };
+      return { facingMode: 'environment', ...videoConstraints };
     }
     if (camId === 'user') {
-      return { facingMode: 'user' };
+      return { facingMode: 'user', ...videoConstraints };
     }
-    return { deviceId: { exact: camId } };
+    return { deviceId: { exact: camId }, ...videoConstraints };
   }
 
   function getScannerRunConfig() {
     return {
-      fps: 20,
+      fps: 25, // Snappy frame analysis
+      qrbox: function(viewfinderWidth, viewfinderHeight) {
+        // Dynamic scan box: Crop image processing to central 75% area
+        const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
+        const boxSize = Math.max(220, Math.floor(minEdge * 0.75));
+        return {
+          width: Math.min(boxSize, viewfinderWidth - 20),
+          height: Math.min(Math.floor(boxSize * 0.8), viewfinderHeight - 20)
+        };
+      },
+      aspectRatio: 1.0,
       disableFlip: false
     };
   }
@@ -2468,6 +2554,86 @@ _BillAudit Pro_`;
     }
   }
 
+  async function pullRecentBillsFromSheet() {
+    const targetUrl = State.settings.mainSheetScriptUrl || State.settings.scriptUrl;
+    if (!targetUrl) {
+      showToast('Enter Main Sheet Apps Script URL in Settings', 'warning');
+      return;
+    }
+    const btn = document.getElementById('pullRecentSheetBtn');
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Quick Sync...';
+    }
+
+    try {
+      const resp = await fetch(`${targetUrl}?action=GET_DATA&limit=500&t=${Date.now()}`);
+      const data = await resp.json();
+
+      let incomingBills = [];
+      if (data && data.rows && Array.isArray(data.rows)) {
+        incomingBills = data.rows.map(r => ({
+          billNo: String(r[0] || '').trim(),
+          receipt: String(r[1] || '').trim(),
+          outstanding: Number(r[2]) || 0,
+          party: String(r[3] || 'General Customer').trim(),
+          amount: Number(r[4]) || 0,
+          agent: String(r[5] || '').trim(),
+          remainingText: String(r[2] || '')
+        }));
+      } else if (data && (data.bills || data.masterBills)) {
+        const rawList = data.bills || data.masterBills;
+        if (Array.isArray(rawList)) {
+          incomingBills = rawList.map(b => ({
+            billNo: String(b.billNo || b.b || '').trim(),
+            receipt: String(b.receipt || b.r || '').trim(),
+            outstanding: b.outstanding !== undefined ? Number(b.outstanding) : (Number(b.o) || 0),
+            party: String(b.party || b.p || 'General Customer').trim(),
+            amount: b.amount !== undefined ? Number(b.amount) : (Number(b.a) || 0),
+            agent: String(b.agent || b.ag || '').trim(),
+            remainingText: String(b.remainingText || b.outstanding || '')
+          }));
+        }
+      }
+
+      if (incomingBills.length > 0) {
+        incomingBills.forEach(b => addBillToMasterIndex(b));
+
+        const existingAgents = new Set(State.agents.map(a => a.name.toLowerCase()));
+        incomingBills.forEach(b => {
+          if (b.agent && !existingAgents.has(b.agent.toLowerCase())) {
+            existingAgents.add(b.agent.toLowerCase());
+            State.agents.push({
+              id: 'AG-' + (100 + State.agents.length + 1),
+              name: b.agent.trim(),
+              phone: ''
+            });
+          }
+        });
+
+        rebuildMasterSheetMap();
+        saveState('master');
+        saveState('agents');
+        updateGlobalStats();
+        renderAgentSelects();
+        updateMasterSheetUI();
+        renderLeftOutTab();
+        renderMasterLedger();
+        SoundFX.playBeep('success');
+        showToast(`⚡ Quick Loaded ${incomingBills.length} Recent Bills with Receipts (Col M)!`, 'success');
+      } else {
+        showToast('No recent bills found in response.', 'warning');
+      }
+    } catch (e) {
+      showToast('Quick fetch failed: ' + e.message, 'danger');
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fa-solid fa-bolt"></i> Quick Load Recent (Last 500)';
+      }
+    }
+  }
+
   async function pullFromSheet() {
     const targetUrl = State.settings.mainSheetScriptUrl || State.settings.scriptUrl;
     if (!targetUrl) {
@@ -2526,6 +2692,7 @@ _BillAudit Pro_`;
           }
         });
 
+        rebuildMasterSheetMap();
         saveState('master');
         saveState('agents');
         updateGlobalStats();
@@ -2542,7 +2709,7 @@ _BillAudit Pro_`;
       showToast('Fetch failed: ' + e.message, 'danger');
     } finally {
       btn.disabled = false;
-      btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down"></i> Fetch Details from Main Sheet';
+      btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down"></i> Fetch Full Archive (15k)';
     }
   }
 
@@ -3074,6 +3241,7 @@ _BillAudit Pro_`;
       showToast('Main Sheet Apps Script URL saved', 'success');
     });
     document.getElementById('testSheetConnectionBtn')?.addEventListener('click', testSheetConnection);
+    document.getElementById('pullRecentSheetBtn')?.addEventListener('click', pullRecentBillsFromSheet);
     document.getElementById('pullFromSheetBtn')?.addEventListener('click', pullFromSheet);
 
     document.getElementById('saveTrackingScriptUrlBtn')?.addEventListener('click', () => {

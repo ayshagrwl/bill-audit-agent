@@ -559,12 +559,15 @@
           <p class="hint mt-1" style="font-size: 0.75rem;">
             💡 <em>Paste <code>google_apps_script_main_sheet.js</code> into your Main Sheet's Apps Script & deploy as Web App (Access: Anyone).</em>
           </p>
-          <div class="buttons-cluster mt-2">
+          <div class="buttons-cluster mt-2" style="display: flex; gap: 8px; flex-wrap: wrap;">
             <button id="testSheetConnectionBtn" class="btn btn-outline btn-sm">
               <i class="fa-solid fa-plug"></i> Test Connection
             </button>
+            <button id="pullRecentSheetBtn" class="btn btn-primary btn-sm">
+              <i class="fa-solid fa-bolt"></i> Quick Load Recent (Last 500)
+            </button>
             <button id="pullFromSheetBtn" class="btn btn-dark btn-sm">
-              <i class="fa-solid fa-cloud-arrow-down"></i> Fetch Details from Main Sheet
+              <i class="fa-solid fa-cloud-arrow-down"></i> Fetch Full Archive (15k)
             </button>
           </div>
         </div>

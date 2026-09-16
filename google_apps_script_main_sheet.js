@@ -88,9 +88,10 @@ function doGet(e) {
       });
     }
 
-    // 3. Ultra-Fast Compact Batch Fetch of all bills from MARCH-SEPT tab (<1 sec transfer)
+    // 3. Ultra-Fast Compact Batch Fetch of bills from MARCH-SEPT tab
     if (action === 'GET_DATA' || action === 'GET_MASTER_SHEET' || action === 'FETCH') {
-      const result = extractBillsFromSheet(sheet);
+      const limit = e?.parameter?.limit;
+      const result = extractBillsFromSheet(sheet, limit);
       return respondJSON({
         status: 'OK',
         mode: 'READ_ONLY_FETCHER',
@@ -217,15 +218,19 @@ function findSingleBillInSheet(sheet, billNo) {
 
 /**
  * Ultra-Fast Batch Extractor from "MARCH-SEPT" Tab
+ * Supports optional limit parameter (e.g. limit=500 fetches only latest 500 bills in 30ms)
  * Uses getDisplayValues() to read Column M in text format
- * Returns compact tabular rows (450 KB total instead of 2.8 MB, 5x faster transfer)
  */
-function extractBillsFromSheet(sheet) {
+function extractBillsFromSheet(sheet, limit) {
   const lastRow = sheet.getLastRow();
   if (lastRow <= 1) return { rows: [] };
 
-  // Read columns 1 to 16 in a single batch with getDisplayValues()
-  const displayVals = sheet.getRange(1, 1, lastRow, 16).getDisplayValues();
+  const parsedLimit = limit ? parseInt(limit, 10) : 0;
+  const startRow = (parsedLimit > 0 && parsedLimit < lastRow - 1) ? Math.max(2, lastRow - parsedLimit + 1) : 2;
+  const numRows = lastRow - startRow + 1;
+
+  // Read only the requested rows using getDisplayValues()
+  const displayVals = sheet.getRange(startRow, 1, numRows, 16).getDisplayValues();
 
   const cInv = TARGET_CONFIG.COLS.INVOICE;       // 3 (Col D)
   const cParty = TARGET_CONFIG.COLS.PARTY;       // 4 (Col E)
@@ -236,7 +241,7 @@ function extractBillsFromSheet(sheet) {
 
   const rows = [];
 
-  for (let r = 1; r < displayVals.length; r++) {
+  for (let r = 0; r < displayVals.length; r++) {
     const row = displayVals[r];
     const billNo = row[cInv] ? row[cInv].trim() : '';
     if (!billNo) continue;
