@@ -850,14 +850,9 @@
         Html5QrcodeSupportedFormats.DATA_MATRIX
       ];
     }
-    const experimental = {};
-    if (typeof window !== 'undefined' && 'BarcodeDetector' in window) {
-      experimental.useBarCodeDetectorIfSupported = true;
-    }
     return new Html5Qrcode(elementId, {
       formatsToSupport: supportedFormats,
-      verbose: false,
-      experimentalFeatures: experimental
+      verbose: false
     });
   }
 
@@ -913,7 +908,7 @@
   }
 
   function ensureVideoInline(container) {
-    setTimeout(() => {
+    const applyInline = () => {
       const video = container ? container.querySelector('video') : null;
       if (video) {
         video.setAttribute('playsinline', 'true');
@@ -922,7 +917,9 @@
         video.setAttribute('muted', 'true');
         if (video.paused) video.play().catch(() => {});
       }
-    }, 250);
+    };
+    applyInline();
+    setTimeout(applyInline, 200);
   }
 
   async function initCameraSelectors(hasPermission = false) {
@@ -930,9 +927,14 @@
     if (!select) return;
 
     try {
-      const cameras = await Html5Qrcode.getCameras();
-      State.availableCameras = cameras || [];
+      if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+        return;
+      }
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoDevices = devices.filter(d => d.kind === 'videoinput');
+      State.availableCameras = videoDevices.map(d => ({ id: d.deviceId, label: d.label }));
 
+      const currentVal = State.selectedCameraId || select.value || 'environment';
       select.innerHTML = '';
 
       // 1. Always provide clean Primary Back & Front options (100% reliable cross-platform)
@@ -968,13 +970,12 @@
         });
       }
 
-      // Default to back camera ('environment') unless user specifically chose 'user'
-      if (!State.selectedCameraId || (State.selectedCameraId !== 'user' && !hasRealLabels)) {
-        State.selectedCameraId = 'environment';
+      // Restore selected value cleanly
+      if (currentVal) {
+        select.value = currentVal;
       }
-      select.value = State.selectedCameraId;
     } catch (e) {
-      console.warn('Camera enumeration error (Safari permissions needed):', e);
+      console.warn('Camera enumeration warning:', e);
     }
   }
 
@@ -1039,36 +1040,35 @@
     const list = [];
     if (camId === 'user') {
       // User explicitly wants Front Camera
-      list.push({ facingMode: { exact: 'user' } });
       list.push({ facingMode: 'user' });
-    } else if (camId === 'environment') {
-      // User explicitly wants Back Camera
-      // Exact forces mobile browsers to switch to rear lens instead of defaulting to front
-      list.push({ facingMode: { exact: 'environment' } });
+      list.push({});
+    } else if (!camId || camId === 'environment') {
+      // User explicitly wants Back Camera (Standard constraint preferred on mobile)
       list.push({ facingMode: 'environment' });
-    } else if (camId) {
-      // Specific camera device ID
-      list.push({ deviceId: { exact: camId } });
-      list.push({ deviceId: camId });
-      list.push({ facingMode: { exact: 'environment' } });
-      list.push({ facingMode: 'environment' });
+      list.push({});
     } else {
-      list.push({ facingMode: { exact: 'environment' } });
+      // Specific camera device ID selected by user
+      list.push(camId);
+      list.push({ deviceId: camId });
       list.push({ facingMode: 'environment' });
+      list.push({});
     }
     return list;
   }
 
   function getScannerRunConfig() {
     return {
-      fps: 25, // Snappy frame analysis
+      fps: 15, // Optimal for mobile performance without CPU throttling
       qrbox: function(viewfinderWidth, viewfinderHeight) {
-        // Dynamic scan box: Crop image processing to central 75% area
-        const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
-        const boxSize = Math.max(220, Math.floor(minEdge * 0.75));
+        // Robust scan box calculation preventing negative dimensions
+        const vw = Math.max(viewfinderWidth || 0, 260);
+        const vh = Math.max(viewfinderHeight || 0, 260);
+        const minEdge = Math.min(vw, vh);
+        const boxWidth = Math.max(200, Math.floor(minEdge * 0.75));
+        const boxHeight = Math.max(160, Math.floor(boxWidth * 0.75));
         return {
-          width: Math.min(boxSize, viewfinderWidth - 20),
-          height: Math.min(Math.floor(boxSize * 0.8), viewfinderHeight - 20)
+          width: Math.min(boxWidth, vw - 10),
+          height: Math.min(boxHeight, vh - 10)
         };
       },
       disableFlip: false
@@ -1149,7 +1149,7 @@
           lastErr = attemptErr;
           console.warn(`[Camera] Dispatch start attempt ${i + 1} failed:`, config, attemptErr);
           await safeStopScanner(scanner, 'qr-reader');
-          await new Promise(r => setTimeout(r, 150));
+          await new Promise(r => setTimeout(r, 200));
           scanner = createScannerInstance('qr-reader');
           State.scannerDispatch = scanner;
         }
@@ -1161,10 +1161,10 @@
 
       ensureVideoInline(container);
 
-      // Camera active and permissions granted: update selector with real camera labels
+      // Populate camera labels quietly in background without killing active stream
       setTimeout(() => {
-        initCameraSelectors(true).catch(() => {});
-      }, 500);
+        initCameraSelectors().catch(() => {});
+      }, 1000);
     } catch (err) {
       console.error('Dispatch scanner error:', err);
       if (State.scannerDispatch) {
@@ -1305,7 +1305,7 @@
           lastErr = attemptErr;
           console.warn(`[Camera] Settlement start attempt ${i + 1} failed:`, config, attemptErr);
           await safeStopScanner(scanner, 'qr-reader-settlement');
-          await new Promise(r => setTimeout(r, 150));
+          await new Promise(r => setTimeout(r, 200));
           scanner = createScannerInstance('qr-reader-settlement');
           State.scannerSettlement = scanner;
         }
@@ -1317,9 +1317,10 @@
 
       ensureVideoInline(container);
 
+      // Populate camera labels quietly in background without killing active stream
       setTimeout(() => {
-        initCameraSelectors(true).catch(() => {});
-      }, 500);
+        initCameraSelectors().catch(() => {});
+      }, 1000);
     } catch (err) {
       console.error('Settlement scanner error:', err);
       if (State.scannerSettlement) {

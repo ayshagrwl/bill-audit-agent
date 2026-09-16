@@ -879,40 +879,39 @@ class MockHtml5Qrcode {
   function getCameraConfigsToTry(camId) {
     const list = [];
     if (camId === 'user') {
-      list.push({ facingMode: { exact: 'user' } });
       list.push({ facingMode: 'user' });
-    } else if (camId === 'environment') {
-      list.push({ facingMode: { exact: 'environment' } });
+      list.push({});
+    } else if (!camId || camId === 'environment') {
       list.push({ facingMode: 'environment' });
-    } else if (camId) {
-      list.push({ deviceId: { exact: camId } });
-      list.push({ deviceId: camId });
-      list.push({ facingMode: { exact: 'environment' } });
-      list.push({ facingMode: 'environment' });
+      list.push({});
     } else {
-      list.push({ facingMode: { exact: 'environment' } });
+      list.push(camId);
+      list.push({ deviceId: camId });
       list.push({ facingMode: 'environment' });
+      list.push({});
     }
     return list;
   }
 
-  // 1. Back Camera configuration verification
+  // 1. Back Camera configuration verification (Standard non-exact to avoid OverconstrainedError)
   const backConfigs = getCameraConfigsToTry('environment');
   assert.strictEqual(backConfigs.length, 2);
-  assert.deepStrictEqual(backConfigs[0], { facingMode: { exact: 'environment' } }, 'Primary back config must force exact environment');
-  assert.deepStrictEqual(backConfigs[1], { facingMode: 'environment' }, 'Fallback back config must allow relaxed environment');
+  assert.deepStrictEqual(backConfigs[0], { facingMode: 'environment' }, 'Primary back config must be standard environment');
+  assert.deepStrictEqual(backConfigs[1], {}, 'Fallback back config must allow any camera');
 
   // 2. Front Camera configuration verification
   const frontConfigs = getCameraConfigsToTry('user');
   assert.strictEqual(frontConfigs.length, 2);
-  assert.deepStrictEqual(frontConfigs[0], { facingMode: { exact: 'user' } });
-  assert.deepStrictEqual(frontConfigs[1], { facingMode: 'user' });
+  assert.deepStrictEqual(frontConfigs[0], { facingMode: 'user' });
+  assert.deepStrictEqual(frontConfigs[1], {});
 
   // 3. Specific lens device ID with back fallback
   const lensConfigs = getCameraConfigsToTry('camera-hex-id-1234');
   assert.strictEqual(lensConfigs.length, 4);
-  assert.deepStrictEqual(lensConfigs[0], { deviceId: { exact: 'camera-hex-id-1234' } });
-  assert.deepStrictEqual(lensConfigs[2], { facingMode: { exact: 'environment' } });
+  assert.strictEqual(lensConfigs[0], 'camera-hex-id-1234');
+  assert.deepStrictEqual(lensConfigs[1], { deviceId: 'camera-hex-id-1234' });
+  assert.deepStrictEqual(lensConfigs[2], { facingMode: 'environment' });
+  assert.deepStrictEqual(lensConfigs[3], {});
 
   // 4. Flip camera toggling verification (never gets trapped in front camera)
   let testSelectedCamera = 'environment';
