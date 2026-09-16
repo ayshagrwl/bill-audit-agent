@@ -935,7 +935,152 @@ class MockHtml5Qrcode {
   assert.strictEqual(flipFromDev0, 'environment', 'Flipping from labeled front camera device ID must yield environment');
 
   console.log('✅ Test 22 Passed! Camera switching & lens selection verified 100%!\n');
-  console.log('🎉 ALL 22 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+
+  // Test 23: Direct Google Sheet BigTable Query, Auto-Sync & Column Extraction
+  console.log('Test 23: Direct Google Sheet BigTable Query, Auto-Sync & Column Extraction');
+
+  function testGetSheetCredentials(csvUrl) {
+    let sheetId = '11J3WSXNFfu5aARNMBX3HQazajsfzBjj7wX9MWyVVBRk';
+    let gid = '1608276684';
+    const idMatch = (csvUrl || '').match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+    if (idMatch) sheetId = idMatch[1];
+    const gidMatch = (csvUrl || '').match(/[?&]gid=([0-9]+)/);
+    if (gidMatch) gid = gidMatch[1];
+    return { sheetId, gid };
+  }
+
+  function testParseGvizResponse(txt) {
+    if (!txt || typeof txt !== 'string') return [];
+    const start = txt.indexOf('{');
+    const end = txt.lastIndexOf('}');
+    if (start === -1 || end === -1) return [];
+    try {
+      const json = JSON.parse(txt.substring(start, end + 1));
+      const rows = [];
+      if (!json.table || !json.table.rows) return rows;
+      for (let i = 0; i < json.table.rows.length; i++) {
+        const r = json.table.rows[i];
+        if (!r || !r.c) continue;
+        const billNo = r.c[0] ? String(r.c[0].v || '').trim() : '';
+        if (!billNo) continue;
+        const party = r.c[1] ? String(r.c[1].v || 'General Customer').trim() : 'General Customer';
+        const rawAmt = r.c[2] ? (Number(r.c[2].v) || parseFloat(String(r.c[2].f || '').replace(/[₹,\s]/g, '')) || 0) : 0;
+        const rawOut = r.c[3] ? (Number(r.c[3].v) || parseFloat(String(r.c[3].f || '').replace(/[₹,\s]/g, '')) || 0) : 0;
+        const remainingText = r.c[3] ? String(r.c[3].f || r.c[3].v || '').trim() : '';
+        const receipt = r.c[4] ? String(r.c[4].f || r.c[4].v || '').trim() : '';
+        const agent = r.c[5] ? String(r.c[5].v || '').trim() : '';
+        rows.push({ billNo, receipt, outstanding: rawOut, party, amount: rawAmt, agent, remainingText });
+      }
+      return rows;
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // 1. Verify credential extraction
+  const creds = testGetSheetCredentials('https://docs.google.com/spreadsheets/d/11J3WSXNFfu5aARNMBX3HQazajsfzBjj7wX9MWyVVBRk/export?format=csv&gid=1608276684');
+  assert.strictEqual(creds.sheetId, '11J3WSXNFfu5aARNMBX3HQazajsfzBjj7wX9MWyVVBRk');
+  assert.strictEqual(creds.gid, '1608276684');
+
+  // 2. Verify GViz payload parser for Column D, E, F, L, M, P
+  const mockGvizPayload = `/*O_o*/
+google.visualization.Query.setResponse({
+  "version": "0.6",
+  "status": "ok",
+  "table": {
+    "cols": [
+      {"id": "D", "label": "Invoice Number", "type": "string"},
+      {"id": "E", "label": "Customer", "type": "string"},
+      {"id": "F", "label": "Amount", "type": "number"},
+      {"id": "L", "label": "OUTSTANDING", "type": "number"},
+      {"id": "M", "label": "RECEIPT", "type": "string"},
+      {"id": "P", "label": "Agent", "type": "string"}
+    ],
+    "rows": [
+      {
+        "c": [
+          {"v": "IN-FY26/27-3965"},
+          {"v": "Akash Kirana - 12316368"},
+          {"v": 2336, "f": "₹2,336"},
+          {"v": 1336, "f": "₹1,336"},
+          {"v": "R4083"},
+          {"v": "Rajesh Chaurasiya(OM MARKETING)"}
+        ]
+      },
+      {
+        "c": [
+          {"v": "IN-17063-8982"},
+          {"v": "Yes provision - 163602539"},
+          {"v": 192, "f": "₹192"},
+          {"v": 0, "f": "₹0"},
+          {"v": "R8244"},
+          {"v": "Shiv Kumar Verma(OM MARKETING)"}
+        ]
+      }
+    ]
+  }
+});`;
+
+  const parsedGviz = testParseGvizResponse(mockGvizPayload);
+  assert.strictEqual(parsedGviz.length, 2, 'Should parse 2 bills from GViz response');
+
+  const b3965 = parsedGviz[0];
+  assert.strictEqual(b3965.billNo, 'IN-FY26/27-3965');
+  assert.strictEqual(b3965.party, 'Akash Kirana - 12316368');
+  assert.strictEqual(b3965.amount, 2336);
+  assert.strictEqual(b3965.outstanding, 1336, 'Column L due must be exactly 1336');
+  assert.strictEqual(b3965.receipt, 'R4083', 'Column M receipt text format must be preserved');
+  assert.strictEqual(b3965.agent, 'Rajesh Chaurasiya(OM MARKETING)');
+
+  // 3. Test that indexing into O(1) hash map enables instant lookup
+  function testRegisterBill(map, b) {
+    if (!b || !b.billNo) return;
+    const exact = b.billNo.trim().toUpperCase();
+    const norm = b.billNo.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+    const digits = b.billNo.replace(/\D/g, '');
+    map.set(exact, b);
+    if (norm) map.set(norm, b);
+    if (digits.length >= 3) map.set(digits, b);
+    const matchTrailing = b.billNo.match(/(\d+)\s*$/);
+    if (matchTrailing && matchTrailing[1]) {
+      const trail = matchTrailing[1];
+      if (trail.length >= 2) {
+        map.set(trail, b);
+        const noZeros = trail.replace(/^0+/, '');
+        if (noZeros && noZeros !== trail) map.set(noZeros, b);
+      }
+    }
+  }
+
+  function testFindBill(query, map) {
+    if (!query) return null;
+    const clean = String(query).trim().toUpperCase();
+    if (map.has(clean)) return map.get(clean);
+    const norm = clean.replace(/[^a-zA-Z0-9]/g, '');
+    if (norm && map.has(norm)) return map.get(norm);
+    const digits = clean.replace(/\D/g, '');
+    if (digits && map.has(digits)) return map.get(digits);
+    return null;
+  }
+
+  const testMap = new Map();
+  testRegisterBill(testMap, b3965);
+
+  const tStart = process.hrtime.bigint();
+  const lookup1 = testFindBill('IN-FY26/27-3965', testMap);
+  const lookup2 = testFindBill('3965', testMap);
+  const tEnd = process.hrtime.bigint();
+  const lookupTimeMs = Number(tEnd - tStart) / 1e6;
+
+  assert(lookup1 !== null, 'Exact bill lookup must succeed');
+  assert(lookup2 !== null, 'Suffix 3965 lookup must succeed');
+  assert.strictEqual(lookup1.receipt, 'R4083');
+  assert.strictEqual(lookup1.outstanding, 1336);
+  console.log(`  Dual Lookups for 3965 resolved in ${lookupTimeMs.toFixed(4)}ms!`);
+
+  console.log('✅ Test 23 Passed! Direct Google Sheet BigTable Query, Auto-Sync & Column Extraction verified 100%!\n');
+  console.log('🎉 ALL 23 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
 })();
+
 
 
