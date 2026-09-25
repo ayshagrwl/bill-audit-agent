@@ -73,19 +73,15 @@
       <button id="bannerSettingsBtn" class="text-btn">Edit Mapping</button>
     </div>
 
-    <!-- Main Navigation Tabs (5 Tabs: OUT, IN, Left Out, Ledger, Settings) -->
+    <!-- Main Navigation Tabs (4 Tabs: Home, Left Out, Ledger, Settings) -->
     <nav class="main-tabs">
-      <button class="tab-item active" data-tab="tab-dispatch">
-        <i class="fa-solid fa-file-arrow-up"></i>
-        <span>📤 1. SCAN OUT</span>
-      </button>
-      <button class="tab-item" data-tab="tab-settlement">
-        <i class="fa-solid fa-file-arrow-down"></i>
-        <span>📥 2. SCAN IN</span>
+      <button class="tab-item active" data-tab="tab-home">
+        <i class="fa-solid fa-house"></i>
+        <span>Home</span>
       </button>
       <button class="tab-item alert-tab" data-tab="tab-leftout">
         <i class="fa-solid fa-triangle-exclamation"></i>
-        <span>⚠️ Left Out</span>
+        <span>Left Out</span>
       </button>
       <button class="tab-item" data-tab="tab-ledger">
         <i class="fa-solid fa-list-ul"></i>
@@ -93,15 +89,80 @@
       </button>
       <button class="tab-item" data-tab="tab-settings">
         <i class="fa-solid fa-gear"></i>
-        <span>Sheet & Setup</span>
+        <span>Settings</span>
       </button>
     </nav>
 
     <!-- ======================================================== -->
-    <!-- TAB 1: SCAN OUT (DISPATCH / AFTERNOON HANDOVER)          -->
+    <!-- TAB 0: HOME — SELECT SCAN MODE + AGENT                  -->
     <!-- ======================================================== -->
-    <section id="tab-dispatch" class="tab-view active">
-      <!-- Fast Scanner & Manual Invoice Box (Directly at Top for Instant Camera Access) -->
+    <section id="tab-home" class="tab-view active">
+      <div class="home-hero">
+        <div class="home-greeting">
+          <i class="fa-solid fa-receipt home-hero-icon"></i>
+          <h2 id="homeGreetingText">Good Morning! 👋</h2>
+          <p>Select what you want to do today:</p>
+        </div>
+
+        <!-- Action Card: Morning Dispatch (Scan OUT) -->
+        <button class="home-action-card home-card-out" id="homeDispatchCard">
+          <div class="home-card-icon">
+            <i class="fa-solid fa-arrow-up-from-bracket"></i>
+          </div>
+          <div class="home-card-body">
+            <h3>Morning Dispatch</h3>
+            <p>Scan OUT bills to agent for today's delivery route</p>
+          </div>
+          <i class="fa-solid fa-chevron-right home-card-arrow"></i>
+        </button>
+
+        <!-- Action Card: Evening Return (Scan IN) -->
+        <button class="home-action-card home-card-in" id="homeSettlementCard">
+          <div class="home-card-icon">
+            <i class="fa-solid fa-arrow-down-to-bracket"></i>
+          </div>
+          <div class="home-card-body">
+            <h3>Evening Return</h3>
+            <p>Scan IN bills returned by agent at end of day</p>
+          </div>
+          <i class="fa-solid fa-chevron-right home-card-arrow"></i>
+        </button>
+
+        <!-- Quick Stats Strip -->
+        <div class="home-stats-strip" id="homeStatsStrip">
+          <div class="home-stat">
+            <span class="home-stat-val" id="homeStatOut">0</span>
+            <span class="home-stat-label">Out Today</span>
+          </div>
+          <div class="home-stat home-stat-success">
+            <span class="home-stat-val" id="homeStatIn">0</span>
+            <span class="home-stat-label">Returned</span>
+          </div>
+          <div class="home-stat home-stat-danger">
+            <span class="home-stat-val" id="homeStatLeft">0</span>
+            <span class="home-stat-label">Left Out</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+
+    <!-- ======================================================== -->
+    <!-- TAB 1: SCAN OUT (MORNING DISPATCH)                       -->
+    <!-- ======================================================== -->
+    <section id="tab-dispatch" class="tab-view">
+      <!-- Session Header: Agent Badge + Back -->
+      <div class="scan-session-header scan-session-out" id="dispatchSessionHeader">
+        <button class="session-back-btn" id="backFromDispatchBtn">
+          <i class="fa-solid fa-arrow-left"></i>
+        </button>
+        <div class="session-title">
+          <span class="session-mode-label">📤 Morning Dispatch</span>
+          <span class="session-agent-badge" id="dispatchAgentBadge">–</span>
+        </div>
+      </div>
+
+      <!-- Fast Scanner & Manual Invoice Box -->
       <div class="clean-card scanner-box">
         <!-- Camera Selector & Controls Bar -->
         <div class="scanner-top-bar">
@@ -112,6 +173,7 @@
               <option value="user">🤳 Front Camera</option>
             </select>
           </div>
+
 
           <div class="camera-action-btns">
             <button id="flipCameraBtn" class="pill-action-btn" title="Flip Camera">
@@ -171,28 +233,14 @@
           <small class="manual-hint">Press <strong>Enter</strong> to instantly add & fetch details from Sheet.</small>
         </div>
       </div>
+      <!-- Hidden agent select kept for JS compatibility, not shown -->
+      <select id="dispatchAgentSelect" style="display:none;"></select>
 
-      <!-- Agent & Date Picker Card (Compact below camera) -->
+      <!-- Date Picker Row -->
       <div class="clean-card mt-2">
-        <div class="card-grid-2">
-          <div class="field-wrap">
-            <label for="dispatchAgentSelect">
-              <i class="fa-solid fa-user"></i> Default Sales Agent
-              <span class="label-hint">(Auto-detected per bill from Sheet)</span>
-            </label>
-            <div class="input-inline">
-              <select id="dispatchAgentSelect" class="form-select">
-                <option value="AUTO">⚡ Auto-Detect from Master Sheet</option>
-              </select>
-              <button id="addAgentQuickBtn" class="circle-btn" title="Add New Agent">
-                <i class="fa-solid fa-plus"></i>
-              </button>
-            </div>
-          </div>
-          <div class="field-wrap">
-            <label for="dispatchDate"><i class="fa-solid fa-calendar"></i> Route Date</label>
-            <input type="date" id="dispatchDate" class="form-input" />
-          </div>
+        <div class="field-wrap">
+          <label for="dispatchDate"><i class="fa-solid fa-calendar"></i> Dispatch Date</label>
+          <input type="date" id="dispatchDate" class="form-input" />
         </div>
       </div>
 
@@ -200,7 +248,7 @@
       <div class="clean-card">
         <div class="basket-head">
           <div class="head-left">
-            <h3>Bills Ready to Handover (OUT)</h3>
+            <h3>Bills to Dispatch</h3>
             <span class="count-pill" id="dispatchBasketCount">0</span>
           </div>
           <div class="head-right">
@@ -213,14 +261,14 @@
           <!-- Dynamically populated bill cards -->
           <div class="empty-placeholder">
             <i class="fa-solid fa-qrcode"></i>
-            <p>No bills added to handover basket yet.<br><small>Click "Start Camera" above or type Invoice Number.</small></p>
+            <p>No bills added yet.<br><small>Start the camera above or type an invoice number.</small></p>
           </div>
         </div>
 
         <!-- Handover Actions -->
         <div class="action-footer-sticky">
           <button id="confirmDispatchBtn" class="btn btn-success btn-block btn-lg" disabled>
-            <i class="fa-solid fa-check-double"></i> Confirm Handover (Mark OUT)
+            <i class="fa-solid fa-check-double"></i> Confirm Dispatch ✓
           </button>
           <div class="secondary-actions">
             <button id="whatsappHandoverBtn" class="btn btn-outline-whatsapp flex-1" disabled>
@@ -235,14 +283,27 @@
     </section>
 
 
+
     <!-- ======================================================== -->
-    <!-- TAB 2: SCAN IN (RETURN & SETTLEMENT / NEXT DAY)          -->
+    <!-- TAB 2: SCAN IN (EVENING RETURN)                          -->
     <!-- ======================================================== -->
     <section id="tab-settlement" class="tab-view">
-      <!-- Fast Scanner for Checking IN (Directly at Top for Instant Camera Access) -->
+      <!-- Session Header: Agent Badge + Back -->
+      <div class="scan-session-header scan-session-in" id="settlementSessionHeader">
+        <button class="session-back-btn" id="backFromSettlementBtn">
+          <i class="fa-solid fa-arrow-left"></i>
+        </button>
+        <div class="session-title">
+          <span class="session-mode-label">📥 Evening Return</span>
+          <span class="session-agent-badge" id="settlementAgentBadge">–</span>
+        </div>
+      </div>
+
+      <!-- Scanner + Manual Entry -->
       <div class="clean-card scanner-box">
         <div class="scanner-top-bar">
           <div class="mode-pills-wrap">
+
             <button class="mode-pill active" id="modePayBtn" data-mode="PAY">
               <i class="fa-solid fa-money-bill-wave"></i> Settle Payment / Paid
             </button>
@@ -306,19 +367,15 @@
         </div>
       </div>
 
-      <!-- Agent Selector (Below Camera) -->
+
+      <!-- Hidden settlement agent select for JS compatibility -->
+      <select id="settlementAgentSelect" style="display:none;"></select>
+
+      <!-- Return Date -->
       <div class="clean-card mt-2">
-        <div class="card-grid-2">
-          <div class="field-wrap">
-            <label for="settlementAgentSelect"><i class="fa-solid fa-user-check"></i> Filter by Agent</label>
-            <select id="settlementAgentSelect" class="form-select">
-              <option value="">All Returning Sales Agents</option>
-            </select>
-          </div>
-          <div class="field-wrap">
-            <label for="settlementDate"><i class="fa-solid fa-calendar-check"></i> Return Date</label>
-            <input type="date" id="settlementDate" class="form-input" />
-          </div>
+        <div class="field-wrap">
+          <label for="settlementDate"><i class="fa-solid fa-calendar-check"></i> Return Date</label>
+          <input type="date" id="settlementDate" class="form-input" />
         </div>
       </div>
 
@@ -331,7 +388,7 @@
             <small id="audTotalCount">0 bills</small>
           </div>
           <div class="s-box s-success">
-            <span class="s-label">Checked IN / Paid</span>
+            <span class="s-label">Returned & Settled</span>
             <h4 class="font-mono text-success" id="audPaidAmt">₹0</h4>
             <small id="audPaidCount">0 bills</small>
           </div>
@@ -976,6 +1033,33 @@ IN-3922&#9;Vikram Singh&#9;Mahaveer Market&#9;12850&#9;Paid UPI&#9;2000.00"></te
       <div class="modal-foot mt-3">
         <button class="btn btn-outline" id="printTestQrBtn"><i class="fa-solid fa-print"></i> Print</button>
         <button class="btn btn-dark" id="closeQrPreviewBottomBtn">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================================================== -->
+  <!-- MODAL: AGENT PICKER (Shown before starting scan)        -->
+  <!-- ======================================================== -->
+  <div id="agentPickerModal" class="modal-backdrop" style="display: none;">
+    <div class="modal-card agent-picker-card">
+      <div class="modal-head">
+        <h3 id="agentPickerTitle">Who is scanning?</h3>
+        <button class="modal-close" id="closeAgentPickerBtn">&times;</button>
+      </div>
+      <p class="agent-picker-subtitle" id="agentPickerSubtitle">Select your name to start scanning</p>
+      <div class="agent-picker-grid">
+        <button class="agent-pick-btn" data-agent="Rajesh">
+          <div class="agent-pick-avatar">
+            <i class="fa-solid fa-user"></i>
+          </div>
+          <span>Rajesh</span>
+        </button>
+        <button class="agent-pick-btn" data-agent="Shivam">
+          <div class="agent-pick-avatar">
+            <i class="fa-solid fa-user"></i>
+          </div>
+          <span>Shivam</span>
+        </button>
       </div>
     </div>
   </div>

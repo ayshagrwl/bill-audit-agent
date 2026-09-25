@@ -23,9 +23,8 @@
   };
 
   const DEFAULT_AGENTS = [
-    { id: 'AG-101', name: 'Rahul Sharma', phone: '9876543210' },
-    { id: 'AG-102', name: 'Vikram Singh', phone: '9812345678' },
-    { id: 'AG-103', name: 'Amit Patel', phone: '9765432109' }
+    { id: 'AG-001', name: 'Rajesh', phone: '' },
+    { id: 'AG-002', name: 'Shivam', phone: '' }
   ];
 
   const DEFAULT_SETTINGS = {
@@ -62,7 +61,7 @@
     scannerDispatch: null,
     scannerSettlement: null,
     isCameraTransitioning: false,
-    activeTab: 'tab-dispatch',
+    activeTab: 'tab-home',
     availableCameras: [],
     selectedCameraId: 'environment',
     lastScannedCode: null,
@@ -72,7 +71,9 @@
     settlementScanMode: 'PAY', // 'PAY' or 'RETURN'
     isConfirmModalOpen: false,
     pendingScannedBill: null,
-    pendingScanSource: null // 'DISPATCH' or 'SETTLEMENT'
+    pendingScanSource: null, // 'DISPATCH' or 'SETTLEMENT'
+    activeAgent: null,       // { id, name } — set by agent picker before scanning
+    activeScanMode: null     // 'DISPATCH' or 'SETTLEMENT' — set by home card tap
   };
 
   // Web Audio Synthesizer for Fast Scan Feedback
@@ -136,8 +137,8 @@
       const storedBills = localStorage.getItem(STORAGE_KEYS.BILLS);
       State.bills = storedBills ? JSON.parse(storedBills) : [];
 
-      const storedAgents = localStorage.getItem(STORAGE_KEYS.AGENTS);
-      State.agents = storedAgents ? JSON.parse(storedAgents) : [...DEFAULT_AGENTS];
+      // Always use the canonical agent list — Rajesh and Shivam only
+      State.agents = [...DEFAULT_AGENTS];
 
       const storedMaster = localStorage.getItem(STORAGE_KEYS.MASTER_SHEET);
       if (storedMaster) {
@@ -1497,11 +1498,11 @@
   }
 
   function addBillToDispatchBasket(parsed) {
-    const agentSelect = document.getElementById('dispatchAgentSelect');
-    let assignedAgent = agentSelect ? agentSelect.value : '';
+    // Agent is locked in from the picker (State.activeAgent); fall back to master sheet detection
+    let assignedAgent = State.activeAgent ? State.activeAgent.name : '';
 
-    // If AUTO mode or unassigned, try to take agent from Master Sheet match
-    if (assignedAgent === 'AUTO' || !assignedAgent) {
+    // If still not set, try to take agent from Master Sheet match
+    if (!assignedAgent) {
       if (parsed.agent) {
         assignedAgent = parsed.agent;
       } else {
@@ -1512,8 +1513,8 @@
       }
     }
 
-    // If still empty and only 1 agent exists, default to that agent
-    if ((assignedAgent === 'AUTO' || !assignedAgent) && State.agents.length > 0) {
+    // Last resort: first agent in list
+    if (!assignedAgent && State.agents.length > 0) {
       assignedAgent = State.agents[0].name;
     }
 
@@ -1686,8 +1687,9 @@
   // ========================================================
 
   function loadSettlementForSelectedAgent() {
+    // Agent comes from State.activeAgent (set by picker), fall back to select element
     const agentSelect = document.getElementById('settlementAgentSelect');
-    const agent = agentSelect ? agentSelect.value : '';
+    const agent = (State.activeAgent ? State.activeAgent.name : '') || (agentSelect ? agentSelect.value : '');
     State.activeSettlementAgent = agent;
 
     const list = document.getElementById('settlementListContainer');
@@ -3321,7 +3323,9 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       await stopSettlementScanner();
     }
 
-    if (tabId === 'tab-dispatch') {
+    if (tabId === 'tab-home') {
+      updateHomeStats();
+    } else if (tabId === 'tab-dispatch') {
       await startDispatchScanner();
     } else if (tabId === 'tab-settlement') {
       loadSettlementForSelectedAgent();
@@ -3335,11 +3339,107 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     }
   }
 
+  // Updates the home tab quick stats strip
+  function updateHomeStats() {
+    const today = getTodayDateString();
+    const todayBills = State.bills.filter(b => b.dispatchDate === today);
+    const outCount = todayBills.filter(b => b.status === 'WITH_AGENT').length;
+    const inCount = todayBills.filter(b => b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND').length;
+    const leftCount = todayBills.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT').length;
+
+    const elOut = document.getElementById('homeStatOut');
+    const elIn = document.getElementById('homeStatIn');
+    const elLeft = document.getElementById('homeStatLeft');
+    if (elOut) elOut.textContent = outCount;
+    if (elIn) elIn.textContent = inCount;
+    if (elLeft) elLeft.textContent = leftCount;
+
+    // Greeting based on time of day
+    const hour = new Date().getHours();
+    const greeting = hour < 12 ? 'Good Morning! 👋' : hour < 17 ? 'Good Afternoon! 👋' : 'Good Evening! 👋';
+    const greetEl = document.getElementById('homeGreetingText');
+    if (greetEl) greetEl.textContent = greeting;
+  }
+
+  // Opens agent picker modal before scanning
+  function openAgentPicker(mode) {
+    State.activeScanMode = mode;
+    const modal = document.getElementById('agentPickerModal');
+    const title = document.getElementById('agentPickerTitle');
+    const subtitle = document.getElementById('agentPickerSubtitle');
+    if (title) title.textContent = mode === 'DISPATCH' ? 'Morning Dispatch — Who is scanning?' : 'Evening Return — Who is checking in?';
+    if (subtitle) subtitle.textContent = mode === 'DISPATCH' ? 'Select the agent dispatching bills today' : 'Select the agent returning bills today';
+    if (modal) modal.style.display = 'flex';
+  }
+
+  // Called when an agent is selected in the picker modal
+  async function selectAgentAndStartScan(agentName) {
+    const agent = State.agents.find(a => a.name === agentName) || { id: agentName, name: agentName };
+    State.activeAgent = agent;
+
+    // Close picker
+    const modal = document.getElementById('agentPickerModal');
+    if (modal) modal.style.display = 'none';
+
+    const mode = State.activeScanMode;
+
+    if (mode === 'DISPATCH') {
+      // Update agent badge on dispatch tab
+      const badge = document.getElementById('dispatchAgentBadge');
+      if (badge) badge.textContent = agentName;
+
+      // Also push to hidden select for any legacy JS
+      const sel = document.getElementById('dispatchAgentSelect');
+      if (sel) {
+        sel.innerHTML = `<option value="${agentName}" selected>${agentName}</option>`;
+        sel.value = agentName;
+      }
+
+      await switchTab('tab-dispatch');
+    } else {
+      // Update agent badge on settlement tab
+      const badge = document.getElementById('settlementAgentBadge');
+      if (badge) badge.textContent = agentName;
+
+      // Push to hidden select
+      const sel = document.getElementById('settlementAgentSelect');
+      if (sel) {
+        sel.innerHTML = `<option value="${agentName}" selected>${agentName}</option>`;
+        sel.value = agentName;
+      }
+
+      await switchTab('tab-settlement');
+    }
+  }
+
+  // Returns home and stops camera
+  async function goBackHome() {
+    State.activeAgent = null;
+    State.activeScanMode = null;
+    await switchTab('tab-home');
+  }
+
   function setupEventListeners() {
-    // Tab switching
+    // Tab switching (only nav tabs, not scan tabs)
     document.querySelectorAll('.tab-item').forEach(btn => {
       btn.addEventListener('click', () => switchTab(btn.dataset.tab));
     });
+
+    // HOME TAB: action cards open agent picker
+    document.getElementById('homeDispatchCard')?.addEventListener('click', () => openAgentPicker('DISPATCH'));
+    document.getElementById('homeSettlementCard')?.addEventListener('click', () => openAgentPicker('SETTLEMENT'));
+
+    // AGENT PICKER MODAL: agent buttons
+    document.querySelectorAll('.agent-pick-btn').forEach(btn => {
+      btn.addEventListener('click', () => selectAgentAndStartScan(btn.dataset.agent));
+    });
+    document.getElementById('closeAgentPickerBtn')?.addEventListener('click', () => {
+      document.getElementById('agentPickerModal').style.display = 'none';
+    });
+
+    // BACK BUTTONS on scan tabs
+    document.getElementById('backFromDispatchBtn')?.addEventListener('click', goBackHome);
+    document.getElementById('backFromSettlementBtn')?.addEventListener('click', goBackHome);
 
     // Theme toggle
     document.getElementById('themeToggleBtn')?.addEventListener('click', () => {
@@ -3707,13 +3807,13 @@ _BillAudit Pro_`;
 
     setupEventListeners();
 
-    // Auto-launch camera for camera-first rapid scanning cleanly
-    (async () => {
-      try {
-        await initCameraSelectors();
-      } catch (e) {}
-      startDispatchScanner().catch(() => {});
-    })();
+    // Update home tab stats on load
+    updateHomeStats();
+
+    // Pre-warm camera selector in background (doesn't start camera, just enumerates devices)
+    setTimeout(() => {
+      initCameraSelectors().catch(() => {});
+    }, 500);
 
     // Auto-sync Google Sheet directly in background on website load / refresh
     setTimeout(() => {

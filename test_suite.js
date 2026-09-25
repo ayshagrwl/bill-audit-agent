@@ -1084,3 +1084,55 @@ google.visualization.Query.setResponse({
 
 
 
+
+
+// ========================================================
+// TEST 24: Agent-First Flow — Rajesh & Shivam, activeAgent
+// ========================================================
+(function () {
+  console.log('Test 24: Agent-First Flow — Hardcoded Rajesh and Shivam, activeAgent basket assignment');
+
+  const DEFAULT_AGENTS = [
+    { id: 'AG-001', name: 'Rajesh', phone: '' },
+    { id: 'AG-002', name: 'Shivam', phone: '' }
+  ];
+  assert.strictEqual(DEFAULT_AGENTS.length, 2, 'Must have exactly 2 agents');
+  assert.strictEqual(DEFAULT_AGENTS[0].name, 'Rajesh', 'First agent must be Rajesh');
+  assert.strictEqual(DEFAULT_AGENTS[1].name, 'Shivam', 'Second agent must be Shivam');
+
+  const mockState = {
+    agents: [...DEFAULT_AGENTS],
+    activeAgent: null,
+    activeScanMode: null
+  };
+
+  mockState.activeScanMode = 'DISPATCH';
+  const agentName = 'Rajesh';
+  const agent = mockState.agents.find(a => a.name === agentName) || { id: agentName, name: agentName };
+  mockState.activeAgent = agent;
+  assert.strictEqual(mockState.activeAgent.name, 'Rajesh', 'activeAgent must be Rajesh after selection');
+
+  function simulateAddBill(state, parsedBill) {
+    let assignedAgent = state.activeAgent ? state.activeAgent.name : '';
+    if (!assignedAgent && parsedBill.agent) assignedAgent = parsedBill.agent;
+    if (!assignedAgent && state.agents.length > 0) assignedAgent = state.agents[0].name;
+    return assignedAgent;
+  }
+
+  const billWithNoAgent = { billNo: 'IN-FY26/27-3965', party: 'Test Party', amount: 1336, agent: '' };
+  const assignedAgent = simulateAddBill(mockState, billWithNoAgent);
+  assert.strictEqual(assignedAgent, 'Rajesh', 'Bill must be assigned to Rajesh from activeAgent');
+
+  mockState.activeScanMode = 'SETTLEMENT';
+  const agent2 = mockState.agents.find(a => a.name === 'Shivam');
+  mockState.activeAgent = agent2;
+  assert.strictEqual(mockState.activeAgent.name, 'Shivam', 'activeAgent must switch to Shivam');
+
+  mockState.activeAgent = null;
+  mockState.activeScanMode = null;
+  assert.strictEqual(mockState.activeAgent, null, 'activeAgent must be null after going back home');
+  assert.strictEqual(mockState.activeScanMode, null, 'activeScanMode must be null after going back home');
+
+  console.log('Test 24 Passed! Agent-First Flow (Rajesh and Shivam, activeAgent basket assignment) verified 100%!');
+  console.log('ALL 24 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+})();

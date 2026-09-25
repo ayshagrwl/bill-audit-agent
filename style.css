@@ -1580,3 +1580,246 @@ body {
   body { background: #fff !important; color: #000 !important; }
   .clean-card { border: none !important; box-shadow: none !important; }
 }
+
+/* ============================================================
+   HOME TAB — Action Cards & Stats Strip
+   ============================================================ */
+
+.home-hero {
+  padding: 16px 12px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.home-greeting {
+  text-align: center;
+  padding: 16px 0 6px;
+}
+.home-hero-icon {
+  font-size: 2.4rem;
+  color: var(--primary);
+  display: block;
+  margin-bottom: 8px;
+}
+.home-greeting h2 {
+  font-size: 1.35rem;
+  font-weight: 700;
+  margin: 0 0 4px;
+  color: var(--text-primary);
+}
+.home-greeting p {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+/* Home Action Cards */
+.home-action-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  padding: 18px 16px;
+  border-radius: var(--radius-md);
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+  position: relative;
+  overflow: hidden;
+}
+.home-action-card:active {
+  transform: scale(0.98);
+}
+
+.home-card-out {
+  background: linear-gradient(135deg, #1e40af 0%, #2563eb 100%);
+  color: #fff;
+  box-shadow: 0 4px 16px rgba(37, 99, 235, 0.30);
+}
+.home-card-in {
+  background: linear-gradient(135deg, #065f46 0%, #059669 100%);
+  color: #fff;
+  box-shadow: 0 4px 16px rgba(5, 150, 105, 0.30);
+}
+
+.home-card-icon {
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  background: rgba(255,255,255,0.18);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  flex-shrink: 0;
+}
+.home-card-body {
+  flex: 1;
+}
+.home-card-body h3 {
+  font-size: 1.05rem;
+  font-weight: 700;
+  margin: 0 0 3px;
+}
+.home-card-body p {
+  font-size: 0.8rem;
+  margin: 0;
+  opacity: 0.88;
+}
+.home-card-arrow {
+  font-size: 1rem;
+  opacity: 0.7;
+}
+
+/* Home Stats Strip */
+.home-stats-strip {
+  display: flex;
+  gap: 10px;
+  background: var(--bg-card);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-light);
+  padding: 14px 12px;
+}
+.home-stat {
+  flex: 1;
+  text-align: center;
+}
+.home-stat-val {
+  display: block;
+  font-size: 1.5rem;
+  font-weight: 800;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  line-height: 1;
+  margin-bottom: 4px;
+}
+.home-stat-label {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-weight: 600;
+}
+.home-stat-success .home-stat-val { color: var(--success); }
+.home-stat-danger .home-stat-val { color: var(--danger); }
+
+
+/* ============================================================
+   SCAN SESSION HEADER — Agent badge + Back button
+   ============================================================ */
+
+.scan-session-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 0;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  margin-bottom: 4px;
+}
+.scan-session-out {
+  background: linear-gradient(90deg, #1e40af, #2563eb);
+  color: #fff;
+}
+.scan-session-in {
+  background: linear-gradient(90deg, #065f46, #059669);
+  color: #fff;
+}
+.session-back-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255,255,255,0.2);
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+.session-back-btn:hover {
+  background: rgba(255,255,255,0.35);
+}
+.session-title {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.session-mode-label {
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+.session-agent-badge {
+  font-size: 0.78rem;
+  background: rgba(255,255,255,0.22);
+  padding: 1px 8px;
+  border-radius: 20px;
+  font-weight: 600;
+  display: inline-block;
+  width: fit-content;
+}
+
+
+/* ============================================================
+   AGENT PICKER MODAL
+   ============================================================ */
+
+.agent-picker-card {
+  max-width: 380px;
+  width: 92%;
+}
+.agent-picker-subtitle {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin: 2px 0 16px;
+}
+.agent-picker-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 4px;
+}
+.agent-pick-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 22px 12px;
+  border-radius: var(--radius-md);
+  border: 2px solid var(--border-light);
+  background: var(--bg-card);
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  transition: border-color 0.15s, background 0.15s, transform 0.1s;
+  font-family: var(--font-sans);
+}
+.agent-pick-btn:hover,
+.agent-pick-btn:focus {
+  border-color: var(--primary);
+  background: var(--primary-light, #eff6ff);
+  outline: none;
+}
+.agent-pick-btn:active {
+  transform: scale(0.97);
+}
+.agent-pick-avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--primary-light, #dbeafe);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.6rem;
+  color: var(--primary);
+}
