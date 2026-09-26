@@ -179,8 +179,10 @@
       if (storedSettings) {
         State.settings = { ...DEFAULT_SETTINGS, ...JSON.parse(storedSettings) };
       }
-      if (!State.settings.mainSheetScriptUrl) {
+      // If user had an older/stale URL stored in localStorage, update to current default
+      if (!State.settings.mainSheetScriptUrl || State.settings.mainSheetScriptUrl.includes('AKfycbwm') || State.settings.mainSheetScriptUrl.includes('AKfycbwBdKP')) {
         State.settings.mainSheetScriptUrl = DEFAULT_SETTINGS.mainSheetScriptUrl;
+        State.settings.scriptUrl = DEFAULT_SETTINGS.scriptUrl;
       }
       if (!State.settings.trackingSheetScriptUrl) {
         State.settings.trackingSheetScriptUrl = DEFAULT_SETTINGS.trackingSheetScriptUrl;
@@ -2068,9 +2070,16 @@
         saveState('master');
 
         // Update modal in real time if currently open for this bill
-        if (State.isConfirmModalOpen && State.pendingScannedBill &&
-            (normalizeInvoiceNumber(State.pendingScannedBill.billNo) === normalizeInvoiceNumber(billNo) ||
-             State.pendingScannedBill.billNo === b.billNo)) {
+        const pendingNo = State.pendingScannedBill?.billNo ? String(State.pendingScannedBill.billNo).trim() : '';
+        const pendingDigits = pendingNo.replace(/\D/g, '');
+        const billDigits = String(b.billNo || '').replace(/\D/g, '');
+        const isMatch = State.isConfirmModalOpen && State.pendingScannedBill &&
+          (normalizeInvoiceNumber(pendingNo) === normalizeInvoiceNumber(billNo) ||
+           normalizeInvoiceNumber(pendingNo) === normalizeInvoiceNumber(b.billNo) ||
+           pendingNo === b.billNo ||
+           (pendingDigits.length >= 3 && billDigits.endsWith(pendingDigits)));
+
+        if (isMatch) {
           
           State.pendingScannedBill.party = b.party;
           State.pendingScannedBill.amount = b.amount;
@@ -2775,9 +2784,9 @@ _BillAudit Pro_`;
       const resp = await fetch(`${url}?action=PING&t=${Date.now()}`);
       const data = await resp.json();
 
-      if (data && data.status === 'OK') {
+      if (data && (data.status === 'OK' || data.status === 'ok')) {
         SoundFX.playBeep('success');
-        showToast(`Connected to Main Sheet (${data.sheetTitle || 'Fetcher Active'})!`, 'success');
+        showToast(`Connected to Main Sheet (${data.sheetTitle || data.sheet || 'Fetcher Active'})!`, 'success');
         State.settings.mainSheetScriptUrl = url;
         State.settings.scriptUrl = url;
         saveState('settings');
