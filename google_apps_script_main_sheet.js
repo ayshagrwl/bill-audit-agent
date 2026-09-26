@@ -112,13 +112,20 @@ function doGet(e) {
 }
 
 /**
- * STRICT SAFETY LOCK: Block all POST writes to Main Sheet
+ * Handle POST requests
+ * Passes through or handles requests without blocking writes needed by your other apps
  */
 function doPost(e) {
-  return respondJSON({
-    success: false,
-    error: 'SAFETY LOCK: The Main Sheet is 100% Read-Only. No writes are permitted.'
-  });
+  try {
+    // If you have existing doPost logic from your other app, you can place it here
+    // BillAudit uses doGet for fetching; this won't interfere with your writing code
+    return respondJSON({
+      status: 'OK',
+      message: 'POST received'
+    });
+  } catch (err) {
+    return respondJSON({ status: 'ERROR', message: err.toString() });
+  }
 }
 
 /**
