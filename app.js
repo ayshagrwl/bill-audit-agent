@@ -28,8 +28,8 @@
   ];
 
   const DEFAULT_SETTINGS = {
-    scriptUrl: 'https://script.google.com/macros/s/AKfycbwBdKPZ5ncieCZ59YvwWUofpyrVmBSssTP5voWGoXW5dwRmLt7GSVIbBzs-ASyOndFLjQ/exec',
-    mainSheetScriptUrl: 'https://script.google.com/macros/s/AKfycbwBdKPZ5ncieCZ59YvwWUofpyrVmBSssTP5voWGoXW5dwRmLt7GSVIbBzs-ASyOndFLjQ/exec',
+    scriptUrl: 'https://script.google.com/macros/s/AKfycbxIDIzSZzSkZwB4nuMrOkVFHNNY56ad_KVZqt8n3zZ2bEA8FR13hhxQ1xz4kZP_O4NBNA/exec',
+    mainSheetScriptUrl: 'https://script.google.com/macros/s/AKfycbxIDIzSZzSkZwB4nuMrOkVFHNNY56ad_KVZqt8n3zZ2bEA8FR13hhxQ1xz4kZP_O4NBNA/exec',
     trackingSheetScriptUrl: 'https://script.google.com/macros/s/AKfycbxZ9jDxeFTNXH5hdvN_PsuWH76iOJkZ4JZFKEgIAVFzjonrpJyRt783HZLucXdhlZcr/exec',
     sheetCsvUrl: 'https://docs.google.com/spreadsheets/d/11J3WSXNFfu5aARNMBX3HQazajsfzBjj7wX9MWyVVBRk/export?format=csv&gid=1608276684',
     theme: 'light',
