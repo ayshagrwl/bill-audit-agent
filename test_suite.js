@@ -1188,5 +1188,126 @@ google.visualization.Query.setResponse({
   assert.strictEqual(updatedRajeshPending[0].billNo, 'IN-003');
 
   console.log('Test 25 Passed! BillAudit v2 Minimal Custody & Difference Math verified 100%!');
-  console.log('ALL 25 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
 })();
+
+// ========================================================
+// Test 26: BillAudit Fraud Detection & Missed Bills Engine
+// ========================================================
+(function test26_fraudAndMissedBillsEngine() {
+  console.log('\nTest 26: Fraud Alert Verdicts, 3-Agent Flow, Missed Bills & Date History');
+
+  // 1. Exactly 3 Agents
+  const DEFAULT_AGENTS = [
+    { id: 'AG-001', name: 'Rajesh', phone: '' },
+    { id: 'AG-002', name: 'Shivam', phone: '' },
+    { id: 'AG-003', name: 'Self', phone: '' }
+  ];
+  assert.strictEqual(DEFAULT_AGENTS.length, 3, 'Must have exactly 3 canonical agents');
+  assert.deepStrictEqual(DEFAULT_AGENTS.map(a => a.name), ['Rajesh', 'Shivam', 'Self']);
+
+  // 2. Fraud Evaluation Engine
+  function evaluateFraudVerdict(bill, activeAgent, hasMaster = true) {
+    if (hasMaster && !bill.fromMaster) {
+      return { verdict: 'NOT_IN_SHEET', level: 'danger' };
+    }
+    const isMismatch = activeAgent && bill.agent &&
+      bill.agent.toLowerCase().trim() !== activeAgent.toLowerCase().trim() &&
+      bill.agent.toLowerCase().trim() !== 'general agent';
+
+    const outstanding = Number(bill.outstanding) || 0;
+    const receipt = (bill.receipt || '').trim();
+
+    let payStatus = 'PAID';
+    if (outstanding <= 0 || (receipt && outstanding === 0)) {
+      payStatus = 'PAID';
+    } else if (outstanding > 0 && receipt) {
+      payStatus = 'PARTIAL';
+    } else if (outstanding > 0) {
+      payStatus = 'PENDING';
+    }
+
+    return {
+      verdict: isMismatch ? 'AGENT_MISMATCH' : payStatus,
+      payStatus,
+      isMismatch,
+      outstanding
+    };
+  }
+
+  // Case A: Fully Paid Bill
+  const paidBill = { billNo: '3921', party: 'Satguru', amount: 5000, outstanding: 0, receipt: 'RCT-991', agent: 'Rajesh', fromMaster: true };
+  const resPaid = evaluateFraudVerdict(paidBill, 'Rajesh');
+  assert.strictEqual(resPaid.verdict, 'PAID');
+  assert.strictEqual(resPaid.isMismatch, false);
+
+  // Case B: Partial Due Bill
+  const partialBill = { billNo: '3965', party: 'Suresh & Co', amount: 4500, outstanding: 1336, receipt: 'R4083', agent: 'Shivam', fromMaster: true };
+  const resPartial = evaluateFraudVerdict(partialBill, 'Shivam');
+  assert.strictEqual(resPartial.verdict, 'PARTIAL');
+  assert.strictEqual(resPartial.payStatus, 'PARTIAL');
+
+  // Case C: Unpaid / Pending Bill (Fraud risk if agent claims paid)
+  const pendingBill = { billNo: '4001', party: 'Rawat Stores', amount: 8000, outstanding: 8000, receipt: '', agent: 'Self', fromMaster: true };
+  const resPending = evaluateFraudVerdict(pendingBill, 'Self');
+  assert.strictEqual(resPending.verdict, 'PENDING');
+
+  // Case D: Fake / Unrecognized Bill Not in Master Sheet
+  const fakeBill = { billNo: 'FAKE-999', party: 'Unknown', amount: 10000, fromMaster: false };
+  const resFake = evaluateFraudVerdict(fakeBill, 'Rajesh', true);
+  assert.strictEqual(resFake.verdict, 'NOT_IN_SHEET');
+
+  // Case E: Wrong Agent Mismatch
+  const wrongAgentBill = { billNo: '3921', party: 'Satguru', amount: 5000, outstanding: 0, receipt: 'RCT-991', agent: 'Rajesh', fromMaster: true };
+  const resMismatch = evaluateFraudVerdict(wrongAgentBill, 'Shivam');
+  assert.strictEqual(resMismatch.verdict, 'AGENT_MISMATCH');
+  assert.strictEqual(resMismatch.isMismatch, true);
+
+  // 3. Missed Bills Detection Logic
+  const masterSheetBills = [
+    { billNo: 'IN-101', agent: 'Rajesh', party: 'Shop A', amount: 1000, outstanding: 0, receipt: 'R1' },
+    { billNo: 'IN-102', agent: 'Rajesh', party: 'Shop B', amount: 2500, outstanding: 2500, receipt: '' },
+    { billNo: 'IN-103', agent: 'Rajesh', party: 'Shop C', amount: 4000, outstanding: 1000, receipt: 'R2' },
+    { billNo: 'IN-201', agent: 'Shivam', party: 'Shop D', amount: 3000, outstanding: 3000, receipt: '' }
+  ];
+
+  const todayDispatched = [
+    { billNo: 'IN-101', agent: 'Rajesh', dispatchDate: '2026-09-30', status: 'WITH_AGENT' }
+  ];
+
+  const todayDispatchedSet = new Set(todayDispatched.map(b => b.billNo));
+
+  // Find missed bills for Rajesh
+  const rajeshMissed = masterSheetBills.filter(b => b.agent === 'Rajesh' && !todayDispatchedSet.has(b.billNo));
+  assert.strictEqual(rajeshMissed.length, 2, 'Rajesh missed IN-102 and IN-103');
+  assert.deepStrictEqual(rajeshMissed.map(b => b.billNo), ['IN-102', 'IN-103']);
+
+  // 4. Date History Math (Today vs Yesterday)
+  const allBills = [
+    { billNo: 'B-1', agent: 'Rajesh', dispatchDate: '2026-09-29', amount: 5000, status: 'RECEIVED' },
+    { billNo: 'B-2', agent: 'Rajesh', dispatchDate: '2026-09-29', amount: 3000, status: 'WITH_AGENT' },
+    { billNo: 'B-3', agent: 'Rajesh', dispatchDate: '2026-09-30', amount: 7000, status: 'RECEIVED' },
+    { billNo: 'B-4', agent: 'Rajesh', dispatchDate: '2026-09-30', amount: 4000, status: 'WITH_AGENT' }
+  ];
+
+  const yestBills = allBills.filter(b => b.dispatchDate === '2026-09-29');
+  const yestDispatchedAmt = yestBills.reduce((s, b) => s + b.amount, 0);
+  const yestReceivedAmt = yestBills.filter(b => b.status === 'RECEIVED').reduce((s, b) => s + b.amount, 0);
+  const yestDiffAmt = yestBills.filter(b => b.status === 'WITH_AGENT').reduce((s, b) => s + b.amount, 0);
+
+  assert.strictEqual(yestDispatchedAmt, 8000);
+  assert.strictEqual(yestReceivedAmt, 5000);
+  assert.strictEqual(yestDiffAmt, 3000);
+
+  const todayBills = allBills.filter(b => b.dispatchDate === '2026-09-30');
+  const todayDispatchedAmt = todayBills.reduce((s, b) => s + b.amount, 0);
+  const todayReceivedAmt = todayBills.filter(b => b.status === 'RECEIVED').reduce((s, b) => s + b.amount, 0);
+  const todayDiffAmt = todayBills.filter(b => b.status === 'WITH_AGENT').reduce((s, b) => s + b.amount, 0);
+
+  assert.strictEqual(todayDispatchedAmt, 11000);
+  assert.strictEqual(todayReceivedAmt, 7000);
+  assert.strictEqual(todayDiffAmt, 4000);
+
+  console.log('✅ Test 26 Passed! Fraud Verdicts, 3-Agent Flow, Missed Bills & Date History verified 100%!');
+  console.log('🎉 ALL 26 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+})();
+

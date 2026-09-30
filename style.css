@@ -1773,8 +1773,8 @@ body {
    ============================================================ */
 
 .agent-picker-card {
-  max-width: 380px;
-  width: 92%;
+  max-width: 420px;
+  width: 94%;
 }
 .agent-picker-subtitle {
   font-size: 0.85rem;
@@ -1783,8 +1783,8 @@ body {
 }
 .agent-picker-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
   margin-top: 4px;
 }
 .agent-pick-btn {
@@ -1793,12 +1793,12 @@ body {
   align-items: center;
   justify-content: center;
   gap: 10px;
-  padding: 22px 12px;
+  padding: 18px 8px;
   border-radius: var(--radius-md);
   border: 2px solid var(--border-light);
   background: var(--bg-card);
   cursor: pointer;
-  font-size: 1rem;
+  font-size: 0.95rem;
   font-weight: 700;
   color: var(--text-primary);
   transition: border-color 0.15s, background 0.15s, transform 0.1s;
@@ -1814,14 +1814,14 @@ body {
   transform: scale(0.97);
 }
 .agent-pick-avatar {
-  width: 56px;
-  height: 56px;
+  width: 50px;
+  height: 50px;
   border-radius: 50%;
   background: var(--primary-light, #dbeafe);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 1.6rem;
+  font-size: 1.4rem;
   color: var(--primary);
 }
 
@@ -1831,8 +1831,8 @@ body {
 
 .agent-diff-cards-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(105px, 1fr));
+  gap: 8px;
 }
 
 .agent-diff-card {
@@ -1876,3 +1876,273 @@ body {
   font-size: 0.72rem;
   color: var(--text-muted);
 }
+
+/* ============================================================
+   FRAUD VERIFICATION & STATUS BADGES
+   ============================================================ */
+
+.bd-fraud-banner {
+  margin: 8px 0 4px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 0.82rem;
+  font-weight: 700;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  line-height: 1.35;
+  animation: popIn 0.2s ease-out;
+}
+
+.bd-fraud-banner .bd-fraud-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.88rem;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+}
+
+.bd-fraud-banner .bd-fraud-sub {
+  font-size: 0.74rem;
+  font-weight: 500;
+  opacity: 0.95;
+}
+
+/* Green: Fully Paid */
+.bd-fraud-paid {
+  background: #ecfdf5;
+  border: 1.5px solid #10b981;
+  color: #065f46;
+}
+
+/* Yellow: Partial Due */
+.bd-fraud-partial {
+  background: #fffbeb;
+  border: 1.5px solid #f59e0b;
+  color: #92400e;
+}
+
+/* Red: Pending Payment */
+.bd-fraud-pending {
+  background: #fef2f2;
+  border: 1.5px solid #ef4444;
+  color: #991b1b;
+}
+
+/* Dark Crimson: Not In Sheet */
+.bd-fraud-notfound {
+  background: #450a0a;
+  border: 1.5px solid #dc2626;
+  color: #fef2f2;
+}
+
+/* Orange: Wrong Agent Mismatch */
+.bd-fraud-mismatch {
+  background: #fff7ed;
+  border: 1.5px solid #ea580c;
+  color: #9a3412;
+}
+
+/* Blue: Checking / In-Flight */
+.bd-fraud-checking {
+  background: #eff6ff;
+  border: 1.5px solid #3b82f6;
+  color: #1e40af;
+}
+
+/* Blue: Previously Received */
+.bd-fraud-info {
+  background: #f0f9ff;
+  border: 1.5px solid #0284c7;
+  color: #0369a1;
+}
+
+/* ============================================================
+   DIFFERENCE TAB DATE FILTER CHIPS
+   ============================================================ */
+
+.diff-date-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-subtle);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-light);
+}
+
+.diff-date-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.diff-date-chips {
+  display: flex;
+  gap: 6px;
+}
+
+.diff-chip {
+  padding: 4px 10px;
+  border-radius: 20px;
+  border: 1px solid var(--border-light);
+  background: var(--bg-card);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-main);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.diff-chip.active {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+
+/* ============================================================
+   MISSED BILLS REPORT (DIFFERENCE TAB)
+   ============================================================ */
+
+.missed-bills-box {
+  background: #fff5f5;
+  border: 1.5px solid #fecaca;
+  border-radius: var(--radius-md);
+  padding: 12px;
+}
+
+.missed-bills-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.missed-title {
+  font-weight: 800;
+  font-size: 0.95rem;
+  color: #991b1b;
+}
+
+.missed-sub {
+  font-size: 0.76rem;
+  color: #7f1d1d;
+  margin: 2px 0 0;
+}
+
+.missed-bills-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.missed-bill-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #fff;
+  border: 1px solid #fee2e2;
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  gap: 8px;
+}
+
+.missed-bill-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.missed-bill-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.missed-bill-party {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.missed-bill-action {
+  flex-shrink: 0;
+}
+
+/* ============================================================
+   STATUS BADGES FOR LEDGER TAB
+   ============================================================ */
+
+.badge-paid {
+  background: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #10b981;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.badge-partial {
+  background: #fffbeb;
+  color: #92400e;
+  border: 1px solid #f59e0b;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.badge-pending {
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #ef4444;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.badge-custody-out {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #60a5fa;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.badge-custody-in {
+  background: #f0fdf4;
+  color: #15803d;
+  border: 1px solid #86efac;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+

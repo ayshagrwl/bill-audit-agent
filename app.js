@@ -24,7 +24,8 @@
 
   const DEFAULT_AGENTS = [
     { id: 'AG-001', name: 'Rajesh', phone: '' },
-    { id: 'AG-002', name: 'Shivam', phone: '' }
+    { id: 'AG-002', name: 'Shivam', phone: '' },
+    { id: 'AG-003', name: 'Self', phone: '' }
   ];
 
   const DEFAULT_SETTINGS = {
@@ -58,6 +59,7 @@
     dispatchBasket: [],
     activeSettlementAgent: null,
     settlementBills: [],
+    diffDateFilter: 'TODAY', // 'TODAY', 'YESTERDAY', or 'ALL'
     scannerDispatch: null,
     scannerSettlement: null,
     isCameraTransitioning: false,
@@ -278,6 +280,12 @@
 
   function getTodayDateString() {
     const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  function getYesterdayDateString() {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   }
 
@@ -1445,7 +1453,7 @@
     if (State.isConfirmModalOpen) return;
     try {
       const now = Date.now();
-      if (decodedText === State.lastScannedCode && now - State.lastScanTimestamp < 1500) {
+      if (decodedText === State.lastScannedCode && now - State.lastScanTimestamp < 700) {
         return;
       }
       State.lastScannedCode = decodedText;
@@ -1519,19 +1527,25 @@
       assignedAgent = State.agents[0].name;
     }
 
-    // Check duplicate in current basket
-    if (State.dispatchBasket.some(b => b.billNo === parsed.billNo)) {
-      SoundFX.playBeep('warning');
-      showToast(`Bill ${parsed.billNo} is already in the list`, 'warning');
+    // Check duplicate in current basket — update if already present
+    const existingBasketIdx = State.dispatchBasket.findIndex(b => b.billNo === parsed.billNo);
+    if (existingBasketIdx >= 0) {
+      State.dispatchBasket[existingBasketIdx].agent = assignedAgent;
+      if (parsed.party && parsed.party !== 'Standard Account') State.dispatchBasket[existingBasketIdx].party = parsed.party;
+      if (parsed.amount) State.dispatchBasket[existingBasketIdx].amount = parsed.amount;
+      if (parsed.receipt) State.dispatchBasket[existingBasketIdx].receipt = parsed.receipt;
+      if (parsed.outstanding !== undefined) State.dispatchBasket[existingBasketIdx].outstanding = parsed.outstanding;
+      SoundFX.playBeep('success');
+      showToast(`Updated ${parsed.billNo} in dispatch list`, 'info', 1500);
+      renderDispatchBasket();
       return;
     }
 
-    // Check active custody
+    // Check active custody — allow re-dispatching with alert
     const active = State.bills.find(b => b.billNo === parsed.billNo && b.status === 'WITH_AGENT');
     if (active) {
       SoundFX.playBeep('warning');
-      showToast(`Bill ${parsed.billNo} is ALREADY out with ${active.agent}!`, 'warning');
-      return;
+      showToast(`Re-assigning ${parsed.billNo} (previously with ${active.agent})`, 'warning', 2000);
     }
 
     State.dispatchBasket.unshift({
@@ -1843,7 +1857,7 @@
     if (State.isConfirmModalOpen) return;
     try {
       const now = Date.now();
-      if (decodedText === State.lastScannedCode && now - State.lastScanTimestamp < 1500) return;
+      if (decodedText === State.lastScannedCode && now - State.lastScanTimestamp < 700) return;
       State.lastScannedCode = decodedText;
       State.lastScanTimestamp = now;
 
@@ -1911,6 +1925,102 @@
   // ========================================================
   // 6. INSTANT BILL DETAILS CONFIRMATION & MOVE AHEAD MODAL
   // ========================================================
+
+  /**
+   * Evaluates and updates the fraud alert / payment verification banner in the scan modal
+   */
+  function updateModalFraudBanner(parsed, source, isFetching = false) {
+    const banner = document.getElementById('bdFraudStatus');
+    if (!banner || !parsed) return;
+
+    if (isFetching) {
+      banner.className = 'bd-fraud-banner bd-fraud-checking';
+      banner.style.display = 'flex';
+      banner.innerHTML = `
+        <div class="bd-fraud-head"><i class="fa-solid fa-spinner fa-spin"></i> Checking Master Sheet...</div>
+        <div class="bd-fraud-sub">Verifying Column L & M payment status from Google Sheets</div>
+      `;
+      return;
+    }
+
+    const billNo = parsed.billNo;
+    const activeAgent = State.activeAgent ? State.activeAgent.name : (source === 'DISPATCH' ? (document.getElementById('dispatchAgentSelect')?.value) : State.activeSettlementAgent);
+    const hasMaster = State.masterSheetBills && State.masterSheetBills.length > 0;
+    const isFromMaster = !!parsed.fromMaster;
+    const outstanding = (parsed.outstanding !== undefined && parsed.outstanding !== null) ? Number(parsed.outstanding) : 0;
+    const receipt = (parsed.receipt !== undefined && parsed.receipt !== null) ? String(parsed.receipt).trim() : '';
+    const amount = Number(parsed.amount) || 0;
+    const sheetAgent = parsed.agent ? String(parsed.agent).trim() : '';
+
+    // Check 1: Custody / Duplicate status
+    let custodyNote = '';
+    const activeCustody = State.bills.find(b => b.billNo === billNo && b.status === 'WITH_AGENT');
+    const receivedToday = State.bills.find(b => b.billNo === billNo && b.status === 'RECEIVED');
+
+    if (source === 'DISPATCH' && activeCustody) {
+      custodyNote = `⚠️ Already out with ${activeCustody.agent}! Re-dispatching will update handover.`;
+    } else if (source === 'SETTLEMENT' && receivedToday) {
+      custodyNote = `ℹ️ Previously received today. Re-confirming will refresh status.`;
+    }
+
+    // Check 2: Not in master sheet
+    if (hasMaster && !isFromMaster) {
+      banner.className = 'bd-fraud-banner bd-fraud-notfound';
+      banner.style.display = 'flex';
+      banner.innerHTML = `
+        <div class="bd-fraud-head"><i class="fa-solid fa-triangle-exclamation"></i> ❌ NOT IN MASTER SHEET</div>
+        <div class="bd-fraud-sub">Bill ${billNo} not found in sales records. Verify physical bill authenticity!${custodyNote ? '<br>' + custodyNote : ''}</div>
+      `;
+      return;
+    }
+
+    // Check 3: Agent mismatch
+    const isMismatch = activeAgent && activeAgent !== 'AUTO' && sheetAgent &&
+      sheetAgent.toLowerCase() !== activeAgent.toLowerCase() &&
+      sheetAgent.toLowerCase() !== 'general agent' &&
+      sheetAgent.toLowerCase() !== 'sales agent';
+
+    // Check 4: Payment status from Sheet
+    let statusClass = 'bd-fraud-paid';
+    let headHtml = '';
+    let subHtml = '';
+
+    if (outstanding <= 0 || (receipt && outstanding === 0)) {
+      statusClass = 'bd-fraud-paid';
+      headHtml = `<i class="fa-solid fa-circle-check"></i> ✅ FULLY PAID (NO DUES)`;
+      subHtml = `Receipt: ${receipt || 'Paid in Full'} &bull; Balance Due: ₹0.00`;
+    } else if (outstanding > 0 && receipt) {
+      statusClass = 'bd-fraud-partial';
+      headHtml = `<i class="fa-solid fa-circle-exclamation"></i> ⚠️ PARTIAL PAYMENT (DUE: ${formatINR(outstanding)})`;
+      subHtml = `Receipt: ${receipt} &bull; Remaining Due: ${formatINR(outstanding)}`;
+    } else if (outstanding > 0) {
+      statusClass = 'bd-fraud-pending';
+      headHtml = `<i class="fa-solid fa-triangle-exclamation"></i> 🔴 PENDING PAYMENT (DUE: ${formatINR(outstanding)})`;
+      subHtml = `Due Amount: ${formatINR(outstanding)} &bull; No receipt recorded in Col M`;
+    } else if (amount === 0) {
+      statusClass = 'bd-fraud-paid';
+      headHtml = `<i class="fa-solid fa-circle-info"></i> ZERO AMOUNT BILL`;
+      subHtml = `Amount is ₹0.00`;
+    }
+
+    // If agent mismatch, override class to mismatch
+    if (isMismatch) {
+      statusClass = 'bd-fraud-mismatch';
+      headHtml = `<i class="fa-solid fa-user-xmark"></i> ⚠️ AGENT MISMATCH &bull; ` + (outstanding > 0 ? (receipt ? 'PARTIAL DUE' : 'PENDING DUE') : 'PAID');
+      subHtml = `Assigned in Sheet to <strong>${sheetAgent}</strong> (Scanning for <strong>${activeAgent}</strong>).<br>${subHtml}`;
+    }
+
+    if (custodyNote) {
+      subHtml += `<br><strong>${custodyNote}</strong>`;
+    }
+
+    banner.className = `bd-fraud-banner ${statusClass}`;
+    banner.style.display = 'flex';
+    banner.innerHTML = `
+      <div class="bd-fraud-head">${headHtml}</div>
+      <div class="bd-fraud-sub">${subHtml}</div>
+    `;
+  }
 
   function showBillScannedConfirmation(parsed, source = 'DISPATCH') {
     if (!parsed || !parsed.billNo) return;
@@ -2008,10 +2118,14 @@
       advancedBtn.style.display = 'none';
     }
 
+    // Render Live Instant Fraud & Payment Status
+    const needsFetch = !parsed.fromMaster && !!(State.settings.mainSheetScriptUrl || State.settings.scriptUrl);
+    updateModalFraudBanner(parsed, source, needsFetch);
+
     modal.style.display = 'flex';
 
     // If bill details were not pre-loaded in local cache, fetch directly from MARCH-SEPT tab
-    if (!parsed.fromMaster && (State.settings.mainSheetScriptUrl || State.settings.scriptUrl)) {
+    if (needsFetch) {
       fetchSingleBillDetailsFromSheet(parsed.billNo, source);
     }
   }
@@ -2087,7 +2201,6 @@
            (pendingDigits.length >= 3 && billDigits.endsWith(pendingDigits)));
 
         if (isMatch) {
-          
           State.pendingScannedBill.party = b.party;
           State.pendingScannedBill.amount = b.amount;
           State.pendingScannedBill.agent = b.agent;
@@ -2117,6 +2230,9 @@
             }
           }
           if (agentEl && b.agent) agentEl.textContent = b.agent;
+
+          // Update fraud banner with verified sheet details
+          updateModalFraudBanner(State.pendingScannedBill, source, false);
         }
 
         // Also update in dispatch basket if already confirmed
@@ -2133,11 +2249,18 @@
         if (receiptEl && receiptEl.innerHTML.includes('Fetching')) {
           receiptEl.textContent = '-';
         }
+        if (State.isConfirmModalOpen && State.pendingScannedBill) {
+          State.pendingScannedBill.fromMaster = false;
+          updateModalFraudBanner(State.pendingScannedBill, source, false);
+        }
       }
     } catch (e) {
       console.warn('Fast bill lookup from sheet failed:', e);
       if (receiptEl && receiptEl.innerHTML.includes('Fetching')) {
         receiptEl.textContent = '-';
+      }
+      if (State.isConfirmModalOpen && State.pendingScannedBill) {
+        updateModalFraudBanner(State.pendingScannedBill, source, false);
       }
     }
   }
@@ -2428,10 +2551,20 @@
   // 8. TAB 3: REMAINING LEFT-OUT AUDIT ENGINE
   // ========================================================
 
-  function getAgentLeftOutStats(agentName) {
-    const agentBills = State.bills.filter(b => b.agent === agentName);
+  function getAgentLeftOutStats(agentName, dateFilter = null) {
+    const activeDateFilter = dateFilter || State.diffDateFilter || 'TODAY';
+    let agentBills = State.bills.filter(b => b.agent === agentName);
+
+    if (activeDateFilter === 'TODAY') {
+      const today = getTodayDateString();
+      agentBills = agentBills.filter(b => b.dispatchDate === today);
+    } else if (activeDateFilter === 'YESTERDAY') {
+      const yest = getYesterdayDateString();
+      agentBills = agentBills.filter(b => b.dispatchDate === yest);
+    }
+
     const leftOutBills = agentBills.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT');
-    const checkedInBills = agentBills.filter(b => b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND');
+    const checkedInBills = agentBills.filter(b => b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND');
 
     let totalAmt = 0, checkedInAmt = 0, leftOutAmt = 0;
 
@@ -2458,6 +2591,12 @@
     if (!grid || !tbody) return;
 
     const filterVal = filterSelect ? filterSelect.value : 'ALL';
+    const activeDateFilter = State.diffDateFilter || 'TODAY';
+
+    // Highlight active date chip
+    document.querySelectorAll('.diff-chip').forEach(c => {
+      c.classList.toggle('active', (c.dataset.diffDate || 'TODAY') === activeDateFilter);
+    });
 
     // Populate Agent filter options if empty
     if (filterSelect && filterSelect.options.length <= 1) {
@@ -2472,10 +2611,43 @@
     grid.innerHTML = '';
     tbody.innerHTML = '';
 
+    // Calculate strip stats for selected date filter
+    let dateFilteredBills = State.bills;
+    if (activeDateFilter === 'TODAY') {
+      const today = getTodayDateString();
+      dateFilteredBills = State.bills.filter(b => b.dispatchDate === today);
+    } else if (activeDateFilter === 'YESTERDAY') {
+      const yest = getYesterdayDateString();
+      dateFilteredBills = State.bills.filter(b => b.dispatchDate === yest);
+    }
+
+    let stripDispatchedCount = dateFilteredBills.length;
+    let stripDispatchedAmt = dateFilteredBills.reduce((s, b) => s + (Number(b.amount) || 0), 0);
+    let receivedBills = dateFilteredBills.filter(b => b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND');
+    let stripReceivedCount = receivedBills.length;
+    let stripReceivedAmt = receivedBills.reduce((s, b) => s + (Number(b.collectedAmt) || Number(b.amount) || 0), 0);
+    let diffBills = dateFilteredBills.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT');
+    let stripDiffCount = diffBills.length;
+    let stripDiffAmt = diffBills.reduce((s, b) => s + (Number(b.amount) || 0), 0);
+
+    const elOutAmt = document.getElementById('statInCustodyAmt');
+    const elOutCnt = document.getElementById('statInCustody');
+    const elInAmt = document.getElementById('statCollectedAmt');
+    const elInCnt = document.getElementById('statCollected');
+    const elDiffAmt = document.getElementById('statMissingAmt');
+    const elDiffCnt = document.getElementById('statMissing');
+
+    if (elOutAmt) elOutAmt.textContent = formatINR(stripDispatchedAmt);
+    if (elOutCnt) elOutCnt.textContent = `${stripDispatchedCount} bills`;
+    if (elInAmt) elInAmt.textContent = formatINR(stripReceivedAmt);
+    if (elInCnt) elInCnt.textContent = `${stripReceivedCount} bills`;
+    if (elDiffAmt) elDiffAmt.textContent = formatINR(stripDiffAmt);
+    if (elDiffCnt) elDiffCnt.textContent = `${stripDiffCount} bills`;
+
     const allLeftOutBills = [];
 
     State.agents.forEach(agent => {
-      const stats = getAgentLeftOutStats(agent.name);
+      const stats = getAgentLeftOutStats(agent.name, activeDateFilter);
       if (filterVal !== 'ALL' && filterVal !== agent.name) return;
 
       if (stats.leftOutBills.length > 0) {
@@ -2487,12 +2659,12 @@
       card.className = 'leftout-agent-card';
       card.innerHTML = `
         <div class="leftout-agent-head">
-          <span class="leftout-agent-name">${agent.name}</span>
-          <span class="leftout-count-tag">${stats.leftOutCount} Pending Difference</span>
+          <span class="leftout-agent-name"><i class="fa-solid fa-user"></i> ${agent.name}</span>
+          <span class="leftout-count-tag ${stats.leftOutCount > 0 ? 'bg-danger text-white' : ''}">${stats.leftOutCount} Difference</span>
         </div>
         <div class="leftout-amount-row">
-          <small class="text-muted">Dispatched: ${stats.totalCount} | Received: ${stats.checkedInCount}</small>
-          <span class="leftout-amt-val font-mono">${formatINR(stats.leftOutAmt)}</span>
+          <small class="text-muted">Out: ${stats.totalCount} | In: ${stats.checkedInCount}</small>
+          <span class="leftout-amt-val font-mono ${stats.leftOutCount > 0 ? 'text-danger' : ''}">${formatINR(stats.leftOutAmt)}</span>
         </div>
         <div style="display: flex; gap: 6px; margin-top: 4px;">
           <button class="btn btn-outline-whatsapp btn-sm flex-1" data-wa-agent="${agent.name}">
@@ -2508,7 +2680,7 @@
 
     // Populate Left Out Table
     if (allLeftOutBills.length === 0) {
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="7">🎉 Zero difference! All dispatched bills are received back.</td></tr>';
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="7">🎉 Zero difference for ${activeDateFilter.toLowerCase()}! All dispatched bills are accounted for.</td></tr>`;
     } else {
       allLeftOutBills.forEach(b => {
         const tr = document.createElement('tr');
@@ -2516,7 +2688,7 @@
           <td><strong class="font-mono text-danger">${b.billNo}</strong></td>
           <td><strong>${b.agent}</strong></td>
           <td>${b.party}</td>
-          <td class="font-mono">${formatINR(b.amount)}</td>
+          <td class="font-mono font-bold">${formatINR(b.amount)}</td>
           <td>${b.dispatchDate || '-'}</td>
           <td>${b.refNo ? `<span class="badge-receipt">${b.refNo}</span>` : '-'}</td>
           <td>
@@ -2562,6 +2734,93 @@
     if (alertTabBtn) {
       alertTabBtn.classList.toggle('has-leftout', allLeftOutBills.length > 0);
     }
+
+    // Render Missed Bills Report
+    renderMissedBillsReport(filterVal);
+  }
+
+  /**
+   * Missed Bills Report: Identifies bills assigned in Master Sheet that were NOT dispatched today
+   */
+  function renderMissedBillsReport(selectedAgent = 'ALL') {
+    const box = document.getElementById('missedBillsBox');
+    const countEl = document.getElementById('missedBillsCount');
+    const listEl = document.getElementById('missedBillsList');
+    if (!box || !countEl || !listEl) return;
+
+    if (!State.masterSheetBills || State.masterSheetBills.length === 0) {
+      box.style.display = 'none';
+      return;
+    }
+
+    const today = getTodayDateString();
+    const todayDispatchedNos = new Set(
+      State.bills
+        .filter(b => b.dispatchDate === today)
+        .map(b => normalizeInvoiceNumber(b.billNo))
+    );
+
+    const missed = [];
+    State.masterSheetBills.forEach(b => {
+      if (!b || !b.billNo) return;
+      const bAgent = String(b.agent || '').trim();
+      if (!bAgent) return;
+
+      if (selectedAgent !== 'ALL' && bAgent.toLowerCase() !== selectedAgent.toLowerCase()) {
+        return;
+      }
+
+      const norm = normalizeInvoiceNumber(b.billNo);
+      if (!todayDispatchedNos.has(norm)) {
+        missed.push(b);
+      }
+    });
+
+    countEl.textContent = missed.length;
+    box.style.display = missed.length > 0 ? 'block' : 'none';
+
+    listEl.innerHTML = '';
+    missed.slice(0, 40).forEach(b => {
+      const item = document.createElement('div');
+      item.className = 'missed-bill-item';
+      const outstanding = Number(b.outstanding) || 0;
+      const receipt = String(b.receipt || '').trim();
+      let statusBadge = '';
+      if (outstanding <= 0) {
+        statusBadge = `<span class="badge-paid">✅ Paid</span>`;
+      } else if (receipt) {
+        statusBadge = `<span class="badge-partial">⚠️ Partial (${formatINR(outstanding)})</span>`;
+      } else {
+        statusBadge = `<span class="badge-pending">🔴 Due (${formatINR(outstanding)})</span>`;
+      }
+
+      item.innerHTML = `
+        <div class="missed-bill-info">
+          <div class="missed-bill-top">
+            <strong class="font-mono text-danger">${b.billNo}</strong>
+            ${statusBadge}
+            <span class="badge-receipt"><i class="fa-solid fa-user"></i> ${b.agent || 'Agent'}</span>
+          </div>
+          <span class="missed-bill-party">${b.party || 'Customer'} &bull; ${formatINR(b.amount)}</span>
+        </div>
+        <div class="missed-bill-action">
+          <button class="btn btn-outline-danger btn-sm" data-dispatch-missed="${b.billNo}">
+            <i class="fa-solid fa-plus"></i> Dispatch
+          </button>
+        </div>
+      `;
+      listEl.appendChild(item);
+    });
+
+    listEl.querySelectorAll('[data-dispatch-missed]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const bNo = btn.dataset.dispatchMissed;
+        const b = findMasterBill(bNo);
+        if (b) {
+          showBillScannedConfirmation(b, 'DISPATCH');
+        }
+      });
+    });
   }
 
   function sendLeftOutWhatsApp(agentName) {
@@ -2616,53 +2875,134 @@ _BillAudit Pro_`;
 
 
   // ========================================================
-  // 9. MASTER LEDGER & EXPORT
+  // 9. MASTER LEDGER (LIVE MASTER SHEET BILL BROWSER)
   // ========================================================
 
   function renderMasterLedger() {
     const tbody = document.getElementById('masterLedgerTbody');
+    const countInfo = document.getElementById('ledgerCountInfo');
     if (!tbody) return;
 
-    const search = (document.getElementById('ledgerSearchInput').value || '').toLowerCase();
-    const agentFilter = document.getElementById('ledgerAgentFilter').value;
-    const statusFilter = document.getElementById('ledgerStatusFilter').value;
+    const search = (document.getElementById('ledgerSearchInput')?.value || '').trim().toLowerCase();
+    const agentFilter = document.getElementById('ledgerAgentFilter')?.value || 'ALL';
+    const statusFilter = document.getElementById('ledgerStatusFilter')?.value || 'ALL';
 
-    const filtered = State.bills.filter(b => {
-      if (search) {
-        const matchNo = b.billNo.toLowerCase().includes(search);
-        const matchParty = (b.party || '').toLowerCase().includes(search);
-        if (!matchNo && !matchParty) return false;
-      }
-      if (agentFilter !== 'ALL' && b.agent !== agentFilter) return false;
-      if (statusFilter !== 'ALL' && b.status !== statusFilter) return false;
-      return true;
+    const useMaster = State.masterSheetBills && State.masterSheetBills.length > 0;
+    const sourceBills = useMaster ? State.masterSheetBills : State.bills;
+
+    // Fast O(1) map for today's custody lookup
+    const today = getTodayDateString();
+    const todayCustodyMap = new Map();
+    State.bills.forEach(b => {
+      const norm = normalizeInvoiceNumber(b.billNo);
+      todayCustodyMap.set(norm, b);
+      todayCustodyMap.set(b.billNo.toUpperCase(), b);
     });
 
-    if (filtered.length === 0) {
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="7">No matching bills found.</td></tr>';
+    const results = [];
+    const limit = 60;
+
+    for (let i = 0; i < sourceBills.length; i++) {
+      const b = sourceBills[i];
+      if (!b || !b.billNo) continue;
+
+      const billNoStr = String(b.billNo).toLowerCase();
+      const partyStr = String(b.party || '').toLowerCase();
+
+      // Search filter (Invoice or Party)
+      if (search) {
+        if (!billNoStr.includes(search) && !partyStr.includes(search)) {
+          continue;
+        }
+      }
+
+      // Agent filter
+      const bAgent = String(b.agent || '').trim();
+      if (agentFilter !== 'ALL' && bAgent.toLowerCase() !== agentFilter.toLowerCase()) {
+        continue;
+      }
+
+      // Payment & Custody Status filter
+      const outstanding = (b.outstanding !== undefined && b.outstanding !== null) ? Number(b.outstanding) : 0;
+      const receipt = String(b.receipt || '').trim();
+      const norm = normalizeInvoiceNumber(b.billNo);
+      const custodyRecord = todayCustodyMap.get(norm) || todayCustodyMap.get(b.billNo.toUpperCase());
+
+      if (statusFilter === 'PAID') {
+        if (outstanding > 0) continue;
+      } else if (statusFilter === 'PARTIAL') {
+        if (outstanding <= 0 || !receipt) continue;
+      } else if (statusFilter === 'PENDING') {
+        if (outstanding <= 0 || receipt) continue;
+      } else if (statusFilter === 'DISPATCHED') {
+        if (!custodyRecord || custodyRecord.status !== 'WITH_AGENT') continue;
+      } else if (statusFilter === 'RECEIVED') {
+        if (!custodyRecord || custodyRecord.status !== 'RECEIVED') continue;
+      }
+
+      results.push({ bill: b, custody: custodyRecord, outstanding, receipt });
+      if (results.length >= limit) break;
+    }
+
+    if (countInfo) {
+      if (useMaster) {
+        countInfo.textContent = `Showing ${results.length} of ${sourceBills.length.toLocaleString()} Master Sheet bills`;
+      } else {
+        countInfo.textContent = `Showing ${results.length} bills`;
+      }
+    }
+
+    if (results.length === 0) {
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="7">No matching bills found in ${useMaster ? 'Master Sheet' : 'records'}.</td></tr>`;
       return;
     }
 
     tbody.innerHTML = '';
-    filtered.forEach(b => {
+    results.forEach(({ bill, custody, outstanding, receipt }) => {
       const tr = document.createElement('tr');
-      let statusLabel = b.status;
-      if (b.status === 'WITH_AGENT') statusLabel = '<span class="text-danger font-bold">With Agent (OUT)</span>';
-      else if (b.status === 'PAID_FULL') statusLabel = '<span class="text-success font-bold">Paid (Full)</span>';
-      else if (b.status === 'PAID_PARTIAL') statusLabel = '<span class="text-success font-bold">Paid (Partial)</span>';
-      else if (b.status === 'RETURNED_IN_HAND') statusLabel = '<span class="text-primary font-bold">Returned Next Round</span>';
-      else if (b.status === 'MISSING_ALERT') statusLabel = '<span class="text-danger font-bold">⚠️ Left Out / Missing</span>';
+
+      let paymentBadge = '';
+      if (outstanding <= 0) {
+        paymentBadge = `<span class="badge-paid">✅ Paid (${receipt || 'Full'})</span>`;
+      } else if (receipt) {
+        paymentBadge = `<span class="badge-partial">⚠️ Partial (${formatINR(outstanding)})</span>`;
+      } else {
+        paymentBadge = `<span class="badge-pending">🔴 Due (${formatINR(outstanding)})</span>`;
+      }
+
+      let custodyBadge = '<span class="text-muted" style="font-size:0.75rem;">Not Out</span>';
+      if (custody) {
+        if (custody.status === 'WITH_AGENT') {
+          custodyBadge = `<span class="badge-custody-out">📤 Out (${custody.agent})</span>`;
+        } else if (custody.status === 'RECEIVED') {
+          custodyBadge = `<span class="badge-custody-in">📥 Received</span>`;
+        }
+      }
 
       tr.innerHTML = `
-        <td><strong class="font-mono text-primary">${b.billNo}</strong></td>
-        <td>${b.party}</td>
-        <td class="font-mono">${formatINR(b.amount)}</td>
-        <td><strong>${b.agent || '-'}</strong></td>
-        <td>${statusLabel}</td>
-        <td>${b.refNo ? `<span class="badge-receipt">${b.refNo}</span>` : (b.collectedAmt > 0 ? formatINR(b.collectedAmt) : '-')}</td>
-        <td><small class="text-muted">${b.paymentMode || b.returnReason || b.remarks || '-'}</small></td>
+        <td><strong class="font-mono text-primary">${bill.billNo}</strong></td>
+        <td>${bill.party || 'Standard Account'}</td>
+        <td class="font-mono font-bold">${formatINR(bill.amount)}</td>
+        <td>${paymentBadge}</td>
+        <td><strong>${bill.agent || '-'}</strong></td>
+        <td>${custodyBadge}</td>
+        <td>
+          <button class="btn btn-dark btn-sm" data-ledger-view="${bill.billNo}">
+            <i class="fa-solid fa-eye"></i> View
+          </button>
+        </td>
       `;
       tbody.appendChild(tr);
+    });
+
+    tbody.querySelectorAll('[data-ledger-view]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const bNo = btn.dataset.ledgerView;
+        const b = findMasterBill(bNo) || State.bills.find(item => item.billNo === bNo);
+        if (b) {
+          showBillScannedConfirmation(b, 'DISPATCH');
+        }
+      });
     });
   }
 
@@ -3262,6 +3602,9 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
         inCustodyAmt += amt;
         missingCount++;
         missingAmt += amt;
+      } else if (b.status === 'RECEIVED') {
+        collectedCount++;
+        collectedAmt += amt;
       } else if (b.status === 'PAID_FULL') {
         collectedCount++;
         collectedAmt += colAmt;
@@ -3565,6 +3908,26 @@ _BillAudit Pro_`;
     // ================== TAB 3: LEFT OUT ==================
     document.getElementById('leftOutAgentFilter')?.addEventListener('change', renderLeftOutTab);
     document.getElementById('whatsappAllLeftOutBtn')?.addEventListener('click', sendAllLeftOutWhatsApp);
+
+    // Difference date filter chips (Today, Yesterday, All Time)
+    document.querySelectorAll('.diff-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        document.querySelectorAll('.diff-chip').forEach(c => c.classList.remove('active'));
+        chip.classList.add('active');
+        State.diffDateFilter = chip.dataset.diffDate || 'TODAY';
+        renderLeftOutTab();
+      });
+    });
+
+    // Toggle Missed Bills list visibility
+    document.getElementById('toggleMissedBillsBtn')?.addEventListener('click', () => {
+      const list = document.getElementById('missedBillsList');
+      const btn = document.getElementById('toggleMissedBillsBtn');
+      if (!list || !btn) return;
+      const isHidden = list.style.display === 'none';
+      list.style.display = isHidden ? 'flex' : 'none';
+      btn.textContent = isHidden ? 'Hide List' : 'Show List';
+    });
 
     // ================== TAB 4: LEDGER ==================
     document.getElementById('ledgerSearchInput')?.addEventListener('input', renderMasterLedger);

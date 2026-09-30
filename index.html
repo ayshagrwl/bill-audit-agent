@@ -434,6 +434,16 @@
           </div>
         </div>
 
+        <!-- Date History Filter: Today / Yesterday / All Days -->
+        <div class="diff-date-filter-row mt-2">
+          <span class="diff-date-label"><i class="fa-regular fa-calendar"></i> History:</span>
+          <div class="diff-date-chips" id="diffDateFilters">
+            <button class="diff-chip active" data-diff-date="TODAY">Today</button>
+            <button class="diff-chip" data-diff-date="YESTERDAY">Yesterday</button>
+            <button class="diff-chip" data-diff-date="ALL">All Time</button>
+          </div>
+        </div>
+
         <!-- Daily Status Summary Strip -->
         <div class="status-strip mt-2">
           <div class="strip-item info-item">
@@ -467,6 +477,22 @@
           <!-- Populated dynamically -->
         </div>
 
+        <!-- Missed Bills (Assigned in Sheet but NOT Dispatched) Section -->
+        <div class="missed-bills-box mt-3" id="missedBillsBox" style="display: none;">
+          <div class="missed-bills-header">
+            <div>
+              <span class="missed-title"><i class="fa-solid fa-triangle-exclamation text-danger"></i> Missed Bills (<span id="missedBillsCount">0</span>)</span>
+              <p class="missed-sub">Assigned to agent in Master Sheet but never dispatched today</p>
+            </div>
+            <button class="btn btn-outline-danger btn-sm" id="toggleMissedBillsBtn">
+              Show List
+            </button>
+          </div>
+          <div class="missed-bills-list mt-2" id="missedBillsList" style="display: none;">
+            <!-- Populated dynamically -->
+          </div>
+        </div>
+
         <!-- Detailed Left Out Table -->
         <div class="table-wrap mt-3">
           <table class="minimal-table">
@@ -493,28 +519,29 @@
 
 
     <!-- ======================================================== -->
-    <!-- TAB 4: MASTER LEDGER                                     -->
+    <!-- TAB 4: MASTER LEDGER (LIVE SHEET BILL BROWSER)            -->
     <!-- ======================================================== -->
     <section id="tab-ledger" class="tab-view">
       <div class="clean-card">
         <div class="ledger-filter-row">
-          <input type="text" id="ledgerSearchInput" class="form-input" placeholder="🔍 Search bill no or party name..." />
+          <input type="text" id="ledgerSearchInput" class="form-input" placeholder="🔍 Search 15,000+ sheet bills by invoice or party..." />
           <div class="filter-selects">
             <select id="ledgerAgentFilter" class="form-select">
               <option value="ALL">All Agents</option>
             </select>
             <select id="ledgerStatusFilter" class="form-select">
-              <option value="ALL">All Statuses</option>
-              <option value="WITH_AGENT">With Agent (OUT)</option>
-              <option value="PAID_FULL">Paid (Full)</option>
-              <option value="PAID_PARTIAL">Paid (Partial)</option>
-              <option value="RETURNED_IN_HAND">Returned Next Round</option>
-              <option value="MISSING_ALERT">⚠️ Left Out / Missing</option>
+              <option value="ALL">All Payment Statuses</option>
+              <option value="PAID">✅ Paid (Full)</option>
+              <option value="PARTIAL">⚠️ Partial Due</option>
+              <option value="PENDING">🔴 Pending Payment</option>
+              <option value="DISPATCHED">📤 Dispatched Today</option>
+              <option value="RECEIVED">📥 Received Today</option>
             </select>
           </div>
         </div>
 
         <div class="ledger-actions-row">
+          <span class="text-muted" style="font-size: 0.8rem;" id="ledgerCountInfo">Showing bills...</span>
           <button id="exportCsvBtn" class="btn btn-outline btn-sm">
             <i class="fa-solid fa-download"></i> Export CSV
           </button>
@@ -526,12 +553,12 @@
             <thead>
               <tr>
                 <th>Invoice No</th>
-                <th>Party</th>
+                <th>Party Name</th>
                 <th>Amount</th>
-                <th>Agent</th>
-                <th>Status</th>
-                <th>Receipt / Payment</th>
-                <th>Details</th>
+                <th>Payment Status</th>
+                <th>Sheet Agent</th>
+                <th>Today's Custody</th>
+                <th>Action</th>
               </tr>
             </thead>
             <tbody id="masterLedgerTbody">
@@ -790,6 +817,8 @@ IN-3922&#9;Vikram Singh&#9;Mahaveer Market&#9;12850&#9;Paid UPI&#9;2000.00"></te
         <div class="bd-hero-sub">INVOICE NUMBER</div>
         <div class="bd-invoice-no font-mono" id="bdBillNo">IN-0000</div>
         <div class="bd-party" id="bdParty">Customer Name</div>
+        <!-- Live Instant Fraud & Payment Verification Alert -->
+        <div id="bdFraudStatus" class="bd-fraud-banner" style="display: none;"></div>
       </div>
 
       <!-- Key Details Grid: Amount, Payment Remaining, Receipt, Agent -->
@@ -1026,6 +1055,12 @@ IN-3922&#9;Vikram Singh&#9;Mahaveer Market&#9;12850&#9;Paid UPI&#9;2000.00"></te
             <i class="fa-solid fa-user"></i>
           </div>
           <span>Shivam</span>
+        </button>
+        <button class="agent-pick-btn" data-agent="Self">
+          <div class="agent-pick-avatar">
+            <i class="fa-solid fa-user-check"></i>
+          </div>
+          <span>Self</span>
         </button>
       </div>
     </div>
