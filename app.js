@@ -139,8 +139,17 @@
       const storedBills = localStorage.getItem(STORAGE_KEYS.BILLS);
       State.bills = storedBills ? JSON.parse(storedBills) : [];
 
-      // Always use the canonical agent list — Rajesh and Shivam only
+      // Strictly enforce the 3 designated agents only: Rajesh, Shivam, Self
       State.agents = [...DEFAULT_AGENTS];
+      localStorage.setItem(STORAGE_KEYS.AGENTS, JSON.stringify(State.agents));
+
+      // Sanitize legacy bills so only the 3 canonical agents exist in custody
+      const validAgentNames = new Set(['rajesh', 'shivam', 'self']);
+      State.bills.forEach(b => {
+        if (!b.agent || !validAgentNames.has(b.agent.toLowerCase().trim())) {
+          b.agent = 'Rajesh';
+        }
+      });
 
       const storedMaster = localStorage.getItem(STORAGE_KEYS.MASTER_SHEET);
       if (storedMaster) {
@@ -525,17 +534,6 @@
         remainingText: rawOutstanding ? String(rawOutstanding).trim() : ''
       });
     }
-
-    // Auto add newly discovered agents to State.agents
-    detectedAgents.forEach(agentName => {
-      if (!State.agents.some(a => a.name.toLowerCase() === agentName.toLowerCase())) {
-        State.agents.push({
-          id: 'AG-' + (100 + State.agents.length + 1),
-          name: agentName,
-          phone: ''
-        });
-      }
-    });
 
     return parsedBills;
   }
@@ -1507,22 +1505,18 @@
   }
 
   function addBillToDispatchBasket(parsed) {
-    // Agent is locked in from the picker (State.activeAgent); fall back to master sheet detection
+    // Agent is strictly locked in from the Morning Dispatch selection (State.activeAgent)
     let assignedAgent = State.activeAgent ? State.activeAgent.name : '';
 
-    // If still not set, try to take agent from Master Sheet match
-    if (!assignedAgent) {
-      if (parsed.agent) {
-        assignedAgent = parsed.agent;
-      } else {
-        const match = findMasterBill(parsed.billNo);
-        if (match && match.agent) {
-          assignedAgent = match.agent;
-        }
+    // If still not set, check if parsed.agent matches one of our 3 designated agents
+    if (!assignedAgent && parsed.agent) {
+      const matchAgent = State.agents.find(a => a.name.toLowerCase() === String(parsed.agent).trim().toLowerCase());
+      if (matchAgent) {
+        assignedAgent = matchAgent.name;
       }
     }
 
-    // Last resort: first agent in list
+    // Default to active or first designated agent
     if (!assignedAgent && State.agents.length > 0) {
       assignedAgent = State.agents[0].name;
     }
@@ -2082,17 +2076,12 @@
       }
     }
 
-    // Sales Agent
-    let agentName = parsed.agent;
-    if (!agentName) {
-      if (source === 'DISPATCH') {
-        const sel = document.getElementById('dispatchAgentSelect');
-        agentName = (sel && sel.value !== 'AUTO') ? sel.value : 'Auto-Detect';
-      } else {
-        agentName = State.activeSettlementAgent || 'Auto-Detect';
-      }
+    // Sales Agent taking custody
+    let agentName = (State.activeAgent ? State.activeAgent.name : '') || (source === 'DISPATCH' ? (document.getElementById('dispatchAgentSelect')?.value) : State.activeSettlementAgent);
+    if (!agentName || agentName === 'AUTO') {
+      agentName = parsed.agent || (State.agents[0] ? State.agents[0].name : 'Rajesh');
     }
-    if (agentEl) agentEl.textContent = agentName || 'General Agent';
+    if (agentEl) agentEl.textContent = agentName;
 
     // Badge styling
     if (modeBadge) {
@@ -2288,7 +2277,7 @@
       const collectedAmt = Math.max(0, billAmt - outstanding);
 
       if (!bill) {
-        const targetAgent = parsed.agent || State.activeSettlementAgent || (State.agents[0] ? State.agents[0].name : 'Sales Agent');
+        const targetAgent = (State.activeAgent ? State.activeAgent.name : '') || State.activeSettlementAgent || (State.agents[0] ? State.agents[0].name : 'Rajesh');
         bill = {
           billNo: parsed.billNo,
           party: parsed.party || 'Standard Account',
@@ -2598,12 +2587,15 @@
       c.classList.toggle('active', (c.dataset.diffDate || 'TODAY') === activeDateFilter);
     });
 
-    // Populate Agent filter options if empty
-    if (filterSelect && filterSelect.options.length <= 1) {
+    // Populate Agent filter options with the 3 designated agents
+    if (filterSelect) {
+      const currentVal = filterSelect.value || 'ALL';
+      filterSelect.innerHTML = '<option value="ALL">All Agents (Overview)</option>';
       State.agents.forEach(a => {
         const opt = document.createElement('option');
         opt.value = a.name;
         opt.textContent = a.name;
+        if (a.name === currentVal) opt.selected = true;
         filterSelect.appendChild(opt);
       });
     }
@@ -3279,20 +3271,6 @@ _BillAudit Pro_`;
 
     if (incomingBills && incomingBills.length > 0) {
       State.masterSheetBills = incomingBills;
-
-      // Extract and register new agents
-      const existingAgents = new Set(State.agents.map(a => a.name.toLowerCase()));
-      incomingBills.forEach(b => {
-        if (b.agent && !existingAgents.has(b.agent.toLowerCase())) {
-          existingAgents.add(b.agent.toLowerCase());
-          State.agents.push({
-            id: 'AG-' + (100 + State.agents.length + 1),
-            name: b.agent.trim(),
-            phone: ''
-          });
-        }
-      });
-
       rebuildMasterSheetMap();
       saveState('master');
       saveState('agents');
@@ -3444,27 +3422,17 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     if (!container) return;
 
     container.innerHTML = '';
-    State.agents.forEach((ag, idx) => {
+    State.agents.forEach((ag) => {
       const row = document.createElement('div');
       row.className = 'agent-item-pill';
       row.innerHTML = `
-        <div>
-          <span>${ag.name}</span>
-          <small class="text-muted" style="margin-left: 6px;">(${ag.phone || 'No phone'})</small>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <i class="fa-solid fa-circle-check text-success"></i>
+          <strong>${ag.name}</strong>
+          <span class="badge-count-pill" style="display: inline-block;">Active</span>
         </div>
-        <button class="text-btn text-danger" data-remove-agent="${idx}">Remove</button>
       `;
       container.appendChild(row);
-    });
-
-    container.querySelectorAll('[data-remove-agent]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const idx = parseInt(btn.dataset.removeAgent, 10);
-        State.agents.splice(idx, 1);
-        saveState('agents');
-        renderAgentsManager();
-        renderAgentSelects();
-      });
     });
   }
 
@@ -3484,7 +3452,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
           billNo: parsed.billNo,
           party: parsed.party,
           amount: parsed.amount,
-          agent: State.agents[0] ? State.agents[0].name : 'Rahul Sharma',
+          agent: State.agents[0] ? State.agents[0].name : 'Rajesh',
           receipt: 'RCT-001',
           time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           raw
@@ -3753,6 +3721,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
 
       await switchTab('tab-dispatch');
     } else {
+      State.activeSettlementAgent = agentName;
       // Update agent badge on settlement tab
       const badge = document.getElementById('settlementAgentBadge');
       if (badge) badge.textContent = agentName;
@@ -3855,10 +3824,6 @@ ${State.dispatchBasket.map((b, i) => `${i + 1}. *${b.billNo}* [${b.agent}] - ${b
 -------------------------
 _BillAudit Pro_`;
       window.open(`https://wa.me/?text=${encodeURI(msg)}`, '_blank');
-    });
-
-    document.getElementById('addAgentQuickBtn')?.addEventListener('click', () => {
-      document.getElementById('addAgentModal').style.display = 'flex';
     });
 
     // ================== TAB 2: SCAN IN ==================
@@ -4036,21 +4001,6 @@ _BillAudit Pro_`;
     document.getElementById('testTrackingSheetBtn')?.addEventListener('click', testTrackingSheetConnection);
     document.getElementById('forceSyncSheetBtn')?.addEventListener('click', processOfflineQueue);
 
-    document.getElementById('saveNewAgentBtn')?.addEventListener('click', () => {
-      const nameInput = document.getElementById('newAgentNameInput');
-      const phoneInput = document.getElementById('newAgentPhoneInput');
-      const name = nameInput.value.trim();
-      const phone = phoneInput.value.trim();
-      if (!name) return;
-      State.agents.push({ id: 'AG-' + (100 + State.agents.length + 1), name, phone });
-      saveState('agents');
-      renderAgentsManager();
-      renderAgentSelects();
-      nameInput.value = '';
-      phoneInput.value = '';
-      showToast(`Added ${name}`, 'success');
-    });
-
     document.getElementById('loadSampleBillsBtn')?.addEventListener('click', loadSampleBills);
     document.getElementById('generateQrCodesBtn')?.addEventListener('click', previewPrintableQRCodes);
     document.getElementById('clearAllDataBtn')?.addEventListener('click', () => {
@@ -4129,23 +4079,7 @@ _BillAudit Pro_`;
     document.getElementById('cancelReturnModalBtn')?.addEventListener('click', closeReturnModal);
     document.getElementById('returnRecordForm')?.addEventListener('submit', saveReturnRecord);
 
-    document.getElementById('closeAddAgentModalBtn')?.addEventListener('click', () => document.getElementById('addAgentModal').style.display = 'none');
-    document.getElementById('cancelAddAgentModalBtn')?.addEventListener('click', () => document.getElementById('addAgentModal').style.display = 'none');
-    document.getElementById('addAgentModalForm')?.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const name = document.getElementById('modalNewAgentName').value.trim();
-      const phone = document.getElementById('modalNewAgentPhone').value.trim();
-      if (name) {
-        State.agents.push({ id: 'AG-' + (100 + State.agents.length + 1), name, phone });
-        saveState('agents');
-        renderAgentSelects();
-        renderAgentsManager();
-        document.getElementById('addAgentModal').style.display = 'none';
-        document.getElementById('modalNewAgentName').value = '';
-        document.getElementById('modalNewAgentPhone').value = '';
-        showToast(`Added ${name}`, 'success');
-      }
-    });
+
 
     document.getElementById('closeQrPreviewModalBtn')?.addEventListener('click', () => document.getElementById('qrPreviewModal').style.display = 'none');
     document.getElementById('closeQrPreviewBottomBtn')?.addEventListener('click', () => document.getElementById('qrPreviewModal').style.display = 'none');

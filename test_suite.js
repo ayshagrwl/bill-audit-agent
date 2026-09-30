@@ -1094,11 +1094,13 @@ google.visualization.Query.setResponse({
 
   const DEFAULT_AGENTS = [
     { id: 'AG-001', name: 'Rajesh', phone: '' },
-    { id: 'AG-002', name: 'Shivam', phone: '' }
+    { id: 'AG-002', name: 'Shivam', phone: '' },
+    { id: 'AG-003', name: 'Self', phone: '' }
   ];
-  assert.strictEqual(DEFAULT_AGENTS.length, 2, 'Must have exactly 2 agents');
+  assert.strictEqual(DEFAULT_AGENTS.length, 3, 'Must have exactly 3 agents');
   assert.strictEqual(DEFAULT_AGENTS[0].name, 'Rajesh', 'First agent must be Rajesh');
   assert.strictEqual(DEFAULT_AGENTS[1].name, 'Shivam', 'Second agent must be Shivam');
+  assert.strictEqual(DEFAULT_AGENTS[2].name, 'Self', 'Third agent must be Self');
 
   const mockState = {
     agents: [...DEFAULT_AGENTS],
@@ -1128,13 +1130,16 @@ google.visualization.Query.setResponse({
   mockState.activeAgent = agent2;
   assert.strictEqual(mockState.activeAgent.name, 'Shivam', 'activeAgent must switch to Shivam');
 
+  const agent3 = mockState.agents.find(a => a.name === 'Self');
+  mockState.activeAgent = agent3;
+  assert.strictEqual(mockState.activeAgent.name, 'Self', 'activeAgent must switch to Self');
+
   mockState.activeAgent = null;
   mockState.activeScanMode = null;
   assert.strictEqual(mockState.activeAgent, null, 'activeAgent must be null after going back home');
   assert.strictEqual(mockState.activeScanMode, null, 'activeScanMode must be null after going back home');
 
-  console.log('Test 24 Passed! Agent-First Flow (Rajesh and Shivam, activeAgent basket assignment) verified 100%!');
-  console.log('ALL 24 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+  console.log('Test 24 Passed! Agent-First Flow (Rajesh, Shivam, Self, activeAgent basket assignment) verified 100%!');
 })();
 
 
