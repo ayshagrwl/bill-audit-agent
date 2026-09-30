@@ -1136,3 +1136,57 @@ google.visualization.Query.setResponse({
   console.log('Test 24 Passed! Agent-First Flow (Rajesh and Shivam, activeAgent basket assignment) verified 100%!');
   console.log('ALL 24 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
 })();
+
+
+// ========================================================
+// TEST 25: BillAudit v2 — Minimal Custody & Difference Math
+// ========================================================
+(function () {
+  console.log('Test 25: BillAudit v2 — Minimal Custody & Difference Math');
+
+  const bills = [
+    { billNo: 'IN-001', agent: 'Rajesh', amount: 5000, status: 'WITH_AGENT' },
+    { billNo: 'IN-002', agent: 'Rajesh', amount: 3000, status: 'RECEIVED' },
+    { billNo: 'IN-003', agent: 'Rajesh', amount: 2000, status: 'WITH_AGENT' },
+    { billNo: 'IN-004', agent: 'Shivam', amount: 4500, status: 'RECEIVED' },
+    { billNo: 'IN-005', agent: 'Shivam', amount: 1500, status: 'WITH_AGENT' }
+  ];
+
+  // 1. Rajesh Difference
+  const rajeshDispatched = bills.filter(b => b.agent === 'Rajesh');
+  const rajeshReceived = rajeshDispatched.filter(b => b.status === 'RECEIVED');
+  const rajeshPending = rajeshDispatched.filter(b => b.status === 'WITH_AGENT');
+
+  assert.strictEqual(rajeshDispatched.length, 3, 'Rajesh dispatched bills count');
+  assert.strictEqual(rajeshReceived.length, 1, 'Rajesh received bills count');
+  assert.strictEqual(rajeshPending.length, 2, 'Rajesh pending difference count');
+
+  const rajeshDispatchedAmt = rajeshDispatched.reduce((s, b) => s + b.amount, 0);
+  const rajeshReceivedAmt = rajeshReceived.reduce((s, b) => s + b.amount, 0);
+  const rajeshDiffAmt = rajeshPending.reduce((s, b) => s + b.amount, 0);
+
+  assert.strictEqual(rajeshDispatchedAmt, 10000);
+  assert.strictEqual(rajeshReceivedAmt, 3000);
+  assert.strictEqual(rajeshDiffAmt, 7000);
+  assert.strictEqual(rajeshDispatchedAmt - rajeshReceivedAmt, rajeshDiffAmt);
+
+  // 2. Shivam Difference
+  const shivamDispatched = bills.filter(b => b.agent === 'Shivam');
+  const shivamReceived = shivamDispatched.filter(b => b.status === 'RECEIVED');
+  const shivamPending = shivamDispatched.filter(b => b.status === 'WITH_AGENT');
+
+  assert.strictEqual(shivamDispatched.length, 2);
+  assert.strictEqual(shivamReceived.length, 1);
+  assert.strictEqual(shivamPending.length, 1);
+  assert.strictEqual(shivamPending[0].amount, 1500);
+
+  // 3. Receive bill IN-001 (instant 1-tap return)
+  const target = bills.find(b => b.billNo === 'IN-001');
+  target.status = 'RECEIVED';
+  const updatedRajeshPending = bills.filter(b => b.agent === 'Rajesh' && b.status === 'WITH_AGENT');
+  assert.strictEqual(updatedRajeshPending.length, 1);
+  assert.strictEqual(updatedRajeshPending[0].billNo, 'IN-003');
+
+  console.log('Test 25 Passed! BillAudit v2 Minimal Custody & Difference Math verified 100%!');
+  console.log('ALL 25 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+})();

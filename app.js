@@ -1083,12 +1083,11 @@
     return {
       fps: 15, // Optimal for mobile performance without CPU throttling
       qrbox: function(viewfinderWidth, viewfinderHeight) {
-        // Robust scan box calculation preventing negative dimensions
-        const vw = Math.max(viewfinderWidth || 0, 260);
-        const vh = Math.max(viewfinderHeight || 0, 260);
+        const vw = Math.max(viewfinderWidth || 0, 200);
+        const vh = Math.max(viewfinderHeight || 0, 160);
         const minEdge = Math.min(vw, vh);
-        const boxWidth = Math.max(200, Math.floor(minEdge * 0.75));
-        const boxHeight = Math.max(160, Math.floor(boxWidth * 0.75));
+        const boxWidth = Math.max(140, Math.floor(minEdge * 0.8));
+        const boxHeight = Math.max(120, Math.floor(boxWidth * 0.8));
         return {
           width: Math.min(boxWidth, vw - 10),
           height: Math.min(boxHeight, vh - 10)
@@ -1721,20 +1720,19 @@
   }
 
   function updateSettlementSummary(bills) {
-    let totalAmt = 0, paidAmt = 0, missingAmt = 0;
-    let paidCount = 0, missingCount = 0;
+    let totalAmt = 0, receivedAmt = 0, diffAmt = 0;
+    let receivedCount = 0, diffCount = 0;
 
     bills.forEach(b => {
       const amt = Number(b.amount) || 0;
-      const colAmt = Number(b.collectedAmt) || 0;
       totalAmt += amt;
 
-      if (b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND') {
-        paidCount++;
-        paidAmt += colAmt || (b.status === 'RETURNED_IN_HAND' ? amt : 0);
-      } else if (b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT') {
-        missingCount++;
-        missingAmt += amt;
+      if (b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND') {
+        receivedCount++;
+        receivedAmt += amt;
+      } else {
+        diffCount++;
+        diffAmt += amt;
       }
     });
 
@@ -1747,19 +1745,19 @@
 
     if (totalCountEl) totalCountEl.textContent = `${bills.length} bills`;
     if (totalAmtEl) totalAmtEl.textContent = formatINR(totalAmt);
-    if (paidCountEl) paidCountEl.textContent = `${paidCount} bills`;
-    if (paidAmtEl) paidAmtEl.textContent = formatINR(paidAmt);
-    if (missingCountEl) missingCountEl.textContent = `${missingCount} bills`;
-    if (missingAmtEl) missingAmtEl.textContent = formatINR(missingAmt);
+    if (paidCountEl) paidCountEl.textContent = `${receivedCount} bills`;
+    if (paidAmtEl) paidAmtEl.textContent = formatINR(receivedAmt);
+    if (missingCountEl) missingCountEl.textContent = `${diffCount} bills`;
+    if (missingAmtEl) missingAmtEl.textContent = formatINR(diffAmt);
 
     const alertBanner = document.getElementById('missingBillAlertBanner');
     const alertCount = document.getElementById('alertMissingCount');
     const alertAmt = document.getElementById('alertMissingAmt');
 
-    if (missingCount > 0 && bills.length > 0) {
+    if (diffCount > 0 && bills.length > 0) {
       if (alertBanner) alertBanner.style.display = 'flex';
-      if (alertCount) alertCount.textContent = missingCount;
-      if (alertAmt) alertAmt.textContent = formatINR(missingAmt);
+      if (alertCount) alertCount.textContent = diffCount;
+      if (alertAmt) alertAmt.textContent = formatINR(diffAmt);
     } else {
       if (alertBanner) alertBanner.style.display = 'none';
     }
@@ -1771,9 +1769,11 @@
     if (!list) return;
 
     let filtered = bills;
-    if (filter === 'MISSING') filtered = bills.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT');
-    else if (filter === 'PAID') filtered = bills.filter(b => b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL');
-    else if (filter === 'RETURNED') filtered = bills.filter(b => b.status === 'RETURNED_IN_HAND');
+    if (filter === 'MISSING') {
+      filtered = bills.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT');
+    } else if (filter === 'PAID') {
+      filtered = bills.filter(b => b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND');
+    }
 
     if (countBadge) countBadge.textContent = filtered.length;
 
@@ -1789,16 +1789,16 @@
 
     list.innerHTML = '';
     filtered.forEach(bill => {
-      const isMissing = bill.status === 'WITH_AGENT' || bill.status === 'MISSING_ALERT';
+      const isPending = bill.status === 'WITH_AGENT' || bill.status === 'MISSING_ALERT';
       const row = document.createElement('div');
-      row.className = `bill-card-row ${isMissing ? 'is-missing' : ''}`;
+      row.className = `bill-card-row ${isPending ? 'is-missing' : ''}`;
 
       let statusText = '';
-      if (bill.status === 'WITH_AGENT') statusText = '<span class="text-danger font-bold">⚠️ Left Out (Not Returned)</span>';
-      else if (bill.status === 'PAID_FULL') statusText = `<span class="text-success font-bold">✓ Paid (${bill.paymentMode || 'Cash'})</span>`;
-      else if (bill.status === 'PAID_PARTIAL') statusText = `<span class="text-success font-bold">✓ Partial (${formatINR(bill.collectedAmt)})</span>`;
-      else if (bill.status === 'RETURNED_IN_HAND') statusText = '<span class="text-primary font-bold">↺ Returned Next Round</span>';
-      else if (bill.status === 'MISSING_ALERT') statusText = '<span class="text-danger font-bold">⚠️ MISSING ALERT</span>';
+      if (isPending) {
+        statusText = '<span class="text-danger font-bold">⚠️ Pending Difference</span>';
+      } else {
+        statusText = '<span class="text-success font-bold">✓ Received</span>';
+      }
 
       row.innerHTML = `
         <div class="bill-info-main">
@@ -1812,25 +1812,29 @@
         <div class="bill-info-meta">
           <span class="b-amount font-mono">${formatINR(bill.amount)}</span>
           <div class="bill-action-btns">
-            <button class="mini-action-btn pay" data-pay-bill="${bill.billNo}">Check IN / Pay</button>
-            <button class="mini-action-btn ret" data-ret-bill="${bill.billNo}">Return</button>
+            ${isPending ? `<button class="mini-action-btn pay" data-quick-receive="${bill.billNo}">✓ Receive</button>` : ''}
           </div>
         </div>
       `;
       list.appendChild(row);
     });
 
-    list.querySelectorAll('[data-pay-bill]').forEach(btn => {
+    list.querySelectorAll('[data-quick-receive]').forEach(btn => {
       btn.addEventListener('click', () => {
-        const b = State.bills.find(item => item.billNo === btn.dataset.payBill);
-        if (b) openPaymentModal(b);
-      });
-    });
-
-    list.querySelectorAll('[data-ret-bill]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const b = State.bills.find(item => item.billNo === btn.dataset.retBill);
-        if (b) openReturnModal(b);
+        const bNo = btn.dataset.quickReceive;
+        const b = State.bills.find(item => item.billNo === bNo);
+        if (b) {
+          b.status = 'RECEIVED';
+          b.remarks = 'Manually received';
+          b.lastActionDate = new Date().toISOString();
+          saveState();
+          updateGlobalStats();
+          loadSettlementForSelectedAgent();
+          renderLeftOutTab();
+          updateHomeStats();
+          SoundFX.playBeep('success');
+          showToast(`Received ${b.billNo}`, 'success');
+        }
       });
     });
   }
@@ -1984,21 +1988,24 @@
     if (modeBadge) {
       if (source === 'DISPATCH') {
         modeBadge.className = 'bd-badge badge-dispatch';
-        modeBadge.innerHTML = '<i class="fa-solid fa-arrow-up-from-bracket"></i> SCAN OUT';
+        modeBadge.innerHTML = '<i class="fa-solid fa-arrow-up-from-bracket"></i> DISPATCH';
       } else {
         modeBadge.className = 'bd-badge badge-settlement';
-        modeBadge.innerHTML = '<i class="fa-solid fa-arrow-down-to-bracket"></i> SCAN IN';
+        modeBadge.innerHTML = '<i class="fa-solid fa-arrow-down-to-bracket"></i> RETURN';
       }
     }
 
-    // Button label: "Next"
+    // Button label
     if (confirmBtn) {
-      confirmBtn.innerHTML = '<span>Next</span> <i class="fa-solid fa-arrow-right"></i>';
+      if (source === 'DISPATCH') {
+        confirmBtn.innerHTML = '<span>Add to Dispatch</span> <i class="fa-solid fa-plus"></i>';
+      } else {
+        confirmBtn.innerHTML = '<span>Confirm Received ✓</span> <i class="fa-solid fa-check"></i>';
+      }
     }
 
-    // Advanced adjustments option
     if (advancedBtn) {
-      advancedBtn.style.display = (source === 'SETTLEMENT') ? 'inline-block' : 'none';
+      advancedBtn.style.display = 'none';
     }
 
     modal.style.display = 'flex';
@@ -2177,49 +2184,23 @@
         State.bills.unshift(bill);
       }
 
-      if (State.settlementScanMode === 'RETURN') {
-        bill.status = 'RETURNED_IN_HAND';
-        bill.returnReason = 'Verified Return (Next Round)';
-        bill.remarks = 'Scanned return';
-        const timestamp = new Date().toISOString();
-        bill.lastActionDate = timestamp;
-        bill.history.push({ action: 'RETURNED_IN_HAND', timestamp });
+      // Minimal Custody Flow: Mark as RECEIVED directly
+      bill.status = 'RECEIVED';
+      bill.remarks = 'Received back from agent';
+      const timestamp = new Date().toISOString();
+      bill.lastActionDate = timestamp;
+      bill.history.push({ action: 'RECEIVED', agent: bill.agent, timestamp });
 
-        queueSyncAction('SETTLEMENT_RETURN', {
-          billNo: bill.billNo,
-          agent: bill.agent,
-          status: 'RETURNED_IN_HAND',
-          returnReason: bill.returnReason,
-          remarks: bill.remarks,
-          timestamp
-        });
-        showToast(`Marked Return: ${bill.billNo}`, 'info');
-      } else {
-        bill.collectedAmt = collectedAmt;
-        bill.outstanding = (parsed.outstanding !== undefined && parsed.outstanding !== null) ? Number(parsed.outstanding) : Math.max(0, bill.amount - collectedAmt);
-        bill.status = (collectedAmt >= bill.amount && bill.amount > 0) ? 'PAID_FULL' : (collectedAmt > 0 ? 'PAID_PARTIAL' : 'WITH_AGENT');
-        bill.paymentMode = parsed.receipt ? 'Receipt/Sheet' : 'Cash';
-        bill.refNo = parsed.receipt || bill.refNo;
-        bill.remarks = (parsed.receipt ? (`Receipt: ${parsed.receipt}`) : 'Checked IN') + (parsed.outstanding !== undefined ? ` | Remaining: ${formatINR(parsed.outstanding)}` : '');
-        const timestamp = new Date().toISOString();
-        bill.lastActionDate = timestamp;
-        bill.history.push({ action: bill.status, amount: collectedAmt, mode: bill.paymentMode, ref: bill.refNo, timestamp });
-
-        queueSyncAction('SETTLEMENT_PAYMENT', {
-          billNo: bill.billNo,
-          agent: bill.agent,
-          party: bill.party,
-          totalAmount: bill.amount,
-          status: bill.status,
-          collectedAmt,
-          remainingDue: bill.outstanding,
-          paymentMode: bill.paymentMode,
-          refNo: bill.refNo,
-          remarks: bill.remarks,
-          timestamp
-        });
-        showToast(`Checked IN ${bill.billNo} (${formatINR(collectedAmt)})`, 'success');
-      }
+      queueSyncAction('SETTLEMENT_RETURN', {
+        billNo: bill.billNo,
+        agent: bill.agent,
+        party: bill.party,
+        amount: bill.amount,
+        status: 'RECEIVED',
+        remarks: bill.remarks,
+        timestamp
+      });
+      showToast(`Received: ${bill.billNo}`, 'success');
 
       saveState();
       updateGlobalStats();
@@ -2507,10 +2488,10 @@
       card.innerHTML = `
         <div class="leftout-agent-head">
           <span class="leftout-agent-name">${agent.name}</span>
-          <span class="leftout-count-tag">${stats.leftOutCount} Left Out</span>
+          <span class="leftout-count-tag">${stats.leftOutCount} Pending Difference</span>
         </div>
         <div class="leftout-amount-row">
-          <small class="text-muted">Dispatched: ${stats.totalCount} bills</small>
+          <small class="text-muted">Dispatched: ${stats.totalCount} | Received: ${stats.checkedInCount}</small>
           <span class="leftout-amt-val font-mono">${formatINR(stats.leftOutAmt)}</span>
         </div>
         <div style="display: flex; gap: 6px; margin-top: 4px;">
@@ -2518,7 +2499,7 @@
             <i class="fa-brands fa-whatsapp"></i> Alert Agent
           </button>
           <button class="btn btn-dark btn-sm" data-goto-settle="${agent.name}">
-            Check-IN
+            Receive
           </button>
         </div>
       `;
@@ -2527,7 +2508,7 @@
 
     // Populate Left Out Table
     if (allLeftOutBills.length === 0) {
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="7">🎉 Zero left-out bills! All dispatched bills are accounted for.</td></tr>';
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="7">🎉 Zero difference! All dispatched bills are received back.</td></tr>';
     } else {
       allLeftOutBills.forEach(b => {
         const tr = document.createElement('tr');
@@ -2540,7 +2521,7 @@
           <td>${b.refNo ? `<span class="badge-receipt">${b.refNo}</span>` : '-'}</td>
           <td>
             <button class="btn btn-success btn-sm" data-table-checkin="${b.billNo}">
-              <i class="fa-solid fa-check"></i> Check IN
+              <i class="fa-solid fa-check"></i> Receive
             </button>
           </td>
         `;
@@ -2555,12 +2536,7 @@
 
     grid.querySelectorAll('[data-goto-settle]').forEach(btn => {
       btn.addEventListener('click', () => {
-        const agentSel = document.getElementById('settlementAgentSelect');
-        if (agentSel) {
-          agentSel.value = btn.dataset.gotoSettle;
-          loadSettlementForSelectedAgent();
-        }
-        switchTab('tab-settlement');
+        selectAgentAndStartScan(btn.dataset.gotoSettle);
       });
     });
 
@@ -2568,7 +2544,15 @@
       btn.addEventListener('click', () => {
         const b = State.bills.find(item => item.billNo === btn.dataset.tableCheckin);
         if (b) {
-          openPaymentModal(b);
+          b.status = 'RECEIVED';
+          b.remarks = 'Directly received from Difference list';
+          b.lastActionDate = new Date().toISOString();
+          saveState();
+          updateGlobalStats();
+          renderLeftOutTab();
+          updateHomeStats();
+          SoundFX.playBeep('success');
+          showToast(`Received ${b.billNo}`, 'success');
         }
       });
     });
@@ -3348,26 +3332,46 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     }
   }
 
-  // Updates the home tab quick stats strip
+  // Updates the home tab quick stats strip & agent difference cards
   function updateHomeStats() {
     const today = getTodayDateString();
     const todayBills = State.bills.filter(b => b.dispatchDate === today);
-    const outCount = todayBills.filter(b => b.status === 'WITH_AGENT').length;
-    const inCount = todayBills.filter(b => b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND').length;
-    const leftCount = todayBills.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT').length;
+    const outCount = todayBills.length;
+    const inCount = todayBills.filter(b => b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND').length;
+    const diffCount = todayBills.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT').length;
 
     const elOut = document.getElementById('homeStatOut');
     const elIn = document.getElementById('homeStatIn');
     const elLeft = document.getElementById('homeStatLeft');
     if (elOut) elOut.textContent = outCount;
     if (elIn) elIn.textContent = inCount;
-    if (elLeft) elLeft.textContent = leftCount;
+    if (elLeft) elLeft.textContent = diffCount;
 
-    // Greeting based on time of day
-    const hour = new Date().getHours();
-    const greeting = hour < 12 ? 'Good Morning! 👋' : hour < 17 ? 'Good Afternoon! 👋' : 'Good Evening! 👋';
-    const greetEl = document.getElementById('homeGreetingText');
-    if (greetEl) greetEl.textContent = greeting;
+    // Render Home Agent Difference Cards
+    const diffGrid = document.getElementById('homeAgentDiffGrid');
+    if (diffGrid) {
+      diffGrid.innerHTML = '';
+      State.agents.forEach(agent => {
+        const stats = getAgentLeftOutStats(agent.name);
+        const card = document.createElement('div');
+        card.className = 'agent-diff-card';
+        card.innerHTML = `
+          <div class="agent-diff-header">
+            <span><i class="fa-solid fa-user"></i> ${agent.name}</span>
+            <span class="count-pill ${stats.leftOutCount > 0 ? 'bg-danger text-white' : ''}" style="font-size:0.75rem;">
+              ${stats.leftOutCount} Pending
+            </span>
+          </div>
+          <div class="agent-diff-metric">
+            <span class="agent-diff-val ${stats.leftOutCount > 0 ? 'has-diff' : ''}">
+              ${formatINR(stats.leftOutAmt)}
+            </span>
+            <span class="agent-diff-sub">Dispatched: ${stats.totalCount} | Received: ${stats.checkedInCount}</span>
+          </div>
+        `;
+        diffGrid.appendChild(card);
+      });
+    }
   }
 
   // Opens agent picker modal before scanning

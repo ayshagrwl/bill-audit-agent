@@ -73,15 +73,15 @@
       <button id="bannerSettingsBtn" class="text-btn">Edit Mapping</button>
     </div>
 
-    <!-- Main Navigation Tabs (4 Tabs: Home, Left Out, Ledger, Settings) -->
+    <!-- Main Navigation Tabs (4 Tabs: Home, Difference, Ledger, Settings) -->
     <nav class="main-tabs">
       <button class="tab-item active" data-tab="tab-home">
         <i class="fa-solid fa-house"></i>
         <span>Home</span>
       </button>
       <button class="tab-item alert-tab" data-tab="tab-leftout">
-        <i class="fa-solid fa-triangle-exclamation"></i>
-        <span>Left Out</span>
+        <i class="fa-solid fa-scale-unbalanced"></i>
+        <span>Difference</span>
       </button>
       <button class="tab-item" data-tab="tab-ledger">
         <i class="fa-solid fa-list-ul"></i>
@@ -98,49 +98,50 @@
     <!-- ======================================================== -->
     <section id="tab-home" class="tab-view active">
       <div class="home-hero">
-        <div class="home-greeting">
-          <i class="fa-solid fa-receipt home-hero-icon"></i>
-          <h2 id="homeGreetingText">Good Morning! 👋</h2>
-          <p>Select what you want to do today:</p>
-        </div>
-
-        <!-- Action Card: Morning Dispatch (Scan OUT) -->
+        <!-- Action Card: Morning Dispatch (Send OUT) -->
         <button class="home-action-card home-card-out" id="homeDispatchCard">
           <div class="home-card-icon">
             <i class="fa-solid fa-arrow-up-from-bracket"></i>
           </div>
           <div class="home-card-body">
             <h3>Morning Dispatch</h3>
-            <p>Scan OUT bills to agent for today's delivery route</p>
+            <p>Send bills out with agent</p>
           </div>
           <i class="fa-solid fa-chevron-right home-card-arrow"></i>
         </button>
 
-        <!-- Action Card: Evening Return (Scan IN) -->
+        <!-- Action Card: Evening Return (Receive IN) -->
         <button class="home-action-card home-card-in" id="homeSettlementCard">
           <div class="home-card-icon">
             <i class="fa-solid fa-arrow-down-to-bracket"></i>
           </div>
           <div class="home-card-body">
             <h3>Evening Return</h3>
-            <p>Scan IN bills returned by agent at end of day</p>
+            <p>Receive returned bills</p>
           </div>
           <i class="fa-solid fa-chevron-right home-card-arrow"></i>
         </button>
 
-        <!-- Quick Stats Strip -->
+        <!-- Quick Difference Stats Strip -->
         <div class="home-stats-strip" id="homeStatsStrip">
           <div class="home-stat">
             <span class="home-stat-val" id="homeStatOut">0</span>
-            <span class="home-stat-label">Out Today</span>
+            <span class="home-stat-label">Dispatched</span>
           </div>
           <div class="home-stat home-stat-success">
             <span class="home-stat-val" id="homeStatIn">0</span>
-            <span class="home-stat-label">Returned</span>
+            <span class="home-stat-label">Received</span>
           </div>
           <div class="home-stat home-stat-danger">
             <span class="home-stat-val" id="homeStatLeft">0</span>
-            <span class="home-stat-label">Left Out</span>
+            <span class="home-stat-label">Difference</span>
+          </div>
+        </div>
+
+        <!-- Agent Difference Cards Grid -->
+        <div class="agent-difference-section mt-2">
+          <div class="agent-diff-cards-grid" id="homeAgentDiffGrid">
+            <!-- Populated dynamically: Rajesh vs Shivam status -->
           </div>
         </div>
       </div>
@@ -164,73 +165,60 @@
 
       <!-- Fast Scanner & Manual Invoice Box -->
       <div class="clean-card scanner-box">
-        <!-- Camera Selector & Controls Bar -->
+        <!-- Compact Camera Top Bar -->
         <div class="scanner-top-bar">
           <div class="camera-picker-wrap">
             <i class="fa-solid fa-camera camera-icon"></i>
             <select id="cameraSourceSelect" class="camera-select-dropdown" title="Choose Camera">
-              <option value="environment" selected>📷 Back Camera (Default)</option>
+              <option value="environment" selected>📷 Back Camera</option>
               <option value="user">🤳 Front Camera</option>
             </select>
           </div>
-
 
           <div class="camera-action-btns">
             <button id="flipCameraBtn" class="pill-action-btn" title="Flip Camera">
               <i class="fa-solid fa-camera-rotate"></i> Flip
             </button>
-            <button id="toggleTorchBtn" class="pill-action-btn" style="display: none;" title="Flashlight">
-              <i class="fa-solid fa-bolt"></i>
-            </button>
           </div>
         </div>
 
-        <!-- Camera Viewport Box -->
+        <!-- Camera Viewport Box (Compact) -->
         <div id="scannerContainer" class="camera-preview-container" style="display: none;">
           <div id="qr-reader"></div>
           <div class="viewfinder-overlay">
             <div class="scan-box">
               <div class="scan-line"></div>
             </div>
-            <span class="scan-hint-tag">Hold Bill QR / Barcode in frame</span>
           </div>
         </div>
 
         <!-- Camera Launch / Toggle Button -->
         <div class="scanner-main-cta">
-          <button id="startScanBtn" class="btn btn-primary btn-block btn-lg">
-            <i class="fa-solid fa-camera"></i> Start Camera Scanner
+          <button id="startScanBtn" class="btn btn-primary btn-block">
+            <i class="fa-solid fa-camera"></i> Open Camera
           </button>
-          <button id="stopScanBtn" class="btn btn-danger btn-block btn-lg" style="display: none;">
+          <button id="stopScanBtn" class="btn btn-danger btn-block" style="display: none;">
             <i class="fa-solid fa-stop"></i> Close Camera
           </button>
           
-          <!-- iPhone Safari Fast Photo Scan / Lens Toggle Fallback -->
-          <div class="ios-camera-helpers mt-2" style="display: flex; gap: 8px;">
+          <!-- iPhone Safari Fast Photo Fallback -->
+          <div class="ios-camera-helpers mt-1" style="display: flex; gap: 8px;">
             <input type="file" id="dispatchFileInput" accept="image/*" capture="environment" style="display: none;" />
             <button type="button" id="snapPhotoDispatchBtn" class="btn btn-outline flex-1 btn-sm">
-              <i class="fa-solid fa-camera-retro"></i> 📸 Snap Photo to Scan (iPhone)
-            </button>
-            <button type="button" id="switchLensDispatchBtn" class="btn btn-outline btn-sm" title="Switch 1x / 0.5x lens">
-              <i class="fa-solid fa-arrows-rotate"></i> Lens
+              <i class="fa-solid fa-camera-retro"></i> Snap Photo
             </button>
           </div>
         </div>
 
-        <!-- Dedicated Fast Manual Invoice Entry (No Barcode / QR needed!) -->
-        <div class="quick-manual-card">
-          <div class="quick-manual-head">
-            <i class="fa-solid fa-keyboard"></i>
-            <span>No Barcode / QR? Type Invoice Number:</span>
-          </div>
+        <!-- Dedicated Fast Manual Invoice Entry -->
+        <div class="quick-manual-card mt-2">
           <div class="input-with-button">
             <input type="text" id="dispatchInvoiceInput" class="form-input font-mono font-bold" 
-                   placeholder="Enter Invoice No (e.g. 3921 or IN-FY26/27-3921)..." />
+                   placeholder="Invoice No (e.g. 3921 or 3965)..." />
             <button id="dispatchAddInvoiceBtn" class="btn btn-dark">
-              <i class="fa-solid fa-plus"></i> Add OUT
+              <i class="fa-solid fa-plus"></i> Add
             </button>
           </div>
-          <small class="manual-hint">Press <strong>Enter</strong> to instantly add & fetch details from Sheet.</small>
         </div>
       </div>
       <!-- Hidden agent select kept for JS compatibility, not shown -->
@@ -302,68 +290,53 @@
       <!-- Scanner + Manual Entry -->
       <div class="clean-card scanner-box">
         <div class="scanner-top-bar">
-          <div class="mode-pills-wrap">
-
-            <button class="mode-pill active" id="modePayBtn" data-mode="PAY">
-              <i class="fa-solid fa-money-bill-wave"></i> Settle Payment / Paid
-            </button>
-            <button class="mode-pill" id="modeReturnBtn" data-mode="RETURN">
-              <i class="fa-solid fa-hand-holding-dollar"></i> Unpaid Return (Next Round)
-            </button>
+          <div class="session-label-wrap">
+            <span class="font-bold text-success"><i class="fa-solid fa-arrow-down-to-bracket"></i> Receive Bills</span>
           </div>
 
           <div class="camera-action-btns">
             <button id="flipSettlementCameraBtn" class="pill-action-btn" title="Flip Camera">
-              <i class="fa-solid fa-camera-rotate"></i>
+              <i class="fa-solid fa-camera-rotate"></i> Flip
             </button>
           </div>
         </div>
 
-        <!-- Video Viewport for Settlement -->
+        <!-- Video Viewport for Return (Compact) -->
         <div id="settlementScannerContainer" class="camera-preview-container" style="display: none;">
           <div id="qr-reader-settlement"></div>
           <div class="viewfinder-overlay">
             <div class="scan-box">
               <div class="scan-line"></div>
             </div>
-            <span class="scan-hint-tag">Scan bill QR / Barcode to check IN</span>
           </div>
         </div>
 
         <div class="scanner-main-cta">
-          <button id="startSettlementScanBtn" class="btn btn-primary btn-block btn-lg">
-            <i class="fa-solid fa-camera"></i> Start Check-IN Scanner
+          <button id="startSettlementScanBtn" class="btn btn-primary btn-block">
+            <i class="fa-solid fa-camera"></i> Open Camera
           </button>
-          <button id="stopSettlementScanBtn" class="btn btn-danger btn-block btn-lg" style="display: none;">
+          <button id="stopSettlementScanBtn" class="btn btn-danger btn-block" style="display: none;">
             <i class="fa-solid fa-stop"></i> Close Camera
           </button>
           
-          <!-- iPhone Safari Fast Photo Scan / Lens Toggle Fallback -->
-          <div class="ios-camera-helpers mt-2" style="display: flex; gap: 8px;">
+          <!-- iPhone Safari Fast Photo Fallback -->
+          <div class="ios-camera-helpers mt-1" style="display: flex; gap: 8px;">
             <input type="file" id="settlementFileInput" accept="image/*" capture="environment" style="display: none;" />
             <button type="button" id="snapPhotoSettlementBtn" class="btn btn-outline flex-1 btn-sm">
-              <i class="fa-solid fa-camera-retro"></i> 📸 Snap Photo to Scan (iPhone)
-            </button>
-            <button type="button" id="switchLensSettlementBtn" class="btn btn-outline btn-sm" title="Switch 1x / 0.5x lens">
-              <i class="fa-solid fa-arrows-rotate"></i> Lens
+              <i class="fa-solid fa-camera-retro"></i> Snap Photo
             </button>
           </div>
         </div>
 
         <!-- Dedicated Fast Manual Invoice Entry for IN -->
-        <div class="quick-manual-card">
-          <div class="quick-manual-head">
-            <i class="fa-solid fa-keyboard"></i>
-            <span>No Barcode / QR? Type Invoice Number:</span>
-          </div>
+        <div class="quick-manual-card mt-2">
           <div class="input-with-button">
             <input type="text" id="settlementInvoiceInput" class="form-input font-mono font-bold" 
-                   placeholder="Enter Invoice No to Check-IN (e.g. 3921)..." />
+                   placeholder="Invoice No to Receive (e.g. 3921)..." />
             <button id="settlementManualSubmitBtn" class="btn btn-success">
-              <i class="fa-solid fa-arrow-down-to-bracket"></i> Check IN
+              <i class="fa-solid fa-check"></i> Receive
             </button>
           </div>
-          <small class="manual-hint">Press <strong>Enter</strong> to instantly check IN and view Sheet Receipt info.</small>
         </div>
       </div>
 
@@ -379,21 +352,21 @@
         </div>
       </div>
 
-      <!-- Live Agent Reconciliation Strip (Dispatched vs Checked IN vs LEFT OUT) -->
+      <!-- Live Agent Difference Strip -->
       <div class="clean-card" id="auditDashboardCard">
         <div class="settlement-stats-3">
           <div class="s-box">
-            <span class="s-label">Dispatched (OUT)</span>
+            <span class="s-label">Dispatched</span>
             <h4 class="font-mono" id="audTotalAmt">₹0</h4>
             <small id="audTotalCount">0 bills</small>
           </div>
           <div class="s-box s-success">
-            <span class="s-label">Returned & Settled</span>
+            <span class="s-label">Received</span>
             <h4 class="font-mono text-success" id="audPaidAmt">₹0</h4>
             <small id="audPaidCount">0 bills</small>
           </div>
           <div class="s-box s-danger">
-            <span class="s-label">⚠️ LEFT OUT WITH AGENT</span>
+            <span class="s-label">⚠️ Difference</span>
             <h4 class="font-mono text-danger" id="audMissingAmt">₹0</h4>
             <small id="audMissingCount">0 bills</small>
           </div>
@@ -405,11 +378,11 @@
             <i class="fa-solid fa-triangle-exclamation"></i>
           </div>
           <div class="alert-body-col">
-            <h4><span id="alertMissingCount">0</span> Bills Left Out (<span id="alertMissingAmt">₹0</span>)</h4>
-            <p>These bills were scanned OUT to this agent but have NOT been scanned IN today.</p>
+            <h4><span id="alertMissingCount">0</span> Difference Bills (<span id="alertMissingAmt">₹0</span>)</h4>
+            <p>Dispatched bills still not received today.</p>
           </div>
           <button id="quickWhatsappLeftOutBtn" class="btn btn-outline-whatsapp btn-sm">
-            <i class="fa-brands fa-whatsapp"></i> Send Alert
+            <i class="fa-brands fa-whatsapp"></i> Alert
           </button>
         </div>
       </div>
@@ -418,31 +391,30 @@
       <div class="clean-card">
         <div class="basket-head">
           <div class="head-left">
-            <h3>Agent's Bill Breakdown</h3>
+            <h3>Agent Bills</h3>
             <span class="count-pill" id="agentBillsCount">0</span>
           </div>
           <!-- Filter chips -->
           <div class="filter-chips">
             <button class="chip active" data-filter="ALL">All</button>
-            <button class="chip chip-missing" data-filter="MISSING">⚠️ Left Out</button>
-            <button class="chip chip-paid" data-filter="PAID">✓ Checked IN / Paid</button>
-            <button class="chip chip-returned" data-filter="RETURNED">↺ Next Round</button>
+            <button class="chip chip-missing" data-filter="MISSING">⚠️ Difference (Pending)</button>
+            <button class="chip chip-paid" data-filter="PAID">✓ Received</button>
           </div>
         </div>
 
         <div class="bill-list" id="settlementListContainer">
           <div class="empty-placeholder">
             <i class="fa-solid fa-user-check"></i>
-            <p>Select an agent above to view bills and start Check-IN.</p>
+            <p>Select agent to view and receive bills.</p>
           </div>
         </div>
 
         <div class="action-footer-sticky">
-          <button id="finalizeSettlementBtn" class="btn btn-dark btn-block btn-lg">
-            <i class="fa-solid fa-lock"></i> Finalize Settlement & Close Day
+          <button id="finalizeSettlementBtn" class="btn btn-dark btn-block">
+            <i class="fa-solid fa-check"></i> Close Day
           </button>
           <button id="shareSettlementWhatsappBtn" class="btn btn-outline-whatsapp btn-block">
-            <i class="fa-brands fa-whatsapp"></i> Send Complete Settlement to Agent
+            <i class="fa-brands fa-whatsapp"></i> Send Status to Agent
           </button>
         </div>
       </div>
@@ -450,37 +422,32 @@
 
 
     <!-- ======================================================== -->
-    <!-- TAB 3: LEFT OUT AUDIT (DEDICATED REMAINING BILLS VIEW)   -->
+    <!-- TAB 3: DIFFERENCE / PENDING AUDIT                        -->
     <!-- ======================================================== -->
     <section id="tab-leftout" class="tab-view">
       <div class="clean-card">
         <div class="card-header-simple">
-          <i class="fa-solid fa-triangle-exclamation icon-accent text-danger"></i>
+          <i class="fa-solid fa-scale-unbalanced icon-accent text-danger"></i>
           <div>
-            <h3>Remaining Left-Out Bills Audit</h3>
-            <p>Bills dispatched to agents that have NOT been returned or cleared</p>
+            <h3>Custody Difference (Pending Bills)</h3>
+            <p>Bills sent out that have not been received back</p>
           </div>
         </div>
 
         <!-- Daily Status Summary Strip -->
-        <div class="status-strip mt-3">
+        <div class="status-strip mt-2">
           <div class="strip-item info-item">
-            <span class="strip-label">📤 Out with Agents</span>
+            <span class="strip-label">📤 Dispatched</span>
             <span class="strip-val font-mono statInCustodyAmt" id="statInCustodyAmt">₹0</span>
             <small class="statInCustody" id="statInCustody">0 bills</small>
           </div>
           <div class="strip-item success-item">
-            <span class="strip-label">📥 Checked In / Paid</span>
+            <span class="strip-label">📥 Received</span>
             <span class="strip-val font-mono text-success statCollectedAmt" id="statCollectedAmt">₹0</span>
             <small class="statCollected" id="statCollected">0 bills</small>
           </div>
-          <div class="strip-item neutral-item">
-            <span class="strip-label">↺ Returned Next Round</span>
-            <span class="strip-val font-mono statReturnedAmt" id="statReturnedAmt">₹0</span>
-            <small class="statReturned" id="statReturned">0 bills</small>
-          </div>
           <div class="strip-item alert-item statCardMissing" id="statCardMissing">
-            <span class="strip-label">⚠️ Remaining Left Out</span>
+            <span class="strip-label">⚠️ Difference</span>
             <span class="strip-val font-mono text-danger statMissingAmt" id="statMissingAmt">₹0</span>
             <small class="statMissing" id="statMissing">0 bills</small>
           </div>

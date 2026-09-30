@@ -465,8 +465,9 @@ body {
   position: relative;
   width: 100%;
   max-width: 440px;
-  margin: 0 auto 12px auto;
-  min-height: 240px;
+  margin: 0 auto 8px auto;
+  min-height: 170px;
+  max-height: 200px;
   background: #000;
   border-radius: var(--radius-md);
   overflow: hidden;
@@ -484,8 +485,8 @@ body {
 #qr-reader video, #qr-reader-settlement video {
   width: 100% !important;
   height: auto !important;
-  max-height: 480px !important;
-  object-fit: contain !important;
+  max-height: 200px !important;
+  object-fit: cover !important;
   display: block !important;
   margin: 0 auto !important;
 }
@@ -501,10 +502,10 @@ body {
 }
 
 .scan-box {
-  width: 200px;
-  height: 200px;
+  width: 140px;
+  height: 140px;
   border: 2px solid rgba(255, 255, 255, 0.7);
-  border-radius: 16px;
+  border-radius: 12px;
   position: relative;
   overflow: hidden;
   transition: all 0.2s ease;
@@ -1822,4 +1823,56 @@ body {
   justify-content: center;
   font-size: 1.6rem;
   color: var(--primary);
+}
+
+/* ============================================================
+   AGENT DIFFERENCE SUMMARY WIDGETS (HOME)
+   ============================================================ */
+
+.agent-diff-cards-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.agent-diff-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-diff-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: var(--text-main);
+}
+
+.agent-diff-metric {
+  display: flex;
+  flex-direction: column;
+  margin-top: 4px;
+}
+
+.agent-diff-val {
+  font-size: 1.25rem;
+  font-weight: 800;
+  font-family: var(--font-mono);
+  color: var(--text-main);
+}
+
+.agent-diff-val.has-diff {
+  color: var(--danger);
+}
+
+.agent-diff-sub {
+  font-size: 0.72rem;
+  color: var(--text-muted);
 }
