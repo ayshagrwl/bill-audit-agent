@@ -465,9 +465,9 @@ body {
   position: relative;
   width: 100%;
   max-width: 440px;
-  margin: 0 auto 8px auto;
-  min-height: 170px;
-  max-height: 200px;
+  margin: 0 auto 10px auto;
+  min-height: 240px;
+  max-height: 280px;
   background: #000;
   border-radius: var(--radius-md);
   overflow: hidden;
@@ -479,13 +479,14 @@ body {
 
 #qr-reader, #qr-reader-settlement {
   width: 100% !important;
+  height: 100% !important;
   border: none !important;
 }
 
 #qr-reader video, #qr-reader-settlement video {
   width: 100% !important;
-  height: auto !important;
-  max-height: 200px !important;
+  height: 100% !important;
+  max-height: 280px !important;
   object-fit: cover !important;
   display: block !important;
   margin: 0 auto !important;
@@ -502,10 +503,10 @@ body {
 }
 
 .scan-box {
-  width: 140px;
-  height: 140px;
-  border: 2px solid rgba(255, 255, 255, 0.7);
-  border-radius: 12px;
+  width: 180px;
+  height: 180px;
+  border: 2px solid rgba(255, 255, 255, 0.75);
+  border-radius: 16px;
   position: relative;
   overflow: hidden;
   transition: all 0.2s ease;

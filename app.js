@@ -865,17 +865,19 @@
   }
 
   function createScannerInstance(elementId) {
+    if (typeof Html5Qrcode === 'undefined') {
+      console.error('Html5Qrcode library is not loaded');
+      showToast('Camera scanner library is not loaded. Please check internet connection and reload.', 'danger', 5000);
+      throw new Error('Html5Qrcode library is not loaded');
+    }
+
     let supportedFormats = undefined;
     if (typeof Html5QrcodeSupportedFormats !== 'undefined') {
+      // Prioritize high-performance formats: standard QR Code, Invoice Code 128, EAN 13, DataMatrix
       supportedFormats = [
         Html5QrcodeSupportedFormats.QR_CODE,
         Html5QrcodeSupportedFormats.CODE_128,
-        Html5QrcodeSupportedFormats.CODE_39,
-        Html5QrcodeSupportedFormats.CODE_93,
         Html5QrcodeSupportedFormats.EAN_13,
-        Html5QrcodeSupportedFormats.EAN_8,
-        Html5QrcodeSupportedFormats.UPC_A,
-        Html5QrcodeSupportedFormats.UPC_E,
         Html5QrcodeSupportedFormats.DATA_MATRIX
       ];
     }
@@ -1087,18 +1089,10 @@
 
   function getScannerRunConfig() {
     return {
-      fps: 15, // Optimal for mobile performance without CPU throttling
-      qrbox: function(viewfinderWidth, viewfinderHeight) {
-        const vw = Math.max(viewfinderWidth || 0, 200);
-        const vh = Math.max(viewfinderHeight || 0, 160);
-        const minEdge = Math.min(vw, vh);
-        const boxWidth = Math.max(140, Math.floor(minEdge * 0.8));
-        const boxHeight = Math.max(120, Math.floor(boxWidth * 0.8));
-        return {
-          width: Math.min(boxWidth, vw - 10),
-          height: Math.min(boxHeight, vh - 10)
-        };
-      },
+      fps: 20, // 20 fps for instant detection on mobile
+      // Full frame scanning: omitting qrbox allows Html5Qrcode to scan the entire camera stream.
+      // This eliminates aspect ratio distortion, avoids dimension sizing exceptions, and lets users
+      // scan invoices effortlessly from any angle or distance.
       disableFlip: false
     };
   }
@@ -1422,6 +1416,14 @@
     if (!file) return;
     showToast('Analyzing bill photo...', 'info', 2000);
 
+    // Stop active live camera if running to avoid container collision
+    if (State.scannerDispatch) {
+      await stopDispatchScanner();
+    }
+    if (State.scannerSettlement) {
+      await stopSettlementScanner();
+    }
+
     const tempId = 'qr-reader';
     let tempScanner = null;
     try {
@@ -1437,7 +1439,7 @@
       showToast('Could not read code. Make sure QR/barcode is clear and well-lit.', 'warning', 4000);
     } finally {
       if (tempScanner) {
-        try { tempScanner.clear(); } catch(e) {}
+        try { await tempScanner.clear(); } catch(e) {}
       }
     }
   }
@@ -3613,6 +3615,10 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     if (State.activeTab === tabId && !State.isCameraTransitioning) return;
     State.activeTab = tabId;
 
+    if (State.isConfirmModalOpen) {
+      closeBillConfirmModal();
+    }
+
     document.querySelectorAll('.tab-item').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.tab === tabId);
     });
@@ -3739,6 +3745,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
 
   // Returns home and stops camera
   async function goBackHome() {
+    closeBillConfirmModal();
     State.activeAgent = null;
     State.activeScanMode = null;
     await switchTab('tab-home');
