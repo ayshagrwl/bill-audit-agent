@@ -1195,6 +1195,17 @@
 
       ensureVideoInline(container);
 
+      // Apply iOS 17 / modern mobile continuous autofocus if supported
+      setTimeout(() => {
+        try {
+          if (scanner && typeof scanner.applyVideoConstraints === 'function') {
+            scanner.applyVideoConstraints({
+              advanced: [{ focusMode: 'continuous' }]
+            }).catch(() => {});
+          }
+        } catch (e) {}
+      }, 800);
+
       // Populate camera labels quietly in background without killing active stream
       setTimeout(() => {
         initCameraSelectors().catch(() => {});
@@ -1358,6 +1369,17 @@
       }
 
       ensureVideoInline(container);
+
+      // Apply iOS 17 / modern mobile continuous autofocus if supported
+      setTimeout(() => {
+        try {
+          if (scanner && typeof scanner.applyVideoConstraints === 'function') {
+            scanner.applyVideoConstraints({
+              advanced: [{ focusMode: 'continuous' }]
+            }).catch(() => {});
+          }
+        } catch (e) {}
+      }, 800);
 
       // Populate camera labels quietly in background without killing active stream
       setTimeout(() => {
