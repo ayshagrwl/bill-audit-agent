@@ -873,17 +873,18 @@
 
     let supportedFormats = undefined;
     if (typeof Html5QrcodeSupportedFormats !== 'undefined') {
-      // Prioritize high-performance formats: standard QR Code, Invoice Code 128, EAN 13, DataMatrix
+      // Prioritize high-performance formats: standard QR Code & Invoice Code 128
       supportedFormats = [
         Html5QrcodeSupportedFormats.QR_CODE,
-        Html5QrcodeSupportedFormats.CODE_128,
-        Html5QrcodeSupportedFormats.EAN_13,
-        Html5QrcodeSupportedFormats.DATA_MATRIX
+        Html5QrcodeSupportedFormats.CODE_128
       ];
     }
     return new Html5Qrcode(elementId, {
       formatsToSupport: supportedFormats,
-      verbose: false
+      verbose: false,
+      experimentalFeatures: {
+        useBarCodeDetectorIfSupported: true
+      }
     });
   }
 
@@ -1074,13 +1075,21 @@
       list.push({ facingMode: 'user' });
       list.push({});
     } else if (!camId || camId === 'environment') {
-      // User explicitly wants Back Camera (Standard constraint preferred on mobile)
+      // 1. HD 720p balanced constraint (avoids CPU choking on 4K sensors, super sharp focus)
+      list.push({
+        facingMode: 'environment',
+        width: { ideal: 1280, max: 1920 },
+        height: { ideal: 720, max: 1080 }
+      });
       list.push({ facingMode: 'environment' });
       list.push({});
     } else {
-      // Specific camera device ID selected by user
+      list.push({
+        deviceId: camId,
+        width: { ideal: 1280, max: 1920 },
+        height: { ideal: 720, max: 1080 }
+      });
       list.push(camId);
-      list.push({ deviceId: camId });
       list.push({ facingMode: 'environment' });
       list.push({});
     }
@@ -1089,12 +1098,15 @@
 
   function getScannerRunConfig() {
     return {
-      fps: 20, // 20 fps for instant detection on mobile
-      // Full frame scanning: omitting qrbox allows Html5Qrcode to scan the entire camera stream.
-      // This eliminates aspect ratio distortion, avoids dimension sizing exceptions, and lets users
-      // scan invoices effortlessly from any angle or distance.
+      fps: 10, // 10 fps prevents frame queue lag on mobile CPUs, ensuring real-time instant detection
       disableFlip: false
     };
+  }
+
+  function showCameraPermissionModal(source = 'DISPATCH') {
+    State.pendingCameraSource = source;
+    const modal = document.getElementById('cameraPermissionModal');
+    if (modal) modal.style.display = 'flex';
   }
 
   async function startDispatchScanner() {
@@ -1206,8 +1218,11 @@
       const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
       const isCriOS = isIOS && /CriOS/i.test(navigator.userAgent);
 
-      if (isCriOS && (errMsg.includes('NotAllowed') || errMsg.includes('Permission') || errMsg.includes('denied') || errMsg.includes('NotFoundError'))) {
-        showToast('iPhone Chrome camera blocked: Open iPhone Settings > Chrome > Turn ON Camera, or open in Safari!', 'danger', 7000);
+      if (errMsg.includes('NotAllowed') || errMsg.includes('Permission') || errMsg.includes('denied') || errMsg.includes('NotFoundError')) {
+        showCameraPermissionModal('DISPATCH');
+        if (isCriOS) {
+          showToast('iPhone Chrome camera blocked: Open iPhone Settings > Chrome > Turn ON Camera', 'danger', 7000);
+        }
       } else if (!errMsg.includes('already under transition')) {
         showToast('Camera error: ' + errMsg, 'danger', 4500);
       }
@@ -1367,8 +1382,11 @@
       const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
       const isCriOS = isIOS && /CriOS/i.test(navigator.userAgent);
 
-      if (isCriOS && (errMsg.includes('NotAllowed') || errMsg.includes('Permission') || errMsg.includes('denied') || errMsg.includes('NotFoundError'))) {
-        showToast('iPhone Chrome camera blocked: Open iPhone Settings > Chrome > Turn ON Camera, or open in Safari!', 'danger', 7000);
+      if (errMsg.includes('NotAllowed') || errMsg.includes('Permission') || errMsg.includes('denied') || errMsg.includes('NotFoundError')) {
+        showCameraPermissionModal('SETTLEMENT');
+        if (isCriOS) {
+          showToast('iPhone Chrome camera blocked: Open iPhone Settings > Chrome > Turn ON Camera', 'danger', 7000);
+        }
       } else if (!errMsg.includes('already under transition')) {
         showToast('Camera error: ' + errMsg, 'danger', 4500);
       }
@@ -3811,6 +3829,19 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     document.getElementById('startScanBtn')?.addEventListener('click', startDispatchScanner);
     document.getElementById('stopScanBtn')?.addEventListener('click', stopDispatchScanner);
 
+    // Snap Photo / Native Camera fallback (OUT)
+    const dispatchFileInput = document.getElementById('dispatchFileInput');
+    document.getElementById('snapPhotoDispatchBtn')?.addEventListener('click', () => {
+      dispatchFileInput?.click();
+    });
+    dispatchFileInput?.addEventListener('change', (e) => {
+      const file = e.target.files?.[0];
+      if (file) {
+        handlePhotoScan(file, (decodedText) => handleScannedCodeDispatch(decodedText));
+        e.target.value = '';
+      }
+    });
+
     // Dedicated Fast Manual Invoice Entry (OUT)
     document.getElementById('dispatchAddInvoiceBtn')?.addEventListener('click', handleManualInvoiceDispatch);
     document.getElementById('dispatchInvoiceInput')?.addEventListener('keydown', (e) => {
@@ -3861,6 +3892,40 @@ _BillAudit Pro_`;
 
     document.getElementById('startSettlementScanBtn')?.addEventListener('click', startSettlementScanner);
     document.getElementById('stopSettlementScanBtn')?.addEventListener('click', stopSettlementScanner);
+
+    // Snap Photo / Native Camera fallback (IN)
+    const settlementFileInput = document.getElementById('settlementFileInput');
+    document.getElementById('snapPhotoSettlementBtn')?.addEventListener('click', () => {
+      settlementFileInput?.click();
+    });
+    settlementFileInput?.addEventListener('change', (e) => {
+      const file = e.target.files?.[0];
+      if (file) {
+        handlePhotoScan(file, (decodedText) => handleScannedCodeSettlement(decodedText));
+        e.target.value = '';
+      }
+    });
+
+    // Camera Permission Modal Listeners
+    document.getElementById('closeCameraPermissionModalBtn')?.addEventListener('click', () => {
+      document.getElementById('cameraPermissionModal').style.display = 'none';
+    });
+    document.getElementById('retryCameraBtn')?.addEventListener('click', async () => {
+      document.getElementById('cameraPermissionModal').style.display = 'none';
+      if (State.pendingCameraSource === 'DISPATCH') {
+        await startDispatchScanner();
+      } else {
+        await startSettlementScanner();
+      }
+    });
+    document.getElementById('permModalSnapPhotoBtn')?.addEventListener('click', () => {
+      document.getElementById('cameraPermissionModal').style.display = 'none';
+      if (State.pendingCameraSource === 'DISPATCH') {
+        document.getElementById('dispatchFileInput')?.click();
+      } else {
+        document.getElementById('settlementFileInput')?.click();
+      }
+    });
 
     // Dedicated Fast Manual Invoice Entry (IN)
     document.getElementById('settlementManualSubmitBtn')?.addEventListener('click', handleManualInvoiceSettlement);

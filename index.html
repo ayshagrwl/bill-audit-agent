@@ -1038,6 +1038,50 @@ IN-3922&#9;Vikram Singh&#9;Mahaveer Market&#9;12850&#9;Paid UPI&#9;2000.00"></te
     </div>
   </div>
 
+  <!-- ======================================================== -->
+  <!-- MODAL: CAMERA PERMISSION & SETUP GUIDE                   -->
+  <!-- ======================================================== -->
+  <div id="cameraPermissionModal" class="modal-backdrop" style="display: none;">
+    <div class="modal-card" style="max-width: 400px; text-align: center;">
+      <div class="modal-head" style="justify-content: center; position: relative;">
+        <h3 style="display: flex; align-items: center; gap: 8px; color: var(--danger);">
+          <i class="fa-solid fa-camera"></i> Camera Access Required
+        </h3>
+        <button class="modal-close" id="closeCameraPermissionModalBtn" style="position: absolute; right: 12px;">&times;</button>
+      </div>
+
+      <div class="permission-guide-body mt-3" style="text-align: left; font-size: 0.88rem; line-height: 1.5;">
+        <p style="margin-bottom: 8px;">Your phone or browser blocked camera access. Please allow camera to scan bills:</p>
+        
+        <div id="iosChromeGuide" style="background: var(--bg-subtle); padding: 10px; border-radius: 8px; border-left: 3px solid #3b82f6; margin-bottom: 10px;">
+          <strong style="color: var(--text-main); display: block; margin-bottom: 4px;">📱 For iPhone (Chrome App):</strong>
+          <ol style="margin: 0; padding-left: 18px; font-size: 0.82rem; color: var(--text-main);">
+            <li>Open iPhone <strong>Settings</strong> app</li>
+            <li>Scroll down and tap <strong>Chrome</strong></li>
+            <li>Turn <strong>Camera: ON</strong> (Green)</li>
+            <li>Return here and tap <strong>"Try Camera Again"</strong></li>
+          </ol>
+        </div>
+
+        <div id="genericGuide" style="background: var(--bg-subtle); padding: 10px; border-radius: 8px; border-left: 3px solid #10b981; margin-bottom: 10px;">
+          <strong style="color: var(--text-main); display: block; margin-bottom: 4px;">🌐 Or In Browser Address Bar:</strong>
+          <p style="margin: 0; font-size: 0.82rem; color: var(--text-muted);">
+            Tap the <strong>Lock / Settings icon</strong> next to the address bar (<code style="font-size:0.75rem;">ayshagrwl.github.io</code>) ➔ <strong>Camera: Allow</strong>.
+          </p>
+        </div>
+      </div>
+
+      <div class="modal-foot mt-3" style="display: flex; flex-direction: column; gap: 8px;">
+        <button type="button" class="btn btn-primary btn-block" id="retryCameraBtn">
+          <i class="fa-solid fa-camera"></i> Try Camera Again
+        </button>
+        <button type="button" class="btn btn-outline-whatsapp btn-block" id="permModalSnapPhotoBtn">
+          <i class="fa-solid fa-camera-retro"></i> Use Snap Photo (No Permission Needed)
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast Notification Container -->
   <div id="toastContainer" class="toast-container"></div>
 
