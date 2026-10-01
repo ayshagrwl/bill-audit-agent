@@ -1203,7 +1203,12 @@
       if (stopBtn) stopBtn.style.display = 'none';
 
       const errMsg = err?.message || String(err);
-      if (!errMsg.includes('already under transition')) {
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+      const isCriOS = isIOS && /CriOS/i.test(navigator.userAgent);
+
+      if (isCriOS && (errMsg.includes('NotAllowed') || errMsg.includes('Permission') || errMsg.includes('denied') || errMsg.includes('NotFoundError'))) {
+        showToast('iPhone Chrome camera blocked: Open iPhone Settings > Chrome > Turn ON Camera, or open in Safari!', 'danger', 7000);
+      } else if (!errMsg.includes('already under transition')) {
         showToast('Camera error: ' + errMsg, 'danger', 4500);
       }
     } finally {
@@ -1359,7 +1364,12 @@
       if (stopBtn) stopBtn.style.display = 'none';
 
       const errMsg = err?.message || String(err);
-      if (!errMsg.includes('already under transition')) {
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+      const isCriOS = isIOS && /CriOS/i.test(navigator.userAgent);
+
+      if (isCriOS && (errMsg.includes('NotAllowed') || errMsg.includes('Permission') || errMsg.includes('denied') || errMsg.includes('NotFoundError'))) {
+        showToast('iPhone Chrome camera blocked: Open iPhone Settings > Chrome > Turn ON Camera, or open in Safari!', 'danger', 7000);
+      } else if (!errMsg.includes('already under transition')) {
         showToast('Camera error: ' + errMsg, 'danger', 4500);
       }
     } finally {
