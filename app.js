@@ -41,6 +41,7 @@
   const DEFAULT_MAPPINGS = {
     invoice: 'Invoice Number,inv bill no,D,Invoice,Bill,BillNo,InvNo',
     agent: 'Agent,Salesman,DeliveryAgent,AgentName,Name,Sales Agent',
+    beat: 'Beat,Beats,Route,Area,Week,Weeks,Beat Week,col o,o',
     party: 'Customer,Party,Shop,Store,PartyName,Customer Name',
     amount: 'Amount,Total,Net,BillAmount,Net Total',
     receipt: 'RECEIPT,REMARKS,receipt col,receipt no,Receipt,Payment,Paid',
@@ -75,6 +76,9 @@
     pendingScannedBill: null,
     pendingScanSource: null, // 'DISPATCH' or 'SETTLEMENT'
     activeAgent: null,       // { id, name } — set by agent picker before scanning
+    activeBeat: null,        // e.g. "PREM NAGAR (Week 1)" or "Week 1" or "PREM NAGAR"
+    selectedWeek: 'Week 1',
+    selectedBeatName: '',
     activeScanMode: null,    // 'DISPATCH' or 'SETTLEMENT' — set by home card tap
     frameSamplerInterval: null,
     currentZoom: 1,
@@ -160,7 +164,7 @@
           const parsedM = JSON.parse(storedMaster);
           if (Array.isArray(parsedM) && parsedM.length > 0) {
             if (Array.isArray(parsedM[0])) {
-              // Compact format: [billNo, receipt, outstanding, party, amount, agent]
+              // Compact format: [billNo, receipt, outstanding, party, amount, agent, beat]
               State.masterSheetBills = parsedM.map(r => ({
                 billNo: String(r[0] || '').trim(),
                 receipt: String(r[1] || '').trim(),
@@ -168,6 +172,7 @@
                 party: String(r[3] || 'Customer').trim(),
                 amount: Number(r[4]) || 0,
                 agent: String(r[5] || '').trim(),
+                beat: String(r[6] || '').trim(),
                 remainingText: String(r[2] || '')
               }));
             } else {
@@ -234,7 +239,8 @@
             b.outstanding !== undefined ? b.outstanding : 0,
             b.party || '',
             b.amount || 0,
-            b.agent || ''
+            b.agent || '',
+            b.beat || ''
           ]);
           localStorage.setItem(STORAGE_KEYS.MASTER_SHEET, JSON.stringify(compact));
         } catch (quotaErr) {
@@ -246,7 +252,8 @@
               b.outstanding !== undefined ? b.outstanding : 0,
               b.party || '',
               b.amount || 0,
-              b.agent || ''
+              b.agent || '',
+              b.beat || ''
             ]);
             localStorage.setItem(STORAGE_KEYS.MASTER_SHEET, JSON.stringify(compactRecent));
           } catch (e2) {}
@@ -493,6 +500,7 @@
 
     const idxInvoice = findColIndex(State.sheetMappings.invoice);
     const idxAgent = findColIndex(State.sheetMappings.agent);
+    const idxBeat = findColIndex(State.sheetMappings.beat || 'Beat,Beats,Route,Area,Week,Weeks,Beat Week,col o,o');
     const idxParty = findColIndex(State.sheetMappings.party);
     const idxAmount = findColIndex(State.sheetMappings.amount);
     const idxReceipt = findColIndex(State.sheetMappings.receipt);
@@ -511,6 +519,7 @@
       if (!billNo) continue;
 
       const agent = (idxAgent !== -1 ? cols[idxAgent] : (cols[15] || '')) || '';
+      const beat = (idxBeat !== -1 ? cols[idxBeat] : (cols[14] || '')) || '';
       const party = (idxParty !== -1 ? cols[idxParty] : (cols[4] || '')) || 'General Party';
       const rawAmt = (idxAmount !== -1 ? cols[idxAmount] : (cols[5] || '0')) || '0';
       const cleanAmt = parseFloat(String(rawAmt).replace(/[₹,\s]/g, '')) || 0;
@@ -530,6 +539,7 @@
       parsedBills.push({
         billNo: String(billNo).trim(),
         agent: String(agent).trim(),
+        beat: String(beat).trim(),
         party: String(party).trim(),
         amount: cleanAmt,
         receipt: String(receipt).trim(),
@@ -599,6 +609,7 @@
         party: masterMatch.party,
         amount: masterMatch.amount,
         agent: masterMatch.agent,
+        beat: masterMatch.beat || '',
         receipt: masterMatch.receipt,
         outstanding: masterMatch.outstanding !== undefined ? masterMatch.outstanding : 0,
         remainingText: masterMatch.remainingText || '',
@@ -630,6 +641,7 @@
             party: mm ? mm.party : party,
             amount: mm ? mm.amount : amount,
             agent: mm ? mm.agent : '',
+            beat: mm ? (mm.beat || '') : '',
             receipt: mm ? mm.receipt : '',
             fromMaster: !!mm,
             raw: text,
@@ -709,6 +721,7 @@
           party: mm ? mm.party : (party || 'Standard Account'),
           amount: mm ? mm.amount : amount,
           agent: mm ? mm.agent : '',
+          beat: mm ? (mm.beat || '') : '',
           receipt: mm ? mm.receipt : '',
           fromMaster: !!mm,
           raw: text
@@ -813,6 +826,7 @@
         party: mm ? mm.party : 'Standard Account',
         amount: mm ? mm.amount : amount,
         agent: mm ? mm.agent : '',
+        beat: mm ? (mm.beat || '') : '',
         receipt: mm ? mm.receipt : '',
         fromMaster: !!mm,
         raw: text
@@ -826,6 +840,7 @@
       party: mm ? mm.party : 'Standard Account',
       amount: mm ? mm.amount : 0,
       agent: mm ? mm.agent : '',
+      beat: mm ? (mm.beat || '') : '',
       receipt: mm ? mm.receipt : '',
       fromMaster: !!mm,
       raw: text
@@ -846,6 +861,7 @@
         parsed.amount = mm.amount;
       }
       if (!parsed.agent) parsed.agent = mm.agent;
+      if (!parsed.beat && mm.beat) parsed.beat = mm.beat;
       if (!parsed.receipt) parsed.receipt = mm.receipt;
       parsed.outstanding = mm.outstanding !== undefined ? mm.outstanding : 0;
       parsed.remainingText = mm.remainingText || '';
@@ -1880,6 +1896,7 @@
   function addBillToDispatchBasket(parsed) {
     // Agent is strictly locked in from the Morning Dispatch selection (State.activeAgent)
     let assignedAgent = State.activeAgent ? State.activeAgent.name : '';
+    const assignedBeat = State.activeBeat || parsed.beat || '';
 
     // If still not set, check if parsed.agent matches one of our 3 designated agents
     if (!assignedAgent && parsed.agent) {
@@ -1898,6 +1915,7 @@
     const existingBasketIdx = State.dispatchBasket.findIndex(b => b.billNo === parsed.billNo);
     if (existingBasketIdx >= 0) {
       State.dispatchBasket[existingBasketIdx].agent = assignedAgent;
+      if (assignedBeat) State.dispatchBasket[existingBasketIdx].beat = assignedBeat;
       if (parsed.party && parsed.party !== 'Standard Account') State.dispatchBasket[existingBasketIdx].party = parsed.party;
       if (parsed.amount) State.dispatchBasket[existingBasketIdx].amount = parsed.amount;
       if (parsed.receipt) State.dispatchBasket[existingBasketIdx].receipt = parsed.receipt;
@@ -1920,6 +1938,7 @@
       party: parsed.party || 'Standard Account',
       amount: parsed.amount || 0,
       agent: assignedAgent,
+      beat: assignedBeat,
       receipt: parsed.receipt || '',
       outstanding: parsed.outstanding !== undefined ? parsed.outstanding : (parsed.amount || 0),
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -1972,6 +1991,7 @@
             <span class="count-pill" style="font-size: 0.68rem; background: var(--bg-subtle); color: var(--text-main);">
               <i class="fa-solid fa-user"></i> ${item.agent || 'Unassigned'}
             </span>
+            ${item.beat ? `<span class="badge-beat"><i class="fa-solid fa-location-dot"></i> ${item.beat}</span>` : ''}
             ${item.receipt ? `<span class="badge-receipt"><i class="fa-solid fa-receipt"></i> ${item.receipt}</span>` : ''}
             ${(item.outstanding !== undefined && item.outstanding > 0) ? `<span class="badge-pending" style="font-size: 0.68rem; background: #fef2f2; color: #dc2626; padding: 1px 6px; border-radius: 4px; font-weight: 600;"><i class="fa-solid fa-coins"></i> Due: ${formatINR(item.outstanding)}</span>` : ''}
           </div>
@@ -2018,6 +2038,7 @@
           party: b.party,
           amount: b.amount,
           agent: b.agent || 'Sales Agent',
+          beat: b.beat || State.activeBeat || '',
           dispatchDate: date,
           status: 'WITH_AGENT',
           collectedAmt: 0,
@@ -2033,6 +2054,7 @@
         State.bills.unshift(record);
       } else {
         record.agent = b.agent || record.agent;
+        if (b.beat || State.activeBeat) record.beat = b.beat || State.activeBeat;
         record.dispatchDate = date;
         record.status = 'WITH_AGENT';
         record.collectedAmt = 0;
@@ -2044,7 +2066,7 @@
         record.lastActionDate = timestamp;
       }
 
-      record.history.push({ action: 'DISPATCHED', agent: record.agent, date, timestamp });
+      record.history.push({ action: 'DISPATCHED', agent: record.agent, beat: record.beat || '', date, timestamp });
       newBills.push({ ...record });
     });
 
@@ -3585,8 +3607,16 @@ _BillAudit Pro_`;
         const remainingText = r.c[3] ? String(r.c[3].f || r.c[3].v || '').trim() : '';
         // Receipt from Column M: strictly preserves text format (e.g. 'R4083', 'BY BILL')
         const receipt = r.c[4] ? String(r.c[4].f || r.c[4].v || '').trim() : '';
-        const agent = r.c[5] ? String(r.c[5].v || '').trim() : '';
-        rows.push({ billNo, receipt, outstanding: rawOut, party, amount: rawAmt, agent, remainingText });
+        // Beat from Column O and Agent from Column P if 7 columns queried (D, E, F, L, M, O, P)
+        let beat = '';
+        let agent = '';
+        if (r.c.length >= 7) {
+          beat = r.c[5] ? String(r.c[5].v || '').trim() : '';
+          agent = r.c[6] ? String(r.c[6].v || '').trim() : '';
+        } else {
+          agent = r.c[5] ? String(r.c[5].v || '').trim() : '';
+        }
+        rows.push({ billNo, receipt, outstanding: rawOut, party, amount: rawAmt, agent, beat, remainingText });
       }
       return rows;
     } catch (e) {
@@ -3608,7 +3638,7 @@ _BillAudit Pro_`;
 
     // 1. Direct BigTable Visualization API (3 seconds for 15,000 bills)
     try {
-      const tq = encodeURIComponent('select D, E, F, L, M, P where D is not null');
+      const tq = encodeURIComponent('select D, E, F, L, M, O, P where D is not null');
       const gvizUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&tq=${tq}&gid=${gid}&t=${Date.now()}`;
       const resp = await fetch(gvizUrl);
       if (resp.ok) {
@@ -3634,6 +3664,7 @@ _BillAudit Pro_`;
               party: String(r[3] || 'General Customer').trim(),
               amount: Number(r[4]) || 0,
               agent: String(r[5] || '').trim(),
+              beat: String(r[6] || '').trim(),
               remainingText: String(r[2] || '')
             }));
           }
@@ -4063,36 +4094,150 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     }
   }
 
-  // Opens agent picker modal before scanning
-  function openAgentPicker(mode) {
-    State.activeScanMode = mode;
-    const modal = document.getElementById('agentPickerModal');
-    const title = document.getElementById('agentPickerTitle');
-    const subtitle = document.getElementById('agentPickerSubtitle');
-    if (title) title.textContent = mode === 'DISPATCH' ? 'Morning Dispatch — Who is scanning?' : 'Evening Return — Who is checking in?';
-    if (subtitle) subtitle.textContent = mode === 'DISPATCH' ? 'Select the agent dispatching bills today' : 'Select the agent returning bills today';
-    if (modal) modal.style.display = 'flex';
+  function getAvailableBeats(agentName = '') {
+    const beatsSet = new Set();
+    const agentLower = (agentName || '').toLowerCase().trim();
+
+    // 1. Beats specifically mapped to this agent in Master Sheet
+    if (agentLower && State.masterSheetBills && State.masterSheetBills.length > 0) {
+      State.masterSheetBills.forEach(b => {
+        if (b.beat && b.agent && b.agent.toLowerCase().includes(agentLower)) {
+          beatsSet.add(b.beat.trim());
+        }
+      });
+    }
+
+    // 2. If fewer than 4 beats found for this agent, include all beats from Master Sheet
+    if (beatsSet.size < 4 && State.masterSheetBills && State.masterSheetBills.length > 0) {
+      State.masterSheetBills.forEach(b => {
+        if (b.beat && b.beat.trim().length > 1) {
+          beatsSet.add(b.beat.trim());
+        }
+      });
+    }
+
+    // 3. Fallback standard routes if Master Sheet hasn't loaded yet
+    if (beatsSet.size === 0) {
+      ['PREM NAGAR', 'RAM NAGAR', 'CENTRAL MARKET', 'STATION ROAD', 'MAIN BAZAAR', 'INDUSTRIAL AREA'].forEach(b => beatsSet.add(b));
+    }
+
+    return Array.from(beatsSet).filter(Boolean);
   }
 
-  // Called when an agent is selected in the picker modal
-  async function selectAgentAndStartScan(agentName) {
+  function resetPickerSteps() {
+    const step1 = document.getElementById('pickerStepAgent');
+    const step2 = document.getElementById('pickerStepBeat');
+    if (step1) step1.style.display = 'block';
+    if (step2) step2.style.display = 'none';
+  }
+
+  function openBeatPickerForAgent(agentName) {
     const agent = State.agents.find(a => a.name === agentName) || { id: agentName, name: agentName };
     State.activeAgent = agent;
+    State.selectedBeatName = '';
+    State.selectedWeek = 'Week 1';
 
-    // Close picker
+    const agentIndicator = document.getElementById('beatSelectedAgentName');
+    if (agentIndicator) agentIndicator.textContent = agentName;
+
+    const beatTitle = document.getElementById('beatPickerTitle');
+    if (beatTitle) {
+      beatTitle.textContent = State.activeScanMode === 'DISPATCH' ? 'Morning Dispatch — Beat / Week' : 'Evening Return — Beat / Week';
+    }
+
+    const customInput = document.getElementById('customBeatInput');
+    if (customInput) customInput.value = '';
+
+    // Reset week pills
+    document.querySelectorAll('.week-pill').forEach(pill => {
+      if (pill.dataset.week === 'Week 1') {
+        pill.classList.add('active');
+      } else {
+        pill.classList.remove('active');
+      }
+    });
+
+    // Populate discovered beats
+    const container = document.getElementById('discoveredBeatsContainer');
+    if (container) {
+      const beats = getAvailableBeats(agentName);
+      if (beats.length === 0) {
+        container.innerHTML = '<div class="no-beats-hint">No beat routes detected in sheet yet. Type one below.</div>';
+      } else {
+        container.innerHTML = beats.map(b => `
+          <button type="button" class="beat-chip-btn" data-beat="${b.replace(/"/g, '&quot;')}">
+            <i class="fa-solid fa-map-pin"></i> ${b}
+          </button>
+        `).join('');
+
+        container.querySelectorAll('.beat-chip-btn').forEach(chip => {
+          chip.addEventListener('click', () => {
+            const isAlreadyActive = chip.classList.contains('active');
+            container.querySelectorAll('.beat-chip-btn').forEach(c => c.classList.remove('active'));
+            if (!isAlreadyActive) {
+              chip.classList.add('active');
+              State.selectedBeatName = chip.dataset.beat;
+              if (customInput) customInput.value = chip.dataset.beat;
+            } else {
+              State.selectedBeatName = '';
+              if (customInput) customInput.value = '';
+            }
+          });
+        });
+      }
+    }
+
+    // Switch view to Step 2
+    const step1 = document.getElementById('pickerStepAgent');
+    const step2 = document.getElementById('pickerStepBeat');
+    if (step1) step1.style.display = 'none';
+    if (step2) step2.style.display = 'block';
+  }
+
+  async function confirmBeatAndStartScan() {
+    const customInput = document.getElementById('customBeatInput');
+    const customVal = customInput ? customInput.value.trim() : '';
+    const beatName = customVal || State.selectedBeatName || '';
+    const week = State.selectedWeek || '';
+
+    let combined = '';
+    if (beatName && week) {
+      combined = `${beatName} (${week})`;
+    } else if (beatName) {
+      combined = beatName;
+    } else if (week) {
+      combined = week;
+    }
+
+    State.activeBeat = combined;
+    await proceedToScanTab();
+  }
+
+  async function skipBeatAndStartScan() {
+    State.activeBeat = '';
+    await proceedToScanTab();
+  }
+
+  async function proceedToScanTab() {
     const modal = document.getElementById('agentPickerModal');
     if (modal) modal.style.display = 'none';
+    resetPickerSteps();
 
     const mode = State.activeScanMode || 'DISPATCH';
+    const agentName = State.activeAgent ? State.activeAgent.name : 'Rajesh';
     const pendingScan = State.pendingHardwareScan;
     State.pendingHardwareScan = null;
 
     if (mode === 'DISPATCH') {
-      // Update agent badge on dispatch tab
       const badge = document.getElementById('dispatchAgentBadge');
       if (badge) badge.textContent = agentName;
 
-      // Also push to hidden select for any legacy JS
+      const beatBadge = document.getElementById('dispatchBeatBadge');
+      if (beatBadge) {
+        beatBadge.textContent = State.activeBeat ? `📍 ${State.activeBeat}` : '📍 All Routes';
+        beatBadge.style.display = 'inline-flex';
+      }
+
       const sel = document.getElementById('dispatchAgentSelect');
       if (sel) {
         sel.innerHTML = `<option value="${agentName}" selected>${agentName}</option>`;
@@ -4105,11 +4250,15 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       }
     } else {
       State.activeSettlementAgent = agentName;
-      // Update agent badge on settlement tab
       const badge = document.getElementById('settlementAgentBadge');
       if (badge) badge.textContent = agentName;
 
-      // Push to hidden select
+      const beatBadge = document.getElementById('settlementBeatBadge');
+      if (beatBadge) {
+        beatBadge.textContent = State.activeBeat ? `📍 ${State.activeBeat}` : '📍 All Routes';
+        beatBadge.style.display = 'inline-flex';
+      }
+
       const sel = document.getElementById('settlementAgentSelect');
       if (sel) {
         sel.innerHTML = `<option value="${agentName}" selected>${agentName}</option>`;
@@ -4123,11 +4272,33 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     }
   }
 
+  // Opens agent picker modal before scanning
+  function openAgentPicker(mode) {
+    State.activeScanMode = mode;
+    resetPickerSteps();
+    const modal = document.getElementById('agentPickerModal');
+    const title = document.getElementById('agentPickerTitle');
+    const subtitle = document.getElementById('agentPickerSubtitle');
+    if (title) title.textContent = mode === 'DISPATCH' ? 'Morning Dispatch — Who is scanning?' : 'Evening Return — Who is checking in?';
+    if (subtitle) subtitle.textContent = mode === 'DISPATCH' ? 'Select the agent dispatching bills today' : 'Select the agent returning bills today';
+    if (modal) modal.style.display = 'flex';
+  }
+
+  // Direct shortcut (e.g. from Custody card check-in)
+  async function selectAgentAndStartScan(agentName) {
+    const agent = State.agents.find(a => a.name === agentName) || { id: agentName, name: agentName };
+    State.activeAgent = agent;
+    State.activeBeat = '';
+    await proceedToScanTab();
+  }
+
   // Returns home and stops camera
   async function goBackHome() {
     closeBillConfirmModal();
     State.activeAgent = null;
+    State.activeBeat = null;
     State.activeScanMode = null;
+    resetPickerSteps();
     await switchTab('tab-home');
   }
 
@@ -4141,12 +4312,42 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     document.getElementById('homeDispatchCard')?.addEventListener('click', () => openAgentPicker('DISPATCH'));
     document.getElementById('homeSettlementCard')?.addEventListener('click', () => openAgentPicker('SETTLEMENT'));
 
-    // AGENT PICKER MODAL: agent buttons
+    // AGENT & BEAT / WEEK PICKER MODAL
     document.querySelectorAll('.agent-pick-btn').forEach(btn => {
-      btn.addEventListener('click', () => selectAgentAndStartScan(btn.dataset.agent));
+      btn.addEventListener('click', () => openBeatPickerForAgent(btn.dataset.agent));
     });
+    document.getElementById('backToAgentStepBtn')?.addEventListener('click', resetPickerSteps);
     document.getElementById('closeAgentPickerBtn')?.addEventListener('click', () => {
       document.getElementById('agentPickerModal').style.display = 'none';
+      resetPickerSteps();
+    });
+    document.getElementById('closeBeatPickerBtn')?.addEventListener('click', () => {
+      document.getElementById('agentPickerModal').style.display = 'none';
+      resetPickerSteps();
+    });
+    document.getElementById('confirmBeatBtn')?.addEventListener('click', confirmBeatAndStartScan);
+    document.getElementById('skipBeatBtn')?.addEventListener('click', skipBeatAndStartScan);
+
+    // Week pill clicks
+    document.querySelectorAll('.week-pill').forEach(pill => {
+      pill.addEventListener('click', () => {
+        document.querySelectorAll('.week-pill').forEach(p => p.classList.remove('active'));
+        pill.classList.add('active');
+        State.selectedWeek = pill.dataset.week || '';
+      });
+    });
+
+    // Custom beat input typing
+    document.getElementById('customBeatInput')?.addEventListener('input', (e) => {
+      const val = e.target.value.trim();
+      State.selectedBeatName = val;
+      document.querySelectorAll('#discoveredBeatsContainer .beat-chip-btn').forEach(chip => {
+        if (chip.dataset.beat.toLowerCase() === val.toLowerCase()) {
+          chip.classList.add('active');
+        } else {
+          chip.classList.remove('active');
+        }
+      });
     });
 
     // BACK BUTTONS on scan tabs
@@ -4222,12 +4423,15 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     document.getElementById('whatsappHandoverBtn')?.addEventListener('click', () => {
       if (State.dispatchBasket.length === 0) return;
       const total = State.dispatchBasket.reduce((s, b) => s + (Number(b.amount) || 0), 0);
+      const agent = State.activeAgent ? State.activeAgent.name : (State.dispatchBasket[0]?.agent || 'Sales Agent');
+      const beatInfo = State.activeBeat ? `\n*Beat/Week:* ${State.activeBeat}` : '';
       const msg = 
-`*BILL HANDOVER SLIP (OUT)*
+`*📦 BILL HANDOVER SLIP (OUT)*
+*Agent:* ${agent}${beatInfo}
 *Date:* ${document.getElementById('dispatchDate').value || getTodayDateString()}
 *Total Bills:* ${State.dispatchBasket.length} (${formatINR(total)})
 -------------------------
-${State.dispatchBasket.map((b, i) => `${i + 1}. *${b.billNo}* [${b.agent}] - ${b.party} (${formatINR(b.amount)})`).join('\n')}
+${State.dispatchBasket.map((b, i) => `${i + 1}. *${b.billNo}* [${b.agent}]${b.beat ? ` (${b.beat})` : ''} - ${b.party} (${formatINR(b.amount)})`).join('\n')}
 -------------------------
 _BillAudit Pro_`;
       window.open(`https://wa.me/?text=${encodeURI(msg)}`, '_blank');

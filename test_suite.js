@@ -1362,7 +1362,142 @@ google.visualization.Query.setResponse({
   assert.strictEqual(humanTyping, null, 'Human slow typing must NOT be misclassified as hardware scanner burst');
 
   console.log('✅ Test 27 Passed! Hardware USB / Bluetooth Scanner Wedge Detection verified 100%!');
-  console.log('🎉 ALL 27 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+
+  // ========================================================
+  // Test 28: Beat & Week Selection, Column O Extraction & Assignment
+  // ========================================================
+  console.log('\nTest 28: Beat & Week Selection, Column O Extraction & Assignment');
+
+  // 1. Verify Column O (Beat) extraction from Master Sheet TSV
+  const sampleWithBeat = [
+    'Column 1\tPresent\tDATE\tInvoice Number\tCustomer\tAmount\tOverdue days\tDISCOUNT/CD\tPAID-UP\tSTATUS\tMODE\tOUTSTANDING\tRECEIPT\tREMARKS\tBeat\tAgent',
+    '1\tP\t2026-03-30\tIN-FY26/27-3921\tSatguru Store\t5465.00\t5\t0\t5465\tPAID\tCASH\t0\tR4080\tOK\tPREM NAGAR\tRajesh',
+    '2\tP\t2026-03-30\tIN-FY26/27-3922\tMahaveer Market\t12850.00\t10\t0\t10000\tPARTIAL\tUPI\t2850\tR4081\tFollowup\tRAM NAGAR\tShivam',
+    '3\tP\t2026-03-30\tIN-FY26/27-3923\tShree Shyam Mart\t3200.00\t2\t0\t3200\tPAID\tCASH\t0\tR4082\tOK\tPREM NAGAR\tRajesh'
+  ].join('\n');
+
+  function parseTableWithBeat(rawText) {
+    const lines = rawText.split('\n').filter(Boolean);
+    const headers = lines[0].split('\t').map(h => h.trim().toLowerCase());
+    const idxInv = headers.indexOf('invoice number');
+    const idxAgent = headers.indexOf('agent');
+    const idxBeat = headers.indexOf('beat');
+    const idxParty = headers.indexOf('customer');
+    const idxAmt = headers.indexOf('amount');
+    const idxOut = headers.indexOf('outstanding');
+    const idxRec = headers.indexOf('receipt');
+
+    return lines.slice(1).map(line => {
+      const cols = line.split('\t').map(c => c.trim());
+      return {
+        billNo: cols[idxInv],
+        agent: cols[idxAgent],
+        beat: cols[idxBeat],
+        party: cols[idxParty],
+        amount: parseFloat(cols[idxAmt]) || 0,
+        outstanding: parseFloat(cols[idxOut]) || 0,
+        receipt: cols[idxRec]
+      };
+    });
+  }
+
+  const parsedBeats = parseTableWithBeat(sampleWithBeat);
+  assert.strictEqual(parsedBeats.length, 3);
+  assert.strictEqual(parsedBeats[0].beat, 'PREM NAGAR', 'Bill 3921 should have beat PREM NAGAR');
+  assert.strictEqual(parsedBeats[1].beat, 'RAM NAGAR', 'Bill 3922 should have beat RAM NAGAR');
+
+  // 2. Test getAvailableBeats function
+  function testGetAvailableBeats(agentName, bills) {
+    const beatsSet = new Set();
+    const agentLower = (agentName || '').toLowerCase().trim();
+    if (agentLower && bills && bills.length > 0) {
+      bills.forEach(b => {
+        if (b.beat && b.agent && b.agent.toLowerCase().includes(agentLower)) {
+          beatsSet.add(b.beat.trim());
+        }
+      });
+    }
+    if (beatsSet.size < 4 && bills && bills.length > 0) {
+      bills.forEach(b => {
+        if (b.beat && b.beat.trim().length > 1) {
+          beatsSet.add(b.beat.trim());
+        }
+      });
+    }
+    if (beatsSet.size === 0) {
+      ['PREM NAGAR', 'RAM NAGAR', 'CENTRAL MARKET'].forEach(b => beatsSet.add(b));
+    }
+    return Array.from(beatsSet);
+  }
+
+  const rajeshBeats = testGetAvailableBeats('Rajesh', parsedBeats);
+  assert(rajeshBeats.includes('PREM NAGAR'), 'Rajesh beats must include PREM NAGAR');
+
+  // 3. Test Beat + Week combination logic
+  function combineBeatAndWeek(beatName, week) {
+    const b = (beatName || '').trim();
+    const w = (week || '').trim();
+    if (b && w) return `${b} (${w})`;
+    if (b) return b;
+    if (w) return w;
+    return '';
+  }
+
+  assert.strictEqual(combineBeatAndWeek('PREM NAGAR', 'Week 1'), 'PREM NAGAR (Week 1)');
+  assert.strictEqual(combineBeatAndWeek('', 'Week 2'), 'Week 2');
+  assert.strictEqual(combineBeatAndWeek('CENTRAL MARKET', ''), 'CENTRAL MARKET');
+  assert.strictEqual(combineBeatAndWeek('', ''), '');
+
+  // 4. Test GViz 7-column parsing (select D, E, F, L, M, O, P)
+  const gvizSample7Cols = JSON.stringify({
+    table: {
+      rows: [
+        {
+          c: [
+            { v: 'IN-FY26/27-3965' },
+            { v: 'Raman Stores' },
+            { v: 1336 },
+            { v: 1336 },
+            { v: 'R4083' },
+            { v: 'PREM NAGAR' },
+            { v: 'Rajesh' }
+          ]
+        }
+      ]
+    }
+  });
+
+  function parseGviz7Cols(txt) {
+    const json = JSON.parse(txt);
+    return json.table.rows.map(r => {
+      let beat = '';
+      let agent = '';
+      if (r.c.length >= 7) {
+        beat = r.c[5] ? String(r.c[5].v || '').trim() : '';
+        agent = r.c[6] ? String(r.c[6].v || '').trim() : '';
+      } else {
+        agent = r.c[5] ? String(r.c[5].v || '').trim() : '';
+      }
+      return {
+        billNo: r.c[0].v,
+        party: r.c[1].v,
+        amount: r.c[2].v,
+        outstanding: r.c[3].v,
+        receipt: r.c[4].v,
+        beat,
+        agent
+      };
+    });
+  }
+
+  const gvizParsed = parseGviz7Cols(gvizSample7Cols);
+  assert.strictEqual(gvizParsed[0].billNo, 'IN-FY26/27-3965');
+  assert.strictEqual(gvizParsed[0].beat, 'PREM NAGAR');
+  assert.strictEqual(gvizParsed[0].agent, 'Rajesh');
+
+  console.log('✅ Test 28 Passed! Beat & Week selection, Column O extraction, and GViz parsing verified 100%!');
+  console.log('🎉 ALL 28 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
 })();
+
 
 

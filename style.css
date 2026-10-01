@@ -2248,5 +2248,139 @@ body {
   transform: scale(1.06);
 }
 
+/* Beat & Week Picker Styles */
+.modal-back-btn {
+  background: transparent;
+  border: none;
+  font-size: 1.1rem;
+  color: var(--text-main, #334155);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  margin-right: 6px;
+  transition: all 0.15s ease;
+}
+.modal-back-btn:hover {
+  background: var(--bg-card, #f1f5f9);
+}
+
+.session-beat-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(255, 255, 255, 0.22);
+  color: #ffffff;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  letter-spacing: 0.2px;
+}
+
+.beat-agent-indicator {
+  background: var(--bg-card, #f8fafc);
+  padding: 8px 12px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border-color, #e2e8f0);
+  font-size: 0.88rem;
+}
+
+.picker-section-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-muted, #64748b);
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+
+.week-picker-pills {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.week-pill {
+  flex: 1;
+  min-width: 65px;
+  padding: 6px 10px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  background: var(--bg-card, #f8fafc);
+  color: var(--text-main, #1e293b);
+  border: 1.5px solid var(--border-color, #cbd5e1);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: center;
+}
+
+.week-pill.active {
+  background: #2563eb;
+  color: #ffffff;
+  border-color: #2563eb;
+  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.35);
+}
+
+.beat-chips-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-height: 140px;
+  overflow-y: auto;
+  padding: 2px 0;
+  margin-bottom: 10px;
+}
+
+.beat-chip-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border-radius: 20px;
+  background: var(--bg-card, #f1f5f9);
+  color: var(--text-main, #334155);
+  border: 1px solid var(--border-color, #cbd5e1);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.beat-chip-btn:hover {
+  border-color: #2563eb;
+}
+
+.beat-chip-btn.active {
+  background: #059669;
+  color: #ffffff;
+  border-color: #059669;
+  box-shadow: 0 2px 8px rgba(5, 150, 105, 0.4);
+}
+
+.badge-beat {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.no-beats-hint {
+  font-size: 0.8rem;
+  color: var(--text-muted, #64748b);
+  font-style: italic;
+  padding: 4px 0;
+}
+
+
 
 
