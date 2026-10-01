@@ -1120,8 +1120,9 @@
           if (!rawLabel) return;
           const opt = document.createElement('option');
           opt.value = cam.id;
-          const l = rawLabel.toLowerCase();
-          if (l.includes('ultra wide') || l.includes('0.5x')) {
+          if (l.includes('usb') || l.includes('scanner') || l.includes('barcode') || l.includes('external')) {
+            opt.textContent = `🔌 ${rawLabel} (USB Device)`;
+          } else if (l.includes('ultra wide') || l.includes('0.5x')) {
             opt.textContent = `📹 ${rawLabel} (Wide 0.5x)`;
           } else if (l.includes('front') || l.includes('user') || l.includes('selfie')) {
             opt.textContent = `🤳 ${rawLabel}`;
@@ -1138,10 +1139,143 @@
       if (currentVal) {
         select.value = currentVal;
       }
+
+      // Auto-refresh when USB camera devices are plugged in or unplugged on laptop
+      if (!window._deviceChangeListenerAttached && typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+        window._deviceChangeListenerAttached = true;
+        navigator.mediaDevices.addEventListener('devicechange', async () => {
+          console.log('[Hardware] Media devicechange triggered (USB camera plugged/unplugged)');
+          await initCameraSelectors(true);
+          showToast('🔌 Video devices updated (USB camera detected)', 'info', 2000);
+        });
+      }
     } catch (e) {
       console.warn('Camera enumeration warning:', e);
     }
   }
+
+  function flashHardwareScannerIndicator(text) {
+    const pills = [document.getElementById('dispatchHwPill'), document.getElementById('settlementHwPill')];
+    pills.forEach(p => {
+      if (p) {
+        p.classList.add('active-flash');
+        const origHtml = p.innerHTML;
+        const displayTxt = text.length > 12 ? text.slice(0, 10) + '…' : text;
+        p.innerHTML = `<i class="fa-solid fa-check"></i> Scanned: ${displayTxt}`;
+        setTimeout(() => {
+          p.classList.remove('active-flash');
+          p.innerHTML = origHtml;
+        }, 1200);
+      }
+    });
+  }
+
+  /**
+   * Hardware USB & Bluetooth Barcode / QR Scanner Wedge Listener
+   * Allows plugging in any USB / Bluetooth barcode gun, handheld QR reader,
+   * or desktop omnidirectional scanner on a laptop.
+   */
+  const HardwareScanner = {
+    buffer: '',
+    lastKeyTime: 0,
+    scannerThresholdMs: 65, // Max ms between characters for hardware scanner burst (<65ms)
+    isScanningBurst: false,
+    _timeout: null,
+
+    init() {
+      window.addEventListener('keydown', (e) => {
+        const now = Date.now();
+        const diff = now - this.lastKeyTime;
+        this.lastKeyTime = now;
+
+        // Ignore modifier keys alone
+        if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab'].includes(e.key)) {
+          return;
+        }
+
+        // Check for Enter key (typical hardware scanner terminator)
+        if (e.key === 'Enter') {
+          // If accumulated a high-speed scanner burst with valid length
+          if (this.buffer.length >= 2 && this.isScanningBurst) {
+            e.preventDefault();
+            e.stopPropagation();
+
+            const scannedCode = this.buffer.trim();
+            this.buffer = '';
+            this.isScanningBurst = false;
+
+            this.processScannedCode(scannedCode);
+            return;
+          }
+
+          // Reset if normal enter
+          this.buffer = '';
+          this.isScanningBurst = false;
+          return;
+        }
+
+        // Printable characters
+        if (e.key.length === 1) {
+          // Rapid keystrokes (<65ms) indicate a hardware scanner device
+          if (diff <= this.scannerThresholdMs) {
+            this.isScanningBurst = true;
+            this.buffer += e.key;
+          } else {
+            // Human typing pause or initial character of a scanner burst
+            this.buffer = e.key;
+            this.isScanningBurst = false;
+          }
+
+          clearTimeout(this._timeout);
+          this._timeout = setTimeout(() => {
+            this.buffer = '';
+            this.isScanningBurst = false;
+          }, 250);
+        }
+      }, true); // Capture phase to catch scanner input before individual inputs
+    },
+
+    processScannedCode(rawText) {
+      if (!rawText) return;
+
+      SoundFX.init();
+      SoundFX.playBeep('success');
+      flashHardwareScannerIndicator(rawText);
+
+      // If Confirmation Modal is currently open, confirm it or advance
+      if (State.isConfirmModalOpen) {
+        confirmPendingScannedBill();
+        setTimeout(() => this.routeScannedCode(rawText), 350);
+        return;
+      }
+
+      this.routeScannedCode(rawText);
+    },
+
+    async routeScannedCode(rawText) {
+      const activeTab = State.activeTab;
+
+      if (activeTab === 'tab-dispatch') {
+        showToast(`🔌 USB Gun: ${rawText}`, 'success', 2200);
+        handleScannedCodeDispatch(rawText);
+      } else if (activeTab === 'tab-settlement') {
+        showToast(`🔌 USB Gun: ${rawText}`, 'success', 2200);
+        handleScannedCodeSettlement(rawText);
+      } else {
+        // If on Home tab or other tab
+        if (!State.activeAgent) {
+          // Automatically prompt agent picker
+          State.pendingHardwareScan = rawText;
+          showToast(`🔌 Scanned: "${rawText}". Select an agent:`, 'info', 3000);
+          openAgentPicker('DISPATCH');
+        } else {
+          // Agent was already picked, default to Morning Dispatch
+          await switchTab('tab-dispatch');
+          handleScannedCodeDispatch(rawText);
+        }
+      }
+    }
+  };
 
   async function switchSelectedCamera(newCameraId) {
     if (State.isCameraTransitioning) {
@@ -3948,7 +4082,8 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     const modal = document.getElementById('agentPickerModal');
     if (modal) modal.style.display = 'none';
 
-    const mode = State.activeScanMode;
+    const pendingScan = State.pendingHardwareScan;
+    State.pendingHardwareScan = null;
 
     if (mode === 'DISPATCH') {
       // Update agent badge on dispatch tab
@@ -3963,6 +4098,9 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       }
 
       await switchTab('tab-dispatch');
+      if (pendingScan) {
+        setTimeout(() => handleScannedCodeDispatch(pendingScan), 350);
+      }
     } else {
       State.activeSettlementAgent = agentName;
       // Update agent badge on settlement tab
@@ -3977,6 +4115,9 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       }
 
       await switchTab('tab-settlement');
+      if (pendingScan) {
+        setTimeout(() => handleScannedCodeSettlement(pendingScan), 350);
+      }
     }
   }
 
@@ -4408,6 +4549,9 @@ _BillAudit Pro_`;
     if (csvUrlInput) csvUrlInput.value = State.settings.sheetCsvUrl || '';
 
     setupEventListeners();
+
+    // Initialize Hardware USB & Bluetooth Barcode / QR Scanner Listener
+    HardwareScanner.init();
 
     // Update home tab stats on load
     updateHomeStats();

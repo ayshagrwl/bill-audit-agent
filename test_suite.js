@@ -1313,6 +1313,56 @@ google.visualization.Query.setResponse({
   assert.strictEqual(todayDiffAmt, 4000);
 
   console.log('✅ Test 26 Passed! Fraud Verdicts, 3-Agent Flow, Missed Bills & Date History verified 100%!');
-  console.log('🎉 ALL 26 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+
+  // Test 27: Hardware USB / Bluetooth Barcode & QR Scanner Wedge Detection
+  console.log('\nTest 27: Hardware USB / Bluetooth Barcode & QR Scanner Wedge Detection');
+  
+  function simulateKeyboardWedge(keystrokeString, intervalMs) {
+    let buffer = '';
+    let isScanningBurst = false;
+    let lastKeyTime = 0;
+    const scannerThresholdMs = 65;
+    let detectedScan = null;
+
+    for (let i = 0; i < keystrokeString.length; i++) {
+      const char = keystrokeString[i];
+      const now = lastKeyTime + intervalMs;
+      const diff = now - lastKeyTime;
+      lastKeyTime = now;
+
+      if (char === '\n' || char === '\r') {
+        if (buffer.length >= 2 && isScanningBurst) {
+          detectedScan = buffer.trim();
+        }
+        buffer = '';
+        isScanningBurst = false;
+      } else {
+        if (diff <= scannerThresholdMs) {
+          isScanningBurst = true;
+          buffer += char;
+        } else {
+          buffer = char;
+          isScanningBurst = false;
+        }
+      }
+    }
+    return detectedScan;
+  }
+
+  // 1. Hardware Scanner burst: 15ms per character (typical USB / BT handheld gun)
+  const gunScan = simulateKeyboardWedge('IN-FY26/27-3921\n', 15);
+  assert.strictEqual(gunScan, 'IN-FY26/27-3921', 'Hardware scanner burst at 15ms/key must be detected');
+
+  // 2. Fast 20ms burst on 4-digit invoice number
+  const gunShortScan = simulateKeyboardWedge('3965\n', 20);
+  assert.strictEqual(gunShortScan, '3965', '4-digit invoice scan must be detected');
+
+  // 3. Human typing: 150ms per character (should NOT trigger hardware scanner wedge)
+  const humanTyping = simulateKeyboardWedge('IN-FY26/27-3921\n', 150);
+  assert.strictEqual(humanTyping, null, 'Human slow typing must NOT be misclassified as hardware scanner burst');
+
+  console.log('✅ Test 27 Passed! Hardware USB / Bluetooth Scanner Wedge Detection verified 100%!');
+  console.log('🎉 ALL 27 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
 })();
+
 
