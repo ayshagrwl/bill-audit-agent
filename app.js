@@ -3073,6 +3073,7 @@
 
     grid.querySelectorAll('[data-goto-settle]').forEach(btn => {
       btn.addEventListener('click', () => {
+        State.activeScanMode = 'SETTLEMENT';
         selectAgentAndStartScan(btn.dataset.gotoSettle);
       });
     });
@@ -4082,6 +4083,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     const modal = document.getElementById('agentPickerModal');
     if (modal) modal.style.display = 'none';
 
+    const mode = State.activeScanMode || 'DISPATCH';
     const pendingScan = State.pendingHardwareScan;
     State.pendingHardwareScan = null;
 
