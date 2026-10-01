@@ -19,6 +19,14 @@
     }
   </script>
 
+  <!-- jsQR Ultra-Fast Mobile QR Engine (iOS 17 Optimized) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
+  <script>
+    if (typeof jsQR === 'undefined') {
+      document.write('<script src="https://unpkg.com/jsqr@1.4.0/dist/jsQR.js"><\/script>');
+    }
+  </script>
+
   <!-- Stylesheet -->
   <link rel="stylesheet" href="style.css" />
 </head>
@@ -194,7 +202,13 @@
             <div class="scan-box">
               <div class="scan-line"></div>
             </div>
-            <span class="scan-hint-tag">Hold 20cm away for sharp focus</span>
+            <!-- Live Viewfinder Quick Controls (Zoom 1x/2x, Flashlight) -->
+            <div class="viewfinder-quick-bar">
+              <button type="button" class="vf-control-btn active" id="dispatchZoom1xBtn" data-zoom="1">1x</button>
+              <button type="button" class="vf-control-btn" id="dispatchZoom2xBtn" data-zoom="2">2x</button>
+              <button type="button" class="vf-control-btn" id="dispatchTorchBtn" title="Flashlight"><i class="fa-solid fa-bolt"></i></button>
+            </div>
+            <span class="scan-hint-tag">Hold 20-25cm away · Tap 2x for small QR</span>
           </div>
         </div>
 
@@ -207,12 +221,12 @@
             <i class="fa-solid fa-stop"></i> Close Camera
           </button>
           
-          <!-- iPhone Safari Fast Photo Fallback -->
+          <!-- iPhone Fast Photo Fallback with Native Label Binding -->
           <div class="ios-camera-helpers mt-1" style="display: flex; gap: 8px;">
-            <input type="file" id="dispatchFileInput" accept="image/*" capture="environment" style="display: none;" />
-            <button type="button" id="snapPhotoDispatchBtn" class="btn btn-outline flex-1 btn-sm">
+            <input type="file" id="dispatchFileInput" accept="image/*" capture="environment" class="accessible-hidden-input" />
+            <label for="dispatchFileInput" id="snapPhotoDispatchBtn" class="btn btn-outline flex-1 btn-sm snap-photo-label">
               <i class="fa-solid fa-camera-retro"></i> Snap Photo
-            </button>
+            </label>
           </div>
         </div>
 
@@ -314,7 +328,13 @@
             <div class="scan-box">
               <div class="scan-line"></div>
             </div>
-            <span class="scan-hint-tag">Hold 20cm away for sharp focus</span>
+            <!-- Live Viewfinder Quick Controls (Zoom 1x/2x, Flashlight) -->
+            <div class="viewfinder-quick-bar">
+              <button type="button" class="vf-control-btn active" id="settlementZoom1xBtn" data-zoom="1">1x</button>
+              <button type="button" class="vf-control-btn" id="settlementZoom2xBtn" data-zoom="2">2x</button>
+              <button type="button" class="vf-control-btn" id="settlementTorchBtn" title="Flashlight"><i class="fa-solid fa-bolt"></i></button>
+            </div>
+            <span class="scan-hint-tag">Hold 20-25cm away · Tap 2x for small QR</span>
           </div>
         </div>
 
@@ -326,12 +346,12 @@
             <i class="fa-solid fa-stop"></i> Close Camera
           </button>
           
-          <!-- iPhone Safari Fast Photo Fallback -->
+          <!-- iPhone Fast Photo Fallback with Native Label Binding -->
           <div class="ios-camera-helpers mt-1" style="display: flex; gap: 8px;">
-            <input type="file" id="settlementFileInput" accept="image/*" capture="environment" style="display: none;" />
-            <button type="button" id="snapPhotoSettlementBtn" class="btn btn-outline flex-1 btn-sm">
+            <input type="file" id="settlementFileInput" accept="image/*" capture="environment" class="accessible-hidden-input" />
+            <label for="settlementFileInput" id="snapPhotoSettlementBtn" class="btn btn-outline flex-1 btn-sm snap-photo-label">
               <i class="fa-solid fa-camera-retro"></i> Snap Photo
-            </button>
+            </label>
           </div>
         </div>
 

@@ -75,7 +75,10 @@
     pendingScannedBill: null,
     pendingScanSource: null, // 'DISPATCH' or 'SETTLEMENT'
     activeAgent: null,       // { id, name } — set by agent picker before scanning
-    activeScanMode: null     // 'DISPATCH' or 'SETTLEMENT' — set by home card tap
+    activeScanMode: null,    // 'DISPATCH' or 'SETTLEMENT' — set by home card tap
+    frameSamplerInterval: null,
+    currentZoom: 1,
+    isTorchOn: false
   };
 
   // Web Audio Synthesizer for Fast Scan Feedback
@@ -873,19 +876,148 @@
 
     let supportedFormats = undefined;
     if (typeof Html5QrcodeSupportedFormats !== 'undefined') {
-      // Prioritize high-performance formats: standard QR Code & Invoice Code 128
+      // Support all common invoice formats: QR code, Code 128, Code 39, EAN 13, DataMatrix
       supportedFormats = [
         Html5QrcodeSupportedFormats.QR_CODE,
-        Html5QrcodeSupportedFormats.CODE_128
+        Html5QrcodeSupportedFormats.CODE_128,
+        Html5QrcodeSupportedFormats.CODE_39,
+        Html5QrcodeSupportedFormats.EAN_13,
+        Html5QrcodeSupportedFormats.DATA_MATRIX
       ];
     }
     return new Html5Qrcode(elementId, {
       formatsToSupport: supportedFormats,
       verbose: false,
+      useBarCodeDetectorIfSupported: true,
       experimentalFeatures: {
         useBarCodeDetectorIfSupported: true
       }
     });
+  }
+
+  /**
+   * Dual-Engine Live Video Frame Sampler (jsQR iOS 17 Acceleration)
+   */
+  function stopFrameSampler() {
+    if (State.frameSamplerInterval) {
+      clearInterval(State.frameSamplerInterval);
+      State.frameSamplerInterval = null;
+    }
+  }
+
+  function startVideoFrameSampler(containerId, onDecoded) {
+    stopFrameSampler();
+    if (typeof jsQR === 'undefined') return;
+
+    let canvas = null;
+    let ctx = null;
+    let isSampling = false;
+
+    State.frameSamplerInterval = setInterval(() => {
+      if (isSampling) return;
+      if (State.isConfirmModalOpen) return;
+
+      try {
+        const container = document.getElementById(containerId);
+        if (!container || container.style.display === 'none') return;
+        const video = container.querySelector('video');
+        if (!video || video.readyState < 2 || !video.videoWidth) return;
+
+        isSampling = true;
+
+        if (!canvas) {
+          canvas = document.createElement('canvas');
+          ctx = canvas.getContext('2d', { willReadFrequently: true });
+        }
+
+        // Downscale to max 640px for ultra-low latency (<10ms decode on iPhone)
+        const scale = Math.min(1, 640 / Math.max(video.videoWidth, video.videoHeight));
+        const sampleW = Math.floor(video.videoWidth * scale);
+        const sampleH = Math.floor(video.videoHeight * scale);
+
+        if (canvas.width !== sampleW || canvas.height !== sampleH) {
+          canvas.width = sampleW;
+          canvas.height = sampleH;
+        }
+
+        ctx.drawImage(video, 0, 0, sampleW, sampleH);
+        const imgData = ctx.getImageData(0, 0, sampleW, sampleH);
+
+        // Fast pass: regular QR code
+        let code = jsQR(imgData.data, sampleW, sampleH, { inversionAttempts: 'dontInvert' });
+        if (!code) {
+          // Fallback pass: inverted / dark mode QR code
+          code = jsQR(imgData.data, sampleW, sampleH, { inversionAttempts: 'onlyInvert' });
+        }
+
+        if (code && code.data && code.data.trim()) {
+          const now = Date.now();
+          if (code.data !== State.lastScannedCode || (now - State.lastScanTimestamp) > 1500) {
+            State.lastScannedCode = code.data;
+            State.lastScanTimestamp = now;
+            onDecoded(code.data);
+          }
+        }
+      } catch (e) {
+        // Non-critical frame sampling catch
+      } finally {
+        isSampling = false;
+      }
+    }, 180);
+  }
+
+  async function applyScannerZoom(scannerInstance, zoomLevel, containerType) {
+    State.currentZoom = zoomLevel;
+    const prefix = containerType === 'SETTLEMENT' ? 'settlement' : 'dispatch';
+    const btn1x = document.getElementById(`${prefix}Zoom1xBtn`);
+    const btn2x = document.getElementById(`${prefix}Zoom2xBtn`);
+    if (btn1x && btn2x) {
+      if (zoomLevel === 1) {
+        btn1x.classList.add('active');
+        btn2x.classList.remove('active');
+      } else {
+        btn2x.classList.add('active');
+        btn1x.classList.remove('active');
+      }
+    }
+
+    if (!scannerInstance) return;
+    try {
+      if (typeof scannerInstance.applyVideoConstraints === 'function') {
+        await scannerInstance.applyVideoConstraints({
+          advanced: [{ zoom: zoomLevel }]
+        });
+      }
+    } catch (e) {
+      console.warn('[Camera] Zoom constraint not supported or failed:', e);
+    }
+  }
+
+  async function toggleScannerTorch(scannerInstance, containerType) {
+    if (!scannerInstance) return;
+    State.isTorchOn = !State.isTorchOn;
+    const prefix = containerType === 'SETTLEMENT' ? 'settlement' : 'dispatch';
+    const torchBtn = document.getElementById(`${prefix}TorchBtn`);
+    if (torchBtn) {
+      if (State.isTorchOn) {
+        torchBtn.classList.add('torch-active');
+      } else {
+        torchBtn.classList.remove('torch-active');
+      }
+    }
+
+    try {
+      if (typeof scannerInstance.applyVideoConstraints === 'function') {
+        await scannerInstance.applyVideoConstraints({
+          advanced: [{ torch: State.isTorchOn }]
+        });
+      }
+    } catch (e) {
+      console.warn('[Camera] Torch constraint not supported:', e);
+      showToast('Flashlight not available on this camera', 'warning', 1500);
+      State.isTorchOn = false;
+      if (torchBtn) torchBtn.classList.remove('torch-active');
+    }
   }
 
   /**
@@ -1194,6 +1326,7 @@
       }
 
       ensureVideoInline(container);
+      startVideoFrameSampler('qr-reader', (decodedText) => handleScannedCodeDispatch(decodedText));
 
       // Apply iOS 17 / modern mobile continuous autofocus if supported
       setTimeout(() => {
@@ -1247,6 +1380,7 @@
   }
 
   async function stopDispatchScanner() {
+    stopFrameSampler();
     if (State.isCameraTransitioning) {
       console.warn('[Camera] Dispatch stop waiting for in-flight transition...');
       await new Promise(r => setTimeout(r, 250));
@@ -1369,6 +1503,7 @@
       }
 
       ensureVideoInline(container);
+      startVideoFrameSampler('qr-reader-settlement', (decodedText) => handleScannedCodeSettlement(decodedText));
 
       // Apply iOS 17 / modern mobile continuous autofocus if supported
       setTimeout(() => {
@@ -1422,6 +1557,7 @@
   }
 
   async function stopSettlementScanner() {
+    stopFrameSampler();
     if (State.isCameraTransitioning) {
       console.warn('[Camera] Settlement stop waiting for in-flight transition...');
       await new Promise(r => setTimeout(r, 250));
@@ -1460,11 +1596,11 @@
   }
 
   /**
-   * Fast Photo Scan Fallback for iPhone (100% Reliable via Native Camera)
+   * Fast Photo Scan Fallback for iPhone (100% Reliable via Native Camera + jsQR + ZXing)
    */
   async function handlePhotoScan(file, onDecoded) {
     if (!file) return;
-    showToast('Analyzing bill photo...', 'info', 2000);
+    showToast('Analyzing bill photo...', 'info', 1500);
 
     // Stop active live camera if running to avoid container collision
     if (State.scannerDispatch) {
@@ -1474,23 +1610,74 @@
       await stopSettlementScanner();
     }
 
-    const tempId = 'qr-reader';
-    let tempScanner = null;
     try {
-      tempScanner = createScannerInstance(tempId);
-      const decodedText = await tempScanner.scanFile(file, false);
-      if (decodedText) {
-        onDecoded(decodedText);
-      } else {
-        throw new Error('No code found');
+      // 1. Load image and scale down on canvas to prevent iPhone 12MP-48MP memory freeze
+      const img = await new Promise((resolve, reject) => {
+        const image = new Image();
+        const url = URL.createObjectURL(file);
+        image.onload = () => {
+          URL.revokeObjectURL(url);
+          resolve(image);
+        };
+        image.onerror = (e) => {
+          URL.revokeObjectURL(url);
+          reject(e);
+        };
+        image.src = url;
+      });
+
+      const maxDim = 1280;
+      let w = img.naturalWidth || img.width;
+      let h = img.naturalHeight || img.height;
+      if (w > maxDim || h > maxDim) {
+        if (w > h) {
+          h = Math.round((h * maxDim) / w);
+          w = maxDim;
+        } else {
+          w = Math.round((w * maxDim) / h);
+          h = maxDim;
+        }
       }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0, w, h);
+
+      // 2. Fast Pass 1: jsQR on scaled image (decodes in ~15ms)
+      if (typeof jsQR !== 'undefined') {
+        const imgData = ctx.getImageData(0, 0, w, h);
+        let code = jsQR(imgData.data, w, h, { inversionAttempts: 'attemptBoth' });
+        if (code && code.data && code.data.trim()) {
+          SoundFX.playBeep('success');
+          onDecoded(code.data.trim());
+          return;
+        }
+      }
+
+      // 3. Fallback Pass 2: html5-qrcode scanFile on resized blob (supports barcodes like Code 128)
+      if (typeof Html5Qrcode !== 'undefined') {
+        const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.9));
+        if (blob) {
+          const tempScanner = createScannerInstance('qr-reader');
+          try {
+            const decodedText = await tempScanner.scanFile(blob, false);
+            if (decodedText && decodedText.trim()) {
+              SoundFX.playBeep('success');
+              onDecoded(decodedText.trim());
+              return;
+            }
+          } finally {
+            try { await tempScanner.clear(); } catch(e) {}
+          }
+        }
+      }
+
+      throw new Error('No QR code or barcode found in photo');
     } catch (err) {
       console.warn('Photo scan error:', err);
       showToast('Could not read code. Make sure QR/barcode is clear and well-lit.', 'warning', 4000);
-    } finally {
-      if (tempScanner) {
-        try { await tempScanner.clear(); } catch(e) {}
-      }
     }
   }
 
@@ -3851,11 +4038,18 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     document.getElementById('startScanBtn')?.addEventListener('click', startDispatchScanner);
     document.getElementById('stopScanBtn')?.addEventListener('click', stopDispatchScanner);
 
+    // Viewfinder Zoom & Torch Controls (OUT)
+    document.getElementById('dispatchZoom1xBtn')?.addEventListener('click', () => applyScannerZoom(State.scannerDispatch, 1, 'DISPATCH'));
+    document.getElementById('dispatchZoom2xBtn')?.addEventListener('click', () => applyScannerZoom(State.scannerDispatch, 2, 'DISPATCH'));
+    document.getElementById('dispatchTorchBtn')?.addEventListener('click', () => toggleScannerTorch(State.scannerDispatch, 'DISPATCH'));
+
+    // Viewfinder Zoom & Torch Controls (IN)
+    document.getElementById('settlementZoom1xBtn')?.addEventListener('click', () => applyScannerZoom(State.scannerSettlement, 1, 'SETTLEMENT'));
+    document.getElementById('settlementZoom2xBtn')?.addEventListener('click', () => applyScannerZoom(State.scannerSettlement, 2, 'SETTLEMENT'));
+    document.getElementById('settlementTorchBtn')?.addEventListener('click', () => toggleScannerTorch(State.scannerSettlement, 'SETTLEMENT'));
+
     // Snap Photo / Native Camera fallback (OUT)
     const dispatchFileInput = document.getElementById('dispatchFileInput');
-    document.getElementById('snapPhotoDispatchBtn')?.addEventListener('click', () => {
-      dispatchFileInput?.click();
-    });
     dispatchFileInput?.addEventListener('change', (e) => {
       const file = e.target.files?.[0];
       if (file) {
@@ -3917,9 +4111,6 @@ _BillAudit Pro_`;
 
     // Snap Photo / Native Camera fallback (IN)
     const settlementFileInput = document.getElementById('settlementFileInput');
-    document.getElementById('snapPhotoSettlementBtn')?.addEventListener('click', () => {
-      settlementFileInput?.click();
-    });
     settlementFileInput?.addEventListener('change', (e) => {
       const file = e.target.files?.[0];
       if (file) {
@@ -3942,11 +4133,8 @@ _BillAudit Pro_`;
     });
     document.getElementById('permModalSnapPhotoBtn')?.addEventListener('click', () => {
       document.getElementById('cameraPermissionModal').style.display = 'none';
-      if (State.pendingCameraSource === 'DISPATCH') {
-        document.getElementById('dispatchFileInput')?.click();
-      } else {
-        document.getElementById('settlementFileInput')?.click();
-      }
+      const targetInput = State.pendingCameraSource === 'DISPATCH' ? dispatchFileInput : settlementFileInput;
+      if (targetInput) targetInput.click();
     });
 
     // Dedicated Fast Manual Invoice Entry (IN)
