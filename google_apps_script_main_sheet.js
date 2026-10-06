@@ -27,8 +27,12 @@ const TARGET_CONFIG = {
     INVOICE: 3,     // Column D (0-indexed: 3)
     PARTY: 4,       // Column E (0-indexed: 4)
     AMOUNT: 5,      // Column F (0-indexed: 5)
+    PAID_UP: 8,     // Column I (0-indexed: 8)
+    STATUS: 9,      // Column J (0-indexed: 9)
     OUTSTANDING: 11,// Column L (0-indexed: 11)
     RECEIPT: 12,    // Column M (0-indexed: 12) - Text Format
+    REMARKS: 13,    // Column N (0-indexed: 13) - Remarks / Additional Receipts
+    BEAT: 14,       // Column O (0-indexed: 14) - Beat Route
     AGENT: 15       // Column P (0-indexed: 15)
   }
 };
@@ -205,22 +209,75 @@ function findSingleBillInSheet(sheet, billNo) {
   const rawAmt = rowVals[TARGET_CONFIG.COLS.AMOUNT] || '0';
   const cleanAmt = parseFloat(rawAmt.replace(/[₹,\s]/g, '')) || 0;
 
-  // Column M: Receipt details in Text format (preserving any alphanumeric codes like R4083)
-  const receipt = String(rowVals[TARGET_CONFIG.COLS.RECEIPT] || '').trim();
-
   // Column L: Remaining Payment / Outstanding Amount
   const rawOutstanding = rowVals[TARGET_CONFIG.COLS.OUTSTANDING] || '0';
   const cleanOutstanding = parseFloat(rawOutstanding.replace(/[₹,\s]/g, '')) || 0;
+
+  // Intelligent Receipt Resolution (Checks Column M, Column N Remarks, and Status/Paid-Up)
+  const receipt = resolveIntelligentReceipt(
+    rowVals[TARGET_CONFIG.COLS.RECEIPT],
+    rowVals[TARGET_CONFIG.COLS.REMARKS],
+    rowVals[TARGET_CONFIG.COLS.PAID_UP],
+    rowVals[TARGET_CONFIG.COLS.STATUS],
+    cleanOutstanding,
+    cleanAmt
+  );
+
+  const beat = String(rowVals[TARGET_CONFIG.COLS.BEAT] || '').trim();
 
   return {
     billNo: String(rowVals[TARGET_CONFIG.COLS.INVOICE] || cleanInput).trim(),
     party: String(rowVals[TARGET_CONFIG.COLS.PARTY] || 'General Customer').trim(),
     amount: cleanAmt,
     agent: String(rowVals[TARGET_CONFIG.COLS.AGENT] || '').trim(),
+    beat: beat,
     receipt: receipt,
     outstanding: cleanOutstanding,
     remainingText: rawOutstanding.trim()
   };
+}
+
+/**
+ * Intelligent Receipt and Payment Extractor
+ * Checks Column M (Receipt), Column N (Remarks), and Column I/J (Paid-up / Status)
+ */
+function resolveIntelligentReceipt(rawRec, rawRem, rawPaidUp, rawStatus, rawOut, rawAmt) {
+  const rec = String(rawRec || '').trim();
+  const rem = String(rawRem || '').trim();
+  const status = String(rawStatus || '').trim().toUpperCase();
+  const paidUp = parseFloat(String(rawPaidUp || '').replace(/[₹,\s]/g, '')) || 0;
+  const out = parseFloat(String(rawOut || '').replace(/[₹,\s]/g, '')) || 0;
+  const amt = parseFloat(String(rawAmt || '').replace(/[₹,\s]/g, '')) || 0;
+
+  if (rec) {
+    const isGenericRem = /^(ok|good|normal|followup|n\/a|nil)$/i.test(rem);
+    if (rem && !isGenericRem && rem.toLowerCase() !== rec.toLowerCase()) {
+      return `${rec} (${rem})`;
+    }
+    return rec;
+  }
+
+  if (rem) {
+    const isGeneric = /^(ok|good|normal|followup|n\/a|nil)$/i.test(rem);
+    if (!isGeneric) {
+      return rem;
+    }
+  }
+
+  if (status === 'PAID' || (out <= 0 && amt > 0)) {
+    if (paidUp > 0) return `PAID (₹${paidUp})`;
+    return 'PAID IN FULL';
+  }
+
+  if (status === 'PARTIAL' || (out > 0 && paidUp > 0)) {
+    return `PARTIAL (₹${paidUp} Paid)`;
+  }
+
+  if (status === 'CANCELLED') {
+    return 'CANCELLED';
+  }
+
+  return '';
 }
 
 /**
@@ -236,14 +293,18 @@ function extractBillsFromSheet(sheet, limit) {
   const startRow = (parsedLimit > 0 && parsedLimit < lastRow - 1) ? Math.max(2, lastRow - parsedLimit + 1) : 2;
   const numRows = lastRow - startRow + 1;
 
-  // Read only the requested rows using getDisplayValues()
+  // Read rows using getDisplayValues()
   const displayVals = sheet.getRange(startRow, 1, numRows, 16).getDisplayValues();
 
   const cInv = TARGET_CONFIG.COLS.INVOICE;       // 3 (Col D)
   const cParty = TARGET_CONFIG.COLS.PARTY;       // 4 (Col E)
   const cAmt = TARGET_CONFIG.COLS.AMOUNT;        // 5 (Col F)
+  const cPaid = TARGET_CONFIG.COLS.PAID_UP;      // 8 (Col I)
+  const cStat = TARGET_CONFIG.COLS.STATUS;       // 9 (Col J)
   const cOut = TARGET_CONFIG.COLS.OUTSTANDING;   // 11 (Col L)
   const cRec = TARGET_CONFIG.COLS.RECEIPT;       // 12 (Col M - Text Format)
+  const cRem = TARGET_CONFIG.COLS.REMARKS;       // 13 (Col N)
+  const cBeat = TARGET_CONFIG.COLS.BEAT;         // 14 (Col O)
   const cAgent = TARGET_CONFIG.COLS.AGENT;       // 15 (Col P)
 
   const rows = [];
@@ -253,25 +314,35 @@ function extractBillsFromSheet(sheet, limit) {
     const billNo = row[cInv] ? row[cInv].trim() : '';
     if (!billNo) continue;
 
-    // Column M: Receipt text format
-    const receipt = row[cRec] ? row[cRec].trim() : '';
-
     // Column L: Remaining Payment / Outstanding
     const rawOut = row[cOut] ? row[cOut].trim() : '';
     const outstanding = rawOut ? (parseFloat(rawOut.replace(/[₹,\s]/g, '')) || 0) : 0;
-
-    // Column E: Party Name
-    const party = row[cParty] ? row[cParty].trim() : 'General Customer';
 
     // Column F: Bill Amount
     const rawAmt = row[cAmt] ? row[cAmt].trim() : '0';
     const amount = rawAmt ? (parseFloat(rawAmt.replace(/[₹,\s]/g, '')) || 0) : 0;
 
+    // Intelligent receipt resolution
+    const receipt = resolveIntelligentReceipt(
+      row[cRec],
+      row[cRem],
+      row[cPaid],
+      row[cStat],
+      outstanding,
+      amount
+    );
+
+    // Column E: Party Name
+    const party = row[cParty] ? row[cParty].trim() : 'General Customer';
+
     // Column P: Agent Name
     const agent = row[cAgent] ? row[cAgent].trim() : '';
 
-    // Compact tuple: [billNo, receipt, outstanding, party, amount, agent]
-    rows.push([billNo, receipt, outstanding, party, amount, agent]);
+    // Column O: Beat Route
+    const beat = row[cBeat] ? row[cBeat].trim() : '';
+
+    // Compact tuple: [billNo, receipt, outstanding, party, amount, agent, beat]
+    rows.push([billNo, receipt, outstanding, party, amount, agent, beat]);
   }
 
   return { rows: rows };

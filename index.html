@@ -172,8 +172,8 @@
         </button>
         <div class="session-title">
           <span class="session-mode-label">📤 Morning Dispatch</span>
-          <span class="session-agent-badge" id="dispatchAgentBadge">–</span>
-          <span class="session-beat-badge" id="dispatchBeatBadge" style="display: none;">–</span>
+          <span class="session-agent-badge clickable-badge" id="dispatchAgentBadge" title="Click to Change Agent">–</span>
+          <span class="session-beat-badge clickable-badge" id="dispatchBeatBadge" style="display: none;" title="Click to Change Beat">–</span>
         </div>
       </div>
 
@@ -307,8 +307,8 @@
         </button>
         <div class="session-title">
           <span class="session-mode-label">📥 Evening Return</span>
-          <span class="session-agent-badge" id="settlementAgentBadge">–</span>
-          <span class="session-beat-badge" id="settlementBeatBadge" style="display: none;">–</span>
+          <span class="session-agent-badge clickable-badge" id="settlementAgentBadge" title="Click to Change Agent">–</span>
+          <span class="session-beat-badge clickable-badge" id="settlementBeatBadge" style="display: none;" title="Click to Change Beat">–</span>
         </div>
       </div>
 
@@ -502,6 +502,9 @@
           <select id="leftOutAgentFilter" class="form-select">
             <option value="ALL">All Agents (Overview)</option>
           </select>
+          <select id="leftOutBeatFilter" class="form-select">
+            <option value="ALL">All Beats & Routes</option>
+          </select>
           <button id="whatsappAllLeftOutBtn" class="btn btn-outline-whatsapp btn-sm">
             <i class="fa-brands fa-whatsapp"></i> Send Left-Out Summary
           </button>
@@ -563,6 +566,9 @@
           <div class="filter-selects">
             <select id="ledgerAgentFilter" class="form-select">
               <option value="ALL">All Agents</option>
+            </select>
+            <select id="ledgerBeatFilter" class="form-select">
+              <option value="ALL">All Beats & Routes</option>
             </select>
             <select id="ledgerStatusFilter" class="form-select">
               <option value="ALL">All Payment Statuses</option>
@@ -1044,73 +1050,80 @@ IN-3922&#9;Vikram Singh&#9;Mahaveer Market&#9;12850&#9;Paid UPI&#9;2000.00"></te
       <!-- Step 1: Pick Agent -->
       <div id="pickerStepAgent">
         <div class="modal-head">
-          <h3 id="agentPickerTitle">Who is scanning?</h3>
+          <h3 id="agentPickerTitle">Choose Agent</h3>
           <button class="modal-close" id="closeAgentPickerBtn">&times;</button>
         </div>
-        <p class="agent-picker-subtitle" id="agentPickerSubtitle">Select your name to start scanning</p>
-        <div class="agent-picker-grid">
-          <button class="agent-pick-btn" data-agent="Rajesh">
-            <div class="agent-pick-avatar">
-              <i class="fa-solid fa-user"></i>
+        <p class="agent-picker-subtitle" id="agentPickerSubtitle">Select sales agent taking or returning bills today</p>
+        
+        <div class="agent-cards-vertical">
+          <!-- Shivam Dwivedi -->
+          <button type="button" class="agent-select-card" data-agent="Shivam">
+            <div class="agent-select-avatar avatar-shivam">
+              <i class="fa-solid fa-user-tie"></i>
             </div>
-            <span>Rajesh</span>
+            <div class="agent-select-info">
+              <div class="agent-select-name">SHIVAM DWIVEDI</div>
+              <div class="agent-select-beat" id="shivamTodayRoutePreview">
+                <i class="fa-solid fa-location-dot"></i> Loading route...
+              </div>
+            </div>
+            <i class="fa-solid fa-chevron-right agent-select-arrow"></i>
           </button>
-          <button class="agent-pick-btn" data-agent="Shivam">
-            <div class="agent-pick-avatar">
-              <i class="fa-solid fa-user"></i>
+
+          <!-- Rajesh Chaurasiya -->
+          <button type="button" class="agent-select-card" data-agent="Rajesh">
+            <div class="agent-select-avatar avatar-rajesh">
+              <i class="fa-solid fa-user-tie"></i>
             </div>
-            <span>Shivam</span>
+            <div class="agent-select-info">
+              <div class="agent-select-name">RAJESH CHAURASIYA</div>
+              <div class="agent-select-beat" id="rajeshTodayRoutePreview">
+                <i class="fa-solid fa-location-dot"></i> Loading route...
+              </div>
+            </div>
+            <i class="fa-solid fa-chevron-right agent-select-arrow"></i>
           </button>
-          <button class="agent-pick-btn" data-agent="Self">
-            <div class="agent-pick-avatar">
-              <i class="fa-solid fa-user-check"></i>
+
+          <!-- Self / Counter -->
+          <button type="button" class="agent-select-card agent-select-card-self" data-agent="Self">
+            <div class="agent-select-avatar avatar-self">
+              <i class="fa-solid fa-store"></i>
             </div>
-            <span>Self</span>
+            <div class="agent-select-info">
+              <div class="agent-select-name">SELF / COUNTER</div>
+              <div class="agent-select-beat">
+                <i class="fa-solid fa-receipt"></i> Direct In-Store Custody
+              </div>
+            </div>
+            <i class="fa-solid fa-chevron-right agent-select-arrow"></i>
           </button>
         </div>
       </div>
 
-      <!-- Step 2: Pick Beat & Week -->
+      <!-- Step 2: Pick Beat Route (Only 6 Beats per Agent) -->
       <div id="pickerStepBeat" style="display: none;">
         <div class="modal-head">
           <button type="button" class="modal-back-btn" id="backToAgentStepBtn" title="Back to Agent Selection">
             <i class="fa-solid fa-arrow-left"></i>
           </button>
-          <h3 id="beatPickerTitle">Select Beat / Week</h3>
+          <h3 id="beatPickerTitle">Choose Beat Route</h3>
           <button class="modal-close" id="closeBeatPickerBtn">&times;</button>
         </div>
         
         <div class="beat-agent-indicator">
-          <span>Agent: <strong id="beatSelectedAgentName">Rajesh</strong></span>
+          <span>Agent: <strong id="beatSelectedAgentName">Rajesh Chaurasiya</strong></span>
         </div>
 
-        <!-- Week Cycle (Week 1 to Week 4) -->
-        <div class="picker-section-label">📅 Week Cycle</div>
-        <div class="week-picker-pills" id="weekPickerPills">
-          <button type="button" class="week-pill active" data-week="Week 1">Week 1</button>
-          <button type="button" class="week-pill" data-week="Week 2">Week 2</button>
-          <button type="button" class="week-pill" data-week="Week 3">Week 3</button>
-          <button type="button" class="week-pill" data-week="Week 4">Week 4</button>
-          <button type="button" class="week-pill" data-week="">All / None</button>
+        <!-- 6 Assigned Beats for the Agent -->
+        <div class="picker-section-label">📍 Select from 6 Assigned Beats (Mon – Sat):</div>
+        <div class="weekly-routes-list" id="weeklyRoutesList">
+          <!-- Populated dynamically with the 6 beats for the chosen agent -->
         </div>
 
-        <!-- Beat Route (Discovered from Master Sheet) -->
-        <div class="picker-section-label mt-2">📍 Select Beat Route</div>
-        <div class="beat-chips-container" id="discoveredBeatsContainer">
-          <!-- Populated dynamically from Master Sheet Column O -->
-        </div>
-
-        <!-- Custom Beat / Market Input -->
-        <div class="custom-beat-row mt-2">
-          <input type="text" id="customBeatInput" class="form-input form-input-sm" 
-                 placeholder="Or type custom Beat / Market name..." />
-        </div>
-
-        <!-- Action Buttons -->
-        <div class="modal-foot mt-3" style="display: flex; gap: 8px;">
-          <button type="button" class="btn btn-outline flex-1" id="skipBeatBtn">Skip Beat</button>
-          <button type="button" class="btn btn-primary flex-1" id="confirmBeatBtn">
-            <i class="fa-solid fa-play"></i> Start Scanning
+        <!-- Action Button -->
+        <div class="modal-foot mt-3">
+          <button type="button" class="btn btn-primary btn-block btn-lg font-bold" id="confirmBeatBtn">
+            <i class="fa-solid fa-camera"></i> Start Scanning
           </button>
         </div>
       </div>

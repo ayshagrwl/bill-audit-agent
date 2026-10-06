@@ -23,9 +23,9 @@
   };
 
   const DEFAULT_AGENTS = [
-    { id: 'AG-001', name: 'Rajesh', phone: '' },
-    { id: 'AG-002', name: 'Shivam', phone: '' },
-    { id: 'AG-003', name: 'Self', phone: '' }
+    { id: 'AG-001', name: 'Rajesh', fullName: 'Rajesh Chaurasiya', phone: '' },
+    { id: 'AG-002', name: 'Shivam', fullName: 'Shivam Dwivedi', phone: '' },
+    { id: 'AG-003', name: 'Self', fullName: 'Self / Counter', phone: '' }
   ];
 
   const DEFAULT_SETTINGS = {
@@ -47,6 +47,41 @@
     receipt: 'RECEIPT,REMARKS,receipt col,receipt no,Receipt,Payment,Paid',
     outstanding: 'OUTSTANDING,outstanding,payment remaining,remaining,balance,pending,due'
   };
+
+  /**
+   * Master Recurring Beat Plan by Agent & Day of Week (Monday to Saturday)
+   * Matches Official Agent Daily Beat Schedule:
+   * - Shivam Dwivedi: Mukhtiyarganj Market-2, Rajendra Nagar / Jawahar Nagar, Pateri Virat Nagar, Kothi Road Khama Khuja, Prem Nagar Dhawari, Pateri VITS Road
+   * - Rajesh Chaurasiya: Mukhtiyarganj Market-1, Civil Line Panna Naka, Bharhut Nagar Bank Colony, Kothi Road Bagha, Dhawari Mahadeva, Pul Gadi – Raigaon
+   */
+  const MASTER_BEAT_PLAN = {
+    Rajesh: {
+      Mon: { beat: 'Mukhtiyarganj Market-1', area: 'Mukhtiyarganj Market-1' },
+      Tue: { beat: 'Civil Line Panna Naka', area: 'Civil Line Panna Naka' },
+      Wed: { beat: 'Bharhut Nagar Bank Colony', area: 'Bharhut Nagar Bank Colony' },
+      Thu: { beat: 'Kothi Road Bagha', area: 'Kothi Road Bagha' },
+      Fri: { beat: 'Dhawari Mahadeva', area: 'Dhawari Mahadeva' },
+      Sat: { beat: 'Pul Gadi – Raigaon', area: 'Pul Gadi – Raigaon' }
+    },
+    Shivam: {
+      Mon: { beat: 'Mukhtiyarganj Market-2', area: 'Mukhtiyarganj Market-2' },
+      Tue: { beat: 'Rajendra Nagar / Jawahar Nagar', area: 'Rajendra Nagar / Jawahar Nagar' },
+      Wed: { beat: 'Pateri Virat Nagar', area: 'Pateri Virat Nagar' },
+      Thu: { beat: 'Kothi Road Khama Khuja', area: 'Kothi Road Khama Khuja' },
+      Fri: { beat: 'Prem Nagar Dhawari', area: 'Prem Nagar Dhawari' },
+      Sat: { beat: 'Pateri VITS Road', area: 'Pateri VITS Road' }
+    },
+    Self: {
+      Mon: { beat: 'In-Store Counter / Self', area: 'Direct Party Pickup / Walk-in' },
+      Tue: { beat: 'In-Store Counter / Self', area: 'Direct Party Pickup / Walk-in' },
+      Wed: { beat: 'In-Store Counter / Self', area: 'Direct Party Pickup / Walk-in' },
+      Thu: { beat: 'In-Store Counter / Self', area: 'Direct Party Pickup / Walk-in' },
+      Fri: { beat: 'In-Store Counter / Self', area: 'Direct Party Pickup / Walk-in' },
+      Sat: { beat: 'In-Store Counter / Self', area: 'Direct Party Pickup / Walk-in' }
+    }
+  };
+  MASTER_BEAT_PLAN['Rajesh Chaurasiya'] = MASTER_BEAT_PLAN.Rajesh;
+  MASTER_BEAT_PLAN['Shivam Dwivedi'] = MASTER_BEAT_PLAN.Shivam;
 
   const State = {
     bills: [],
@@ -76,7 +111,8 @@
     pendingScannedBill: null,
     pendingScanSource: null, // 'DISPATCH' or 'SETTLEMENT'
     activeAgent: null,       // { id, name } — set by agent picker before scanning
-    activeBeat: null,        // e.g. "PREM NAGAR (Week 1)" or "Week 1" or "PREM NAGAR"
+    activeBeat: null,        // e.g. "MUKHTIYARGANJ MARKET (Mon, Week 1)"
+    selectedDay: 'Mon',
     selectedWeek: 'Week 1',
     selectedBeatName: '',
     activeScanMode: null,    // 'DISPATCH' or 'SETTLEMENT' — set by home card tap
@@ -141,17 +177,33 @@
     }
   };
 
+  function isSameAgent(agentA, agentB) {
+    if (!agentA || !agentB) return false;
+    if (agentA === agentB) return true;
+    const a = String(agentA).toLowerCase().trim();
+    const b = String(agentB).toLowerCase().trim();
+    if (a === b) return true;
+    if (a.includes('shivam') && b.includes('shivam')) return true;
+    if (a.includes('rajesh') && b.includes('rajesh')) return true;
+    if (a.includes('self') && b.includes('self')) return true;
+    return false;
+  }
+
   function loadLocalState() {
     try {
       const storedBills = localStorage.getItem(STORAGE_KEYS.BILLS);
       State.bills = storedBills ? JSON.parse(storedBills) : [];
 
-      // Strictly enforce the 3 designated agents only: Rajesh, Shivam, Self
+      // Strictly enforce the 3 designated agents only: Rajesh Chaurasiya, Shivam Dwivedi, Self
       State.agents = [...DEFAULT_AGENTS];
       localStorage.setItem(STORAGE_KEYS.AGENTS, JSON.stringify(State.agents));
 
-      // Sanitize legacy bills so only the 3 canonical agents exist in custody
-      const validAgentNames = new Set(['rajesh', 'shivam', 'self']);
+      // Sanitize legacy bills so only canonical agents exist in custody
+      const validAgentNames = new Set([
+        'rajesh', 'shivam', 'self',
+        'rajesh chaurasiya', 'shivam dwivedi',
+        'rajesh chaurasiya(om marketing)'
+      ]);
       State.bills.forEach(b => {
         if (!b.agent || !validAgentNames.has(b.agent.toLowerCase().trim())) {
           b.agent = 'Rajesh';
@@ -325,6 +377,15 @@
       .replace(/[\s\-_/.]/g, '');
   }
 
+  function stripInvoicePrefix(val) {
+    if (!val) return '';
+    return String(val)
+      .trim()
+      .toUpperCase()
+      .replace(/^(INVOICE|INV|VCH|VOUCHER|BILL|NO)[-_\s/.]*/i, '')
+      .replace(/^IN[-_\s/.]*/i, '');
+  }
+
   /**
    * Helper to register all lookup variations of a bill in the Hash Map
    */
@@ -336,6 +397,15 @@
 
     map.set(exact, b);
     if (norm) map.set(norm, b);
+
+    // Register without invoice prefixes (e.g. "14015503-0001", "17063-1408", "FY26/27-3921")
+    const stripped = stripInvoicePrefix(b.billNo);
+    if (stripped && stripped !== exact) {
+      map.set(stripped, b);
+      const normStrip = normalizeInvoiceNumber(stripped);
+      if (normStrip) map.set(normStrip, b);
+    }
+
     if (digits.length >= 3) map.set(digits, b);
 
     // Index trailing numeric suffix (e.g. "3965" from "IN-FY26/27-3965" or "0001" from "IN-14015503-0001")
@@ -380,7 +450,7 @@
 
   /**
    * Search Master Sheet for an Invoice Number (O(1) Instant Hash Map Lookup)
-   * Matches exact, normalized, or numeric suffix (e.g. 3921 inside IN-FY26/27-3921)
+   * Matches exact, normalized, prefix-stripped, or numeric suffix (e.g. 3921 inside IN-FY26/27-3921)
    */
   function findMasterBill(invoiceInput) {
     if (!invoiceInput) return null;
@@ -401,7 +471,14 @@
     match = State.masterSheetMap.get(normInput);
     if (match) return match;
 
-    // 3. O(1) numeric digits match (e.g. "3965" matches "IN-FY26/27-3965")
+    // 3. O(1) stripped prefix match (e.g. user/barcode scans "VCH-3965" or "14015503-0001")
+    const strippedInput = stripInvoicePrefix(cleanInput);
+    if (strippedInput && strippedInput !== cleanInput.toUpperCase()) {
+      match = State.masterSheetMap.get(strippedInput) || State.masterSheetMap.get(normalizeInvoiceNumber(strippedInput));
+      if (match) return match;
+    }
+
+    // 4. O(1) numeric digits match (e.g. "3965" matches "IN-FY26/27-3965")
     const digitsOnly = cleanInput.replace(/\D/g, '');
     if (digitsOnly.length >= 2) {
       match = State.masterSheetMap.get(digitsOnly);
@@ -413,7 +490,7 @@
       }
     }
 
-    // 4. Suffix match fallback on digit string
+    // 5. Suffix match fallback on digit string
     if (digitsOnly.length >= 3) {
       for (let i = 0; i < State.masterSheetBills.length; i++) {
         const b = State.masterSheetBills[i];
@@ -505,7 +582,9 @@
     const idxAmount = findColIndex(State.sheetMappings.amount);
     const idxReceipt = findColIndex(State.sheetMappings.receipt);
     const idxOutstanding = findColIndex(State.sheetMappings.outstanding || 'OUTSTANDING,outstanding,payment remaining,remaining,balance,pending,due');
-    const idxRemarks = findColIndex('remarks,note,notes');
+    const idxRemarks = findColIndex('remarks,note,notes,col n,n');
+    const idxPaidUp = findColIndex('paid-up,paid up,paidup,paid amt,amount paid,col i,i');
+    const idxStatus = findColIndex('status,col j,j');
 
     const parsedBills = [];
     const detectedAgents = new Set();
@@ -523,16 +602,15 @@
       const party = (idxParty !== -1 ? cols[idxParty] : (cols[4] || '')) || 'General Party';
       const rawAmt = (idxAmount !== -1 ? cols[idxAmount] : (cols[5] || '0')) || '0';
       const cleanAmt = parseFloat(String(rawAmt).replace(/[₹,\s]/g, '')) || 0;
-      
-      let receipt = (idxReceipt !== -1 ? cols[idxReceipt] : '') || '';
-      if (!receipt && idxRemarks !== -1 && cols[idxRemarks]) {
-        receipt = cols[idxRemarks].trim();
-      } else if (receipt && idxRemarks !== -1 && cols[idxRemarks] && cols[idxRemarks].trim() !== receipt) {
-        receipt = receipt + ' / ' + cols[idxRemarks].trim();
-      }
 
       const rawOutstanding = (idxOutstanding !== -1 ? cols[idxOutstanding] : (cols[11] || '')) || '';
       const cleanOutstanding = rawOutstanding ? (parseFloat(String(rawOutstanding).replace(/[₹,\s]/g, '')) || 0) : 0;
+
+      const rawReceiptCol = (idxReceipt !== -1 ? cols[idxReceipt] : (cols[12] || '')) || '';
+      const rawRemarksCol = (idxRemarks !== -1 ? cols[idxRemarks] : (cols[13] || '')) || '';
+      const rawPaidUpCol = (idxPaidUp !== -1 ? cols[idxPaidUp] : (cols[8] || '')) || '';
+      const rawStatusCol = (idxStatus !== -1 ? cols[idxStatus] : (cols[9] || '')) || '';
+      const receipt = resolveIntelligentReceipt(rawReceiptCol, rawRemarksCol, rawPaidUpCol, rawStatusCol, cleanOutstanding, cleanAmt);
 
       if (agent) detectedAgents.add(agent.trim());
 
@@ -596,6 +674,23 @@
   // 3. ROBUST QR CODE & BARCODE PARSER
   // ========================================================
 
+  function buildParsedBill(billNo, party, amount, mm, raw, isEInvoice = false) {
+    const finalBillNo = String(billNo || '').trim();
+    return {
+      billNo: finalBillNo,
+      party: mm ? mm.party : (party || 'Standard Account'),
+      amount: mm ? mm.amount : (amount || 0),
+      agent: mm ? mm.agent : '',
+      beat: mm ? (mm.beat || '') : '',
+      receipt: mm ? (mm.receipt || '') : '',
+      outstanding: mm && mm.outstanding !== undefined ? mm.outstanding : 0,
+      remainingText: mm ? (mm.remainingText || '') : '',
+      fromMaster: !!mm,
+      raw: raw || finalBillNo,
+      isEInvoice
+    };
+  }
+
   function parseQRCodeData(rawText) {
     if (!rawText || typeof rawText !== 'string') return null;
     const text = rawText.trim();
@@ -604,18 +699,7 @@
     // 1. Check if the scanned string directly matches a bill in Master Sheet
     const masterMatch = findMasterBill(text);
     if (masterMatch) {
-      return {
-        billNo: masterMatch.billNo,
-        party: masterMatch.party,
-        amount: masterMatch.amount,
-        agent: masterMatch.agent,
-        beat: masterMatch.beat || '',
-        receipt: masterMatch.receipt,
-        outstanding: masterMatch.outstanding !== undefined ? masterMatch.outstanding : 0,
-        remainingText: masterMatch.remainingText || '',
-        fromMaster: true,
-        raw: text
-      };
+      return buildParsedBill(masterMatch.billNo, masterMatch.party, masterMatch.amount, masterMatch, text);
     }
 
     // 2. Indian GST e-Invoice Signed QR Code (JWT format: header.payload.signature)
@@ -636,17 +720,7 @@
           const party = payload.BuyerGstin || payload.buyerGstin || payload.party || 'Standard Account';
           const amount = parseFloat(payload.TotInvVal || payload.totInvVal || payload.amount) || 0;
           const mm = findMasterBill(billNo);
-          return {
-            billNo: String(billNo).trim(),
-            party: mm ? mm.party : party,
-            amount: mm ? mm.amount : amount,
-            agent: mm ? mm.agent : '',
-            beat: mm ? (mm.beat || '') : '',
-            receipt: mm ? mm.receipt : '',
-            fromMaster: !!mm,
-            raw: text,
-            isEInvoice: true
-          };
+          return buildParsedBill(billNo, party, amount, mm, text, true);
         }
       } catch (e) {}
     }
@@ -662,15 +736,7 @@
           const amount = parseFloat(amtStr.replace(/,/g, '')) || 0;
           if (billNo) {
             const mm = findMasterBill(billNo);
-            return {
-              billNo: String(billNo).trim(),
-              party: mm ? mm.party : party,
-              amount: mm ? mm.amount : amount,
-              agent: mm ? mm.agent : '',
-              receipt: mm ? mm.receipt : '',
-              fromMaster: !!mm,
-              raw: text
-            };
+            return buildParsedBill(billNo, party, amount, mm, text);
           }
         }
       } catch (e) {}
@@ -684,15 +750,7 @@
         const party = url.searchParams.get('pn') || 'Standard Account';
         const amount = parseFloat(url.searchParams.get('am')) || 0;
         const mm = findMasterBill(billNo);
-        return {
-          billNo: String(billNo).trim(),
-          party: mm ? mm.party : party,
-          amount: mm ? mm.amount : amount,
-          agent: mm ? mm.agent : '',
-          receipt: mm ? mm.receipt : '',
-          fromMaster: !!mm,
-          raw: text
-        };
+        return buildParsedBill(billNo, party, amount, mm, text);
       } catch (e) {}
     }
 
@@ -716,16 +774,7 @@
       }
       if (billNo) {
         const mm = findMasterBill(billNo);
-        return {
-          billNo: String(billNo).trim(),
-          party: mm ? mm.party : (party || 'Standard Account'),
-          amount: mm ? mm.amount : amount,
-          agent: mm ? mm.agent : '',
-          beat: mm ? (mm.beat || '') : '',
-          receipt: mm ? mm.receipt : '',
-          fromMaster: !!mm,
-          raw: text
-        };
+        return buildParsedBill(billNo, party || 'Standard Account', amount, mm, text);
       }
     }
 
@@ -761,15 +810,7 @@
         const amountStr = parts.slice(2).join('');
         const amount = parseFloat(amountStr.replace(/,/g, '')) || 0;
         const mm = findMasterBill(billNo);
-        return {
-          billNo,
-          party: mm ? mm.party : party,
-          amount: mm ? mm.amount : amount,
-          agent: mm ? mm.agent : '',
-          receipt: mm ? mm.receipt : '',
-          fromMaster: !!mm,
-          raw: text
-        };
+        return buildParsedBill(billNo, party, amount, mm, text);
       }
     }
 
@@ -781,15 +822,7 @@
       const amountStr = csvParts[2];
       const amount = parseFloat(amountStr.replace(/,/g, '')) || 0;
       const mm = findMasterBill(billNo);
-      return {
-        billNo,
-        party: mm ? mm.party : party,
-        amount: mm ? mm.amount : amount,
-        agent: mm ? mm.agent : '',
-        receipt: mm ? mm.receipt : '',
-        fromMaster: !!mm,
-        raw: text
-      };
+      return buildParsedBill(billNo, party, amount, mm, text);
     } else if (csvParts.length > 3) {
       const billNo = csvParts[0];
       let amountIndex = csvParts.length - 1;
@@ -808,43 +841,17 @@
       const amountStr = amountParts.join('');
       const amount = parseFloat(amountStr.replace(/,/g, '')) || 0;
       const mm = findMasterBill(billNo);
-      return {
-        billNo,
-        party: mm ? mm.party : party,
-        amount: mm ? mm.amount : amount,
-        agent: mm ? mm.agent : '',
-        receipt: mm ? mm.receipt : '',
-        fromMaster: !!mm,
-        raw: text
-      };
+      return buildParsedBill(billNo, party, amount, mm, text);
     } else if (csvParts.length === 2) {
       const billNo = csvParts[0];
       const amount = parseFloat(csvParts[1].replace(/,/g, '')) || 0;
       const mm = findMasterBill(billNo);
-      return {
-        billNo,
-        party: mm ? mm.party : 'Standard Account',
-        amount: mm ? mm.amount : amount,
-        agent: mm ? mm.agent : '',
-        beat: mm ? (mm.beat || '') : '',
-        receipt: mm ? mm.receipt : '',
-        fromMaster: !!mm,
-        raw: text
-      };
+      return buildParsedBill(billNo, 'Standard Account', amount, mm, text);
     }
 
     // 7. Single token (e.g. only invoice number scanned or typed)
     const mm = findMasterBill(text);
-    return {
-      billNo: text,
-      party: mm ? mm.party : 'Standard Account',
-      amount: mm ? mm.amount : 0,
-      agent: mm ? mm.agent : '',
-      beat: mm ? (mm.beat || '') : '',
-      receipt: mm ? mm.receipt : '',
-      fromMaster: !!mm,
-      raw: text
-    };
+    return buildParsedBill(text, 'Standard Account', 0, mm, text);
   }
 
   /**
@@ -862,7 +869,7 @@
       }
       if (!parsed.agent) parsed.agent = mm.agent;
       if (!parsed.beat && mm.beat) parsed.beat = mm.beat;
-      if (!parsed.receipt) parsed.receipt = mm.receipt;
+      if (mm.receipt) parsed.receipt = mm.receipt;
       parsed.outstanding = mm.outstanding !== undefined ? mm.outstanding : 0;
       parsed.remainingText = mm.remainingText || '';
       parsed.fromMaster = true;
@@ -1897,6 +1904,9 @@
     // Agent is strictly locked in from the Morning Dispatch selection (State.activeAgent)
     let assignedAgent = State.activeAgent ? State.activeAgent.name : '';
     const assignedBeat = State.activeBeat || parsed.beat || '';
+    const assignedBeatName = State.selectedBeatName || parsed.beat || '';
+    const assignedDay = State.selectedDay || '';
+    const assignedWeek = State.selectedWeek || '';
 
     // If still not set, check if parsed.agent matches one of our 3 designated agents
     if (!assignedAgent && parsed.agent) {
@@ -1916,6 +1926,9 @@
     if (existingBasketIdx >= 0) {
       State.dispatchBasket[existingBasketIdx].agent = assignedAgent;
       if (assignedBeat) State.dispatchBasket[existingBasketIdx].beat = assignedBeat;
+      State.dispatchBasket[existingBasketIdx].beatName = assignedBeatName;
+      State.dispatchBasket[existingBasketIdx].day = assignedDay;
+      State.dispatchBasket[existingBasketIdx].week = assignedWeek;
       if (parsed.party && parsed.party !== 'Standard Account') State.dispatchBasket[existingBasketIdx].party = parsed.party;
       if (parsed.amount) State.dispatchBasket[existingBasketIdx].amount = parsed.amount;
       if (parsed.receipt) State.dispatchBasket[existingBasketIdx].receipt = parsed.receipt;
@@ -1939,6 +1952,9 @@
       amount: parsed.amount || 0,
       agent: assignedAgent,
       beat: assignedBeat,
+      beatName: assignedBeatName,
+      day: assignedDay,
+      week: assignedWeek,
       receipt: parsed.receipt || '',
       outstanding: parsed.outstanding !== undefined ? parsed.outstanding : (parsed.amount || 0),
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -2037,8 +2053,11 @@
           billNo: b.billNo,
           party: b.party,
           amount: b.amount,
-          agent: b.agent || 'Sales Agent',
+          agent: b.agent || (State.activeAgent ? State.activeAgent.name : 'Sales Agent'),
           beat: b.beat || State.activeBeat || '',
+          beatName: b.beatName || State.selectedBeatName || '',
+          day: b.day || State.selectedDay || '',
+          week: b.week || State.selectedWeek || '',
           dispatchDate: date,
           status: 'WITH_AGENT',
           collectedAmt: 0,
@@ -2055,6 +2074,9 @@
       } else {
         record.agent = b.agent || record.agent;
         if (b.beat || State.activeBeat) record.beat = b.beat || State.activeBeat;
+        record.beatName = b.beatName || State.selectedBeatName || record.beatName || '';
+        record.day = b.day || State.selectedDay || record.day || '';
+        record.week = b.week || State.selectedWeek || record.week || '';
         record.dispatchDate = date;
         record.status = 'WITH_AGENT';
         record.collectedAmt = 0;
@@ -2066,7 +2088,16 @@
         record.lastActionDate = timestamp;
       }
 
-      record.history.push({ action: 'DISPATCHED', agent: record.agent, beat: record.beat || '', date, timestamp });
+      record.history.push({
+        action: 'DISPATCHED',
+        agent: record.agent,
+        beat: record.beat || '',
+        beatName: record.beatName || '',
+        day: record.day || '',
+        week: record.week || '',
+        date,
+        timestamp
+      });
       newBills.push({ ...record });
     });
 
@@ -2543,7 +2574,7 @@
         const condition = digitsOnly.length >= 3
           ? `where D contains '${cleanNo}' or D contains '${digitsOnly}'`
           : `where D contains '${cleanNo}'`;
-        const tq = encodeURIComponent(`select D, E, F, L, M, P ${condition} limit 1`);
+        const tq = encodeURIComponent(`select D, E, F, L, M, N, O, P, I, J ${condition} limit 1`);
         const gvizUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&tq=${tq}&gid=${gid}&t=${Date.now()}`;
         const gResp = await fetch(gvizUrl);
         if (gResp.ok) {
@@ -2935,7 +2966,7 @@
   // 8. TAB 3: REMAINING LEFT-OUT AUDIT ENGINE
   // ========================================================
 
-  function getAgentLeftOutStats(agentName, dateFilter = null) {
+  function getAgentLeftOutStats(agentName, dateFilter = null, beatFilter = null) {
     const activeDateFilter = dateFilter || State.diffDateFilter || 'TODAY';
     let agentBills = State.bills.filter(b => b.agent === agentName);
 
@@ -2945,6 +2976,14 @@
     } else if (activeDateFilter === 'YESTERDAY') {
       const yest = getYesterdayDateString();
       agentBills = agentBills.filter(b => b.dispatchDate === yest);
+    }
+
+    if (beatFilter && beatFilter !== 'ALL') {
+      const filterLower = beatFilter.toLowerCase().trim();
+      agentBills = agentBills.filter(b => {
+        const beatStr = String(b.beat || b.beatName || '').toLowerCase();
+        return beatStr.includes(filterLower);
+      });
     }
 
     const leftOutBills = agentBills.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT');
@@ -2972,9 +3011,11 @@
     const grid = document.getElementById('leftOutSummaryGrid');
     const tbody = document.getElementById('leftOutTbody');
     const filterSelect = document.getElementById('leftOutAgentFilter');
+    const beatSelect = document.getElementById('leftOutBeatFilter');
     if (!grid || !tbody) return;
 
     const filterVal = filterSelect ? filterSelect.value : 'ALL';
+    const beatVal = beatSelect ? beatSelect.value : 'ALL';
     const activeDateFilter = State.diffDateFilter || 'TODAY';
 
     // Highlight active date chip
@@ -2995,10 +3036,33 @@
       });
     }
 
+    // Populate Beat filter options
+    if (beatSelect) {
+      const curBeat = beatSelect.value || 'ALL';
+      beatSelect.innerHTML = '<option value="ALL">All Beats & Routes</option>';
+      const knownBeats = new Set();
+      Object.values(MASTER_BEAT_PLAN).forEach(plan => {
+        Object.values(plan).forEach(item => {
+          if (item.beat) knownBeats.add(item.beat);
+        });
+      });
+      (State.bills || []).forEach(b => {
+        if (b.beatName) knownBeats.add(b.beatName);
+        else if (b.beat) knownBeats.add(b.beat);
+      });
+      Array.from(knownBeats).sort().forEach(bName => {
+        const opt = document.createElement('option');
+        opt.value = bName;
+        opt.textContent = bName;
+        if (bName === curBeat) opt.selected = true;
+        beatSelect.appendChild(opt);
+      });
+    }
+
     grid.innerHTML = '';
     tbody.innerHTML = '';
 
-    // Calculate strip stats for selected date filter
+    // Calculate strip stats for selected date filter & beat filter
     let dateFilteredBills = State.bills;
     if (activeDateFilter === 'TODAY') {
       const today = getTodayDateString();
@@ -3006,6 +3070,17 @@
     } else if (activeDateFilter === 'YESTERDAY') {
       const yest = getYesterdayDateString();
       dateFilteredBills = State.bills.filter(b => b.dispatchDate === yest);
+    }
+
+    if (filterVal !== 'ALL') {
+      dateFilteredBills = dateFilteredBills.filter(b => b.agent === filterVal);
+    }
+    if (beatVal !== 'ALL') {
+      const bLower = beatVal.toLowerCase().trim();
+      dateFilteredBills = dateFilteredBills.filter(b => {
+        const beatStr = String(b.beat || b.beatName || '').toLowerCase();
+        return beatStr.includes(bLower);
+      });
     }
 
     let stripDispatchedCount = dateFilteredBills.length;
@@ -3034,7 +3109,7 @@
     const allLeftOutBills = [];
 
     State.agents.forEach(agent => {
-      const stats = getAgentLeftOutStats(agent.name, activeDateFilter);
+      const stats = getAgentLeftOutStats(agent.name, activeDateFilter, beatVal);
       if (filterVal !== 'ALL' && filterVal !== agent.name) return;
 
       if (stats.leftOutBills.length > 0) {
@@ -3071,9 +3146,10 @@
     } else {
       allLeftOutBills.forEach(b => {
         const tr = document.createElement('tr');
+        const beatTag = b.beat ? `<div style="font-size:0.75rem; color:#64748b; margin-top:2px;"><i class="fa-solid fa-location-dot"></i> ${b.beat}</div>` : '';
         tr.innerHTML = `
           <td><strong class="font-mono text-danger">${b.billNo}</strong></td>
-          <td><strong>${b.agent}</strong></td>
+          <td><strong>${b.agent}</strong>${beatTag}</td>
           <td>${b.party}</td>
           <td class="font-mono font-bold">${formatINR(b.amount)}</td>
           <td>${b.dispatchDate || '-'}</td>
@@ -3273,7 +3349,35 @@ _BillAudit Pro_`;
 
     const search = (document.getElementById('ledgerSearchInput')?.value || '').trim().toLowerCase();
     const agentFilter = document.getElementById('ledgerAgentFilter')?.value || 'ALL';
+    const beatFilterEl = document.getElementById('ledgerBeatFilter');
+    const beatFilter = beatFilterEl?.value || 'ALL';
     const statusFilter = document.getElementById('ledgerStatusFilter')?.value || 'ALL';
+
+    // Populate ledger beat filter dropdown if needed
+    if (beatFilterEl && beatFilterEl.options.length <= 1) {
+      const curBeatVal = beatFilterEl.value || 'ALL';
+      beatFilterEl.innerHTML = '<option value="ALL">All Beats & Routes</option>';
+      const knownBeats = new Set();
+      Object.values(MASTER_BEAT_PLAN).forEach(plan => {
+        Object.values(plan).forEach(item => {
+          if (item.beat) knownBeats.add(item.beat);
+        });
+      });
+      (State.masterSheetBills || []).forEach(b => {
+        if (b.beat && b.beat.trim().length > 1) knownBeats.add(b.beat.trim());
+      });
+      (State.bills || []).forEach(b => {
+        if (b.beatName) knownBeats.add(b.beatName);
+        else if (b.beat) knownBeats.add(b.beat);
+      });
+      Array.from(knownBeats).sort().forEach(bName => {
+        const opt = document.createElement('option');
+        opt.value = bName;
+        opt.textContent = bName;
+        if (bName === curBeatVal) opt.selected = true;
+        beatFilterEl.appendChild(opt);
+      });
+    }
 
     const useMaster = State.masterSheetBills && State.masterSheetBills.length > 0;
     const sourceBills = useMaster ? State.masterSheetBills : State.bills;
@@ -3315,6 +3419,16 @@ _BillAudit Pro_`;
       const receipt = String(b.receipt || '').trim();
       const norm = normalizeInvoiceNumber(b.billNo);
       const custodyRecord = todayCustodyMap.get(norm) || todayCustodyMap.get(b.billNo.toUpperCase());
+
+      // Beat filter
+      if (beatFilter !== 'ALL') {
+        const beatFilterLower = beatFilter.toLowerCase().trim();
+        const bBeat = String(b.beat || '').toLowerCase();
+        const custodyBeat = custodyRecord ? String(custodyRecord.beat || custodyRecord.beatName || '').toLowerCase() : '';
+        if (!bBeat.includes(beatFilterLower) && !custodyBeat.includes(beatFilterLower)) {
+          continue;
+        }
+      }
 
       if (statusFilter === 'PAID') {
         if (outstanding > 0) continue;
@@ -3367,12 +3481,14 @@ _BillAudit Pro_`;
         }
       }
 
+      const beatTag = bill.beat ? `<div style="font-size:0.75rem; color:#64748b; margin-top:2px;"><i class="fa-solid fa-location-dot"></i> ${bill.beat}</div>` : '';
+
       tr.innerHTML = `
         <td><strong class="font-mono text-primary">${bill.billNo}</strong></td>
         <td>${bill.party || 'Standard Account'}</td>
         <td class="font-mono font-bold">${formatINR(bill.amount)}</td>
         <td>${paymentBadge}</td>
-        <td><strong>${bill.agent || '-'}</strong></td>
+        <td><strong>${bill.agent || '-'}</strong>${beatTag}</td>
         <td>${custodyBadge}</td>
         <td>
           <button class="btn btn-dark btn-sm" data-ledger-view="${bill.billNo}">
@@ -3584,8 +3700,56 @@ _BillAudit Pro_`;
   }
 
   /**
+   * Intelligent Receipt and Payment Resolver
+   * Combines Column M (Receipt), Column N (Remarks), and Column I/J (Paid-up / Status)
+   */
+  function resolveIntelligentReceipt(rawRec, rawRem, rawPaidUp, rawStatus, rawOut, rawAmt) {
+    const rec = String(rawRec || '').trim();
+    const rem = String(rawRem || '').trim();
+    const status = String(rawStatus || '').trim().toUpperCase();
+    const paidUp = parseFloat(String(rawPaidUp || '').replace(/[₹,\s]/g, '')) || 0;
+    const out = parseFloat(String(rawOut || '').replace(/[₹,\s]/g, '')) || 0;
+    const amt = parseFloat(String(rawAmt || '').replace(/[₹,\s]/g, '')) || 0;
+
+    // 1. Column M text receipt (e.g. "R4083")
+    if (rec) {
+      const isGenericRem = /^(ok|good|normal|followup|n\/a|nil)$/i.test(rem);
+      if (rem && !isGenericRem && rem.toLowerCase() !== rec.toLowerCase()) {
+        return `${rec} (${rem})`;
+      }
+      return rec;
+    }
+
+    // 2. Column N Remarks payment receipt (e.g. "R163", "RECIPT 87 + 338", "WA ONLINE")
+    if (rem) {
+      const isGeneric = /^(ok|good|normal|followup|n\/a|nil)$/i.test(rem);
+      if (!isGeneric) {
+        return rem;
+      }
+    }
+
+    // 3. Paid in full
+    if (status === 'PAID' || (out <= 0 && amt > 0)) {
+      if (paidUp > 0) return `PAID (₹${paidUp.toLocaleString('en-IN')})`;
+      return 'PAID IN FULL';
+    }
+
+    // 4. Partial payment
+    if (status === 'PARTIAL' || (out > 0 && paidUp > 0)) {
+      return `PARTIAL (₹${paidUp.toLocaleString('en-IN')} Paid)`;
+    }
+
+    // 5. Cancelled
+    if (status === 'CANCELLED') {
+      return 'CANCELLED';
+    }
+
+    return '';
+  }
+
+  /**
    * Fast parser for Google Visualization API (GViz / BigTable query) responses.
-   * Extracts Columns D (Invoice), E (Party), F (Amount), L (Due), M (Receipt Text), P (Agent)
+   * Extracts Columns D (Invoice), E (Party), F (Amount), L (Due), M (Receipt), N (Remarks), O (Beat), P (Agent), I (Paid-up), J (Status)
    */
   function parseGvizResponse(txt) {
     if (!txt || typeof txt !== 'string') return [];
@@ -3596,26 +3760,79 @@ _BillAudit Pro_`;
       const json = JSON.parse(txt.substring(start, end + 1));
       const rows = [];
       if (!json.table || !json.table.rows) return rows;
+
+      // Extract column indices by column letter ID if present in table.cols
+      const colIds = (json.table.cols || []).map(col => String(col.id || col.label || '').toUpperCase());
+      const idxD = colIds.indexOf('D');
+      const idxE = colIds.indexOf('E');
+      const idxF = colIds.indexOf('F');
+      const idxL = colIds.indexOf('L');
+      const idxM = colIds.indexOf('M');
+      const idxN = colIds.indexOf('N');
+      const idxO = colIds.indexOf('O');
+      const idxP = colIds.indexOf('P');
+      const idxI = colIds.indexOf('I');
+      const idxJ = colIds.indexOf('J');
+
       for (let i = 0; i < json.table.rows.length; i++) {
         const r = json.table.rows[i];
         if (!r || !r.c) continue;
-        const billNo = r.c[0] ? String(r.c[0].v || '').trim() : '';
+
+        // Bill No (Col D)
+        const cellD = idxD !== -1 ? r.c[idxD] : r.c[0];
+        const billNo = cellD ? String(cellD.v || '').trim() : '';
         if (!billNo) continue;
-        const party = r.c[1] ? String(r.c[1].v || 'General Customer').trim() : 'General Customer';
-        const rawAmt = r.c[2] ? (Number(r.c[2].v) || parseFloat(String(r.c[2].f || '').replace(/[₹,\s]/g, '')) || 0) : 0;
-        const rawOut = r.c[3] ? (Number(r.c[3].v) || parseFloat(String(r.c[3].f || '').replace(/[₹,\s]/g, '')) || 0) : 0;
-        const remainingText = r.c[3] ? String(r.c[3].f || r.c[3].v || '').trim() : '';
-        // Receipt from Column M: strictly preserves text format (e.g. 'R4083', 'BY BILL')
-        const receipt = r.c[4] ? String(r.c[4].f || r.c[4].v || '').trim() : '';
-        // Beat from Column O and Agent from Column P if 7 columns queried (D, E, F, L, M, O, P)
+
+        // Party (Col E)
+        const cellE = idxE !== -1 ? r.c[idxE] : r.c[1];
+        const party = cellE ? String(cellE.v || 'General Customer').trim() : 'General Customer';
+
+        // Amount (Col F)
+        const cellF = idxF !== -1 ? r.c[idxF] : r.c[2];
+        const rawAmt = cellF ? (Number(cellF.v) || parseFloat(String(cellF.f || '').replace(/[₹,\s]/g, '')) || 0) : 0;
+
+        // Outstanding (Col L)
+        const cellL = idxL !== -1 ? r.c[idxL] : r.c[3];
+        const rawOut = cellL ? (Number(cellL.v) || parseFloat(String(cellL.f || '').replace(/[₹,\s]/g, '')) || 0) : 0;
+        const remainingText = cellL ? String(cellL.f || cellL.v || '').trim() : '';
+
+        // Raw Receipt (Col M)
+        const cellM = idxM !== -1 ? r.c[idxM] : (r.c.length > 4 ? r.c[4] : null);
+        const rawRec = cellM ? String(cellM.f || cellM.v || '').trim() : '';
+
+        // Remarks (Col N)
+        const cellN = idxN !== -1 ? r.c[idxN] : null;
+        const rawRem = cellN ? String(cellN.f || cellN.v || '').trim() : '';
+
+        // Paid-Up (Col I)
+        const cellI = idxI !== -1 ? r.c[idxI] : null;
+        const rawPaidUp = cellI ? (Number(cellI.v) || parseFloat(String(cellI.f || '').replace(/[₹,\s]/g, '')) || 0) : 0;
+
+        // Status (Col J)
+        const cellJ = idxJ !== -1 ? r.c[idxJ] : null;
+        const rawStatus = cellJ ? String(cellJ.v || '').trim() : '';
+
+        // Beat (Col O)
         let beat = '';
-        let agent = '';
-        if (r.c.length >= 7) {
+        if (idxO !== -1 && r.c[idxO]) {
+          beat = String(r.c[idxO].v || '').trim();
+        } else if (r.c.length >= 7) {
           beat = r.c[5] ? String(r.c[5].v || '').trim() : '';
+        }
+
+        // Agent (Col P)
+        let agent = '';
+        if (idxP !== -1 && r.c[idxP]) {
+          agent = String(r.c[idxP].v || '').trim();
+        } else if (r.c.length >= 7) {
           agent = r.c[6] ? String(r.c[6].v || '').trim() : '';
-        } else {
+        } else if (r.c.length === 6) {
           agent = r.c[5] ? String(r.c[5].v || '').trim() : '';
         }
+
+        // Intelligent Receipt Resolution
+        const receipt = resolveIntelligentReceipt(rawRec, rawRem, rawPaidUp, rawStatus, rawOut, rawAmt);
+
         rows.push({ billNo, receipt, outstanding: rawOut, party, amount: rawAmt, agent, beat, remainingText });
       }
       return rows;
@@ -3638,7 +3855,7 @@ _BillAudit Pro_`;
 
     // 1. Direct BigTable Visualization API (3 seconds for 15,000 bills)
     try {
-      const tq = encodeURIComponent('select D, E, F, L, M, O, P where D is not null');
+      const tq = encodeURIComponent('select D, E, F, L, M, N, O, P, I, J where D is not null');
       const gvizUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&tq=${tq}&gid=${gid}&t=${Date.now()}`;
       const resp = await fetch(gvizUrl);
       if (resp.ok) {
@@ -4131,61 +4348,161 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     if (step2) step2.style.display = 'none';
   }
 
+  function getCurrentDayCode() {
+    const dayIndex = new Date().getDay(); // 0 is Sun, 1 is Mon, ..., 6 is Sat
+    const map = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const code = map[dayIndex];
+    return (code === 'Sun') ? 'Mon' : code;
+  }
+
+  function updatePrimaryBeatDisplay(agentName, dayCode) {
+    const card = document.getElementById('primaryBeatRefCard');
+    const label = document.getElementById('primaryBeatDayAgentLabel');
+    const nameEl = document.getElementById('primaryBeatNameDisplay');
+    const areaEl = document.getElementById('primaryBeatAreaSub');
+    if (!card || !nameEl) return;
+
+    const day = dayCode || State.selectedDay || getCurrentDayCode();
+    const agent = agentName || (State.activeAgent ? State.activeAgent.name : 'Rajesh');
+
+    const dayFullNames = {
+      Mon: 'Monday',
+      Tue: 'Tuesday',
+      Wed: 'Wednesday',
+      Thu: 'Thursday',
+      Fri: 'Friday',
+      Sat: 'Saturday'
+    };
+
+    const agentPlan = MASTER_BEAT_PLAN[agent] || (agent.includes('Shivam') ? MASTER_BEAT_PLAN.Shivam : MASTER_BEAT_PLAN.Rajesh);
+    const beatInfo = agentPlan ? agentPlan[day] : null;
+
+    if (beatInfo && day) {
+      card.style.display = 'block';
+      const agentDisplay = (State.activeAgent && State.activeAgent.fullName) ? State.activeAgent.fullName : agent;
+      if (label) label.textContent = `${dayFullNames[day] || day} · ${agentDisplay}`;
+      nameEl.textContent = beatInfo.beat;
+      if (areaEl) areaEl.textContent = beatInfo.area || beatInfo.beat;
+      State.selectedBeatName = beatInfo.beat;
+
+      const customInput = document.getElementById('customBeatInput');
+      if (customInput) customInput.value = beatInfo.beat;
+
+      // Highlight matching discovered beat chip if present
+      document.querySelectorAll('#discoveredBeatsContainer .beat-chip-btn').forEach(c => {
+        c.classList.toggle('active', c.dataset.beat === beatInfo.beat);
+      });
+    } else {
+      if (label) label.textContent = `All Days (${agent})`;
+      nameEl.textContent = 'All Beat Routes';
+      if (areaEl) areaEl.textContent = 'General Route / All Areas';
+    }
+  }
+
+  function updateConfirmButton(beatName) {
+    const btn = document.getElementById('confirmBeatBtn');
+    if (btn) {
+      if (beatName) {
+        btn.innerHTML = `<i class="fa-solid fa-camera"></i> Start Scanning &mdash; ${beatName}`;
+      } else {
+        btn.innerHTML = `<i class="fa-solid fa-camera"></i> Start Scanning`;
+      }
+    }
+  }
+
+  function renderWeeklyRoutesList(agentName) {
+    const container = document.getElementById('weeklyRoutesList');
+    if (!container) return;
+
+    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const dayFullNames = {
+      Mon: 'Monday',
+      Tue: 'Tuesday',
+      Wed: 'Wednesday',
+      Thu: 'Thursday',
+      Fri: 'Friday',
+      Sat: 'Saturday'
+    };
+
+    const todayCode = getCurrentDayCode();
+    const agentPlan = MASTER_BEAT_PLAN[agentName] || (agentName.includes('Shivam') ? MASTER_BEAT_PLAN.Shivam : MASTER_BEAT_PLAN.Rajesh);
+
+    container.innerHTML = days.map(day => {
+      const beatInfo = agentPlan ? agentPlan[day] : null;
+      const beatName = beatInfo ? beatInfo.beat : 'Route';
+      const isToday = day === todayCode;
+      const isSelected = (day === State.selectedDay) || (State.selectedBeatName === beatName);
+
+      return `
+        <button type="button" class="beat-option-row ${isSelected ? 'active' : ''}" data-day="${day}" data-beat="${beatName.replace(/"/g, '&quot;')}">
+          <div class="beat-opt-left">
+            <div class="beat-opt-day-wrap">
+              <span class="beat-opt-day ${isToday ? 'is-today' : ''}">${dayFullNames[day]}</span>
+              ${isToday ? '<span class="today-tag"><i class="fa-solid fa-star"></i> Today</span>' : ''}
+            </div>
+            <div class="beat-opt-title">${beatName}</div>
+          </div>
+          <div class="beat-opt-right">
+            <i class="fa-solid ${isSelected ? 'fa-circle-check text-success' : 'fa-circle-dot text-muted'} beat-radio-icon"></i>
+          </div>
+        </button>
+      `;
+    }).join('');
+
+    // Attach click and double click listeners to each row
+    container.querySelectorAll('.beat-option-row').forEach(row => {
+      row.addEventListener('click', () => {
+        container.querySelectorAll('.beat-option-row').forEach(r => {
+          r.classList.remove('active');
+          const ic = r.querySelector('.beat-radio-icon');
+          if (ic) ic.className = 'fa-solid fa-circle-dot text-muted beat-radio-icon';
+        });
+
+        row.classList.add('active');
+        const ic = row.querySelector('.beat-radio-icon');
+        if (ic) ic.className = 'fa-solid fa-circle-check text-success beat-radio-icon';
+
+        const selDay = row.dataset.day;
+        const selBeat = row.dataset.beat;
+        State.selectedDay = selDay;
+        State.selectedBeatName = selBeat;
+
+        updateConfirmButton(selBeat);
+      });
+
+      // Double-click to instantly confirm and start scanning
+      row.addEventListener('dblclick', () => {
+        const selDay = row.dataset.day;
+        const selBeat = row.dataset.beat;
+        State.selectedDay = selDay;
+        State.selectedBeatName = selBeat;
+        confirmBeatAndStartScan();
+      });
+    });
+  }
+
   function openBeatPickerForAgent(agentName) {
-    const agent = State.agents.find(a => a.name === agentName) || { id: agentName, name: agentName };
+    const agent = State.agents.find(a => isSameAgent(a.name, agentName)) || { id: agentName, name: agentName, fullName: agentName };
     State.activeAgent = agent;
-    State.selectedBeatName = '';
-    State.selectedWeek = 'Week 1';
+
+    const todayDay = getCurrentDayCode();
+    State.selectedDay = todayDay;
+
+    const agentPlan = MASTER_BEAT_PLAN[agent.name] || (agent.name.includes('Shivam') ? MASTER_BEAT_PLAN.Shivam : MASTER_BEAT_PLAN.Rajesh);
+    const todayBeat = agentPlan && agentPlan[todayDay] ? agentPlan[todayDay].beat : '';
+    State.selectedBeatName = todayBeat;
 
     const agentIndicator = document.getElementById('beatSelectedAgentName');
-    if (agentIndicator) agentIndicator.textContent = agentName;
+    if (agentIndicator) agentIndicator.textContent = agent.fullName || agent.name;
 
     const beatTitle = document.getElementById('beatPickerTitle');
     if (beatTitle) {
-      beatTitle.textContent = State.activeScanMode === 'DISPATCH' ? 'Morning Dispatch — Beat / Week' : 'Evening Return — Beat / Week';
+      beatTitle.textContent = State.activeScanMode === 'DISPATCH' ? 'Morning Dispatch — Choose Beat' : 'Evening Return — Choose Beat';
     }
 
-    const customInput = document.getElementById('customBeatInput');
-    if (customInput) customInput.value = '';
-
-    // Reset week pills
-    document.querySelectorAll('.week-pill').forEach(pill => {
-      if (pill.dataset.week === 'Week 1') {
-        pill.classList.add('active');
-      } else {
-        pill.classList.remove('active');
-      }
-    });
-
-    // Populate discovered beats
-    const container = document.getElementById('discoveredBeatsContainer');
-    if (container) {
-      const beats = getAvailableBeats(agentName);
-      if (beats.length === 0) {
-        container.innerHTML = '<div class="no-beats-hint">No beat routes detected in sheet yet. Type one below.</div>';
-      } else {
-        container.innerHTML = beats.map(b => `
-          <button type="button" class="beat-chip-btn" data-beat="${b.replace(/"/g, '&quot;')}">
-            <i class="fa-solid fa-map-pin"></i> ${b}
-          </button>
-        `).join('');
-
-        container.querySelectorAll('.beat-chip-btn').forEach(chip => {
-          chip.addEventListener('click', () => {
-            const isAlreadyActive = chip.classList.contains('active');
-            container.querySelectorAll('.beat-chip-btn').forEach(c => c.classList.remove('active'));
-            if (!isAlreadyActive) {
-              chip.classList.add('active');
-              State.selectedBeatName = chip.dataset.beat;
-              if (customInput) customInput.value = chip.dataset.beat;
-            } else {
-              State.selectedBeatName = '';
-              if (customInput) customInput.value = '';
-            }
-          });
-        });
-      }
-    }
+    // Render the 6 beats for the selected agent and pre-select today
+    renderWeeklyRoutesList(agent.name);
+    updateConfirmButton(todayBeat);
 
     // Switch view to Step 2
     const step1 = document.getElementById('pickerStepAgent');
@@ -4195,42 +4512,25 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
   }
 
   async function confirmBeatAndStartScan() {
-    const customInput = document.getElementById('customBeatInput');
-    const customVal = customInput ? customInput.value.trim() : '';
-    const beatName = customVal || State.selectedBeatName || '';
-    const week = State.selectedWeek || '';
-
-    let combined = '';
-    if (beatName && week) {
-      combined = `${beatName} (${week})`;
-    } else if (beatName) {
-      combined = beatName;
-    } else if (week) {
-      combined = week;
-    }
-
-    State.activeBeat = combined;
-    await proceedToScanTab();
+    const beatName = State.selectedBeatName || '';
+    State.activeBeat = beatName;
+    await proceedToScanTab(true);
   }
 
-  async function skipBeatAndStartScan() {
-    State.activeBeat = '';
-    await proceedToScanTab();
-  }
-
-  async function proceedToScanTab() {
+  async function proceedToScanTab(autoStartCamera = true) {
     const modal = document.getElementById('agentPickerModal');
     if (modal) modal.style.display = 'none';
     resetPickerSteps();
 
     const mode = State.activeScanMode || 'DISPATCH';
     const agentName = State.activeAgent ? State.activeAgent.name : 'Rajesh';
+    const displayAgentName = State.activeAgent ? (State.activeAgent.fullName || State.activeAgent.name) : 'Rajesh';
     const pendingScan = State.pendingHardwareScan;
     State.pendingHardwareScan = null;
 
     if (mode === 'DISPATCH') {
       const badge = document.getElementById('dispatchAgentBadge');
-      if (badge) badge.textContent = agentName;
+      if (badge) badge.textContent = displayAgentName;
 
       const beatBadge = document.getElementById('dispatchBeatBadge');
       if (beatBadge) {
@@ -4240,18 +4540,36 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
 
       const sel = document.getElementById('dispatchAgentSelect');
       if (sel) {
-        sel.innerHTML = `<option value="${agentName}" selected>${agentName}</option>`;
+        sel.innerHTML = `<option value="${agentName}" selected>${displayAgentName}</option>`;
         sel.value = agentName;
       }
 
       await switchTab('tab-dispatch');
+
+      // Auto-start camera scanner immediately
+      if (autoStartCamera && !pendingScan) {
+        setTimeout(async () => {
+          try {
+            await startDispatchScanner();
+          } catch (err) {
+            console.warn('[Camera] Auto-start dispatch scanner error:', err);
+          }
+        }, 150);
+      }
+
+      // Auto-focus manual invoice entry input
+      setTimeout(() => {
+        const input = document.getElementById('dispatchInvoiceInput');
+        if (input) input.focus();
+      }, 350);
+
       if (pendingScan) {
         setTimeout(() => handleScannedCodeDispatch(pendingScan), 350);
       }
     } else {
       State.activeSettlementAgent = agentName;
       const badge = document.getElementById('settlementAgentBadge');
-      if (badge) badge.textContent = agentName;
+      if (badge) badge.textContent = displayAgentName;
 
       const beatBadge = document.getElementById('settlementBeatBadge');
       if (beatBadge) {
@@ -4261,11 +4579,29 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
 
       const sel = document.getElementById('settlementAgentSelect');
       if (sel) {
-        sel.innerHTML = `<option value="${agentName}" selected>${agentName}</option>`;
+        sel.innerHTML = `<option value="${agentName}" selected>${displayAgentName}</option>`;
         sel.value = agentName;
       }
 
       await switchTab('tab-settlement');
+
+      // Auto-start camera scanner immediately
+      if (autoStartCamera && !pendingScan) {
+        setTimeout(async () => {
+          try {
+            await startSettlementScanner();
+          } catch (err) {
+            console.warn('[Camera] Auto-start settlement scanner error:', err);
+          }
+        }, 150);
+      }
+
+      // Auto-focus manual invoice entry input
+      setTimeout(() => {
+        const input = document.getElementById('settlementInvoiceInput');
+        if (input) input.focus();
+      }, 350);
+
       if (pendingScan) {
         setTimeout(() => handleScannedCodeSettlement(pendingScan), 350);
       }
@@ -4279,17 +4615,33 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     const modal = document.getElementById('agentPickerModal');
     const title = document.getElementById('agentPickerTitle');
     const subtitle = document.getElementById('agentPickerSubtitle');
-    if (title) title.textContent = mode === 'DISPATCH' ? 'Morning Dispatch — Who is scanning?' : 'Evening Return — Who is checking in?';
-    if (subtitle) subtitle.textContent = mode === 'DISPATCH' ? 'Select the agent dispatching bills today' : 'Select the agent returning bills today';
+    if (title) title.textContent = mode === 'DISPATCH' ? 'Morning Dispatch — Choose Agent' : 'Evening Return — Choose Agent';
+    if (subtitle) subtitle.textContent = mode === 'DISPATCH' ? 'Select sales agent taking bills out today' : 'Select sales agent checking bills in today';
+
+    // Populate today's route previews on the agent cards in Step 1
+    const todayDay = getCurrentDayCode();
+    const dayFullNames = { Mon: 'Mon', Tue: 'Tue', Wed: 'Wed', Thu: 'Thu', Fri: 'Fri', Sat: 'Sat' };
+    const shivamBeat = MASTER_BEAT_PLAN.Shivam[todayDay]?.beat || '';
+    const rajeshBeat = MASTER_BEAT_PLAN.Rajesh[todayDay]?.beat || '';
+
+    const shivamEl = document.getElementById('shivamTodayRoutePreview');
+    if (shivamEl) {
+      shivamEl.innerHTML = `<i class="fa-solid fa-location-dot"></i> Today (${dayFullNames[todayDay]}): <strong>${shivamBeat}</strong>`;
+    }
+    const rajeshEl = document.getElementById('rajeshTodayRoutePreview');
+    if (rajeshEl) {
+      rajeshEl.innerHTML = `<i class="fa-solid fa-location-dot"></i> Today (${dayFullNames[todayDay]}): <strong>${rajeshBeat}</strong>`;
+    }
+
     if (modal) modal.style.display = 'flex';
   }
 
   // Direct shortcut (e.g. from Custody card check-in)
   async function selectAgentAndStartScan(agentName) {
-    const agent = State.agents.find(a => a.name === agentName) || { id: agentName, name: agentName };
+    const agent = State.agents.find(a => isSameAgent(a.name, agentName)) || { id: agentName, name: agentName, fullName: agentName };
     State.activeAgent = agent;
     State.activeBeat = '';
-    await proceedToScanTab();
+    await proceedToScanTab(true);
   }
 
   // Returns home and stops camera
@@ -4313,7 +4665,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     document.getElementById('homeSettlementCard')?.addEventListener('click', () => openAgentPicker('SETTLEMENT'));
 
     // AGENT & BEAT / WEEK PICKER MODAL
-    document.querySelectorAll('.agent-pick-btn').forEach(btn => {
+    document.querySelectorAll('.agent-pick-btn, .agent-select-card').forEach(btn => {
       btn.addEventListener('click', () => openBeatPickerForAgent(btn.dataset.agent));
     });
     document.getElementById('backToAgentStepBtn')?.addEventListener('click', resetPickerSteps);
@@ -4326,28 +4678,25 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       resetPickerSteps();
     });
     document.getElementById('confirmBeatBtn')?.addEventListener('click', confirmBeatAndStartScan);
-    document.getElementById('skipBeatBtn')?.addEventListener('click', skipBeatAndStartScan);
 
-    // Week pill clicks
-    document.querySelectorAll('.week-pill').forEach(pill => {
-      pill.addEventListener('click', () => {
-        document.querySelectorAll('.week-pill').forEach(p => p.classList.remove('active'));
-        pill.classList.add('active');
-        State.selectedWeek = pill.dataset.week || '';
-      });
+    // Allow clicking agent and beat badges on scan screens to switch agent or beat
+    document.getElementById('dispatchAgentBadge')?.addEventListener('click', () => openAgentPicker('DISPATCH'));
+    document.getElementById('dispatchBeatBadge')?.addEventListener('click', () => {
+      if (State.activeAgent) {
+        State.activeScanMode = 'DISPATCH';
+        openBeatPickerForAgent(State.activeAgent.name);
+      } else {
+        openAgentPicker('DISPATCH');
+      }
     });
-
-    // Custom beat input typing
-    document.getElementById('customBeatInput')?.addEventListener('input', (e) => {
-      const val = e.target.value.trim();
-      State.selectedBeatName = val;
-      document.querySelectorAll('#discoveredBeatsContainer .beat-chip-btn').forEach(chip => {
-        if (chip.dataset.beat.toLowerCase() === val.toLowerCase()) {
-          chip.classList.add('active');
-        } else {
-          chip.classList.remove('active');
-        }
-      });
+    document.getElementById('settlementAgentBadge')?.addEventListener('click', () => openAgentPicker('SETTLEMENT'));
+    document.getElementById('settlementBeatBadge')?.addEventListener('click', () => {
+      if (State.activeAgent) {
+        State.activeScanMode = 'SETTLEMENT';
+        openBeatPickerForAgent(State.activeAgent.name);
+      } else {
+        openAgentPicker('SETTLEMENT');
+      }
     });
 
     // BACK BUTTONS on scan tabs
@@ -4511,6 +4860,7 @@ _BillAudit Pro_`;
 
     // ================== TAB 3: LEFT OUT ==================
     document.getElementById('leftOutAgentFilter')?.addEventListener('change', renderLeftOutTab);
+    document.getElementById('leftOutBeatFilter')?.addEventListener('change', renderLeftOutTab);
     document.getElementById('whatsappAllLeftOutBtn')?.addEventListener('click', sendAllLeftOutWhatsApp);
 
     // Difference date filter chips (Today, Yesterday, All Time)
@@ -4536,6 +4886,7 @@ _BillAudit Pro_`;
     // ================== TAB 4: LEDGER ==================
     document.getElementById('ledgerSearchInput')?.addEventListener('input', renderMasterLedger);
     document.getElementById('ledgerAgentFilter')?.addEventListener('change', renderMasterLedger);
+    document.getElementById('ledgerBeatFilter')?.addEventListener('change', renderMasterLedger);
     document.getElementById('ledgerStatusFilter')?.addEventListener('change', renderMasterLedger);
     document.getElementById('exportCsvBtn')?.addEventListener('click', exportCSV);
 
