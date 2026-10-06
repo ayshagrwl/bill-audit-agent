@@ -989,6 +989,25 @@
     }, 180);
   }
 
+  /** Wait (up to ~4s) for any in-flight camera start/stop to finish. */
+  async function waitForCameraIdle(timeoutMs = 4000) {
+    const startedAt = Date.now();
+    while (State.isCameraTransitioning && Date.now() - startedAt < timeoutMs) {
+      await new Promise(r => setTimeout(r, 80));
+    }
+  }
+
+  /** Torch/zoom reset: a restarted stream always begins at 1x with torch off. */
+  function resetCameraControls() {
+    State.isTorchOn = false;
+    State.currentZoom = 1;
+    ['dispatch', 'settlement'].forEach(prefix => {
+      document.getElementById(`${prefix}TorchBtn`)?.classList.remove('torch-active');
+      document.getElementById(`${prefix}Zoom1xBtn`)?.classList.add('active');
+      document.getElementById(`${prefix}Zoom2xBtn`)?.classList.remove('active');
+    });
+  }
+
   async function applyScannerZoom(scannerInstance, zoomLevel, containerType) {
     State.currentZoom = zoomLevel;
     const prefix = containerType === 'SETTLEMENT' ? 'settlement' : 'dispatch';
@@ -1013,6 +1032,7 @@
       }
     } catch (e) {
       console.warn('[Camera] Zoom constraint not supported or failed:', e);
+      showToast('Zoom not supported on this camera', 'warning', 1500);
     }
   }
 
@@ -1141,6 +1161,7 @@
         State.availableCameras.forEach((cam) => {
           const rawLabel = (cam.label || '').trim();
           if (!rawLabel) return;
+          const l = rawLabel.toLowerCase();
           const opt = document.createElement('option');
           opt.value = cam.id;
           if (l.includes('usb') || l.includes('scanner') || l.includes('barcode') || l.includes('external')) {
@@ -1502,6 +1523,8 @@
       }, 1000);
     } catch (err) {
       console.error('Dispatch scanner error:', err);
+      stopFrameSampler();
+      resetCameraControls();
       if (State.scannerDispatch) {
         State.scannerDispatch = await safeStopScanner(State.scannerDispatch, 'qr-reader');
       } else {
@@ -1516,10 +1539,15 @@
       if (stopBtn) stopBtn.style.display = 'none';
 
       const errMsg = err?.message || String(err);
+      const errName = err?.name || '';
       const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
       const isCriOS = isIOS && /CriOS/i.test(navigator.userAgent);
 
-      if (errMsg.includes('NotAllowed') || errMsg.includes('Permission') || errMsg.includes('denied') || errMsg.includes('NotFoundError')) {
+      if (errName === 'NotFoundError' || errName === 'OverconstrainedError' || /no camera|requested device not found/i.test(errMsg)) {
+        showToast('No camera found on this device. Use a USB/Bluetooth scanner or the photo scan option.', 'danger', 6000);
+      } else if (errName === 'NotReadableError' || errName === 'AbortError' || /could not start video source|in use/i.test(errMsg)) {
+        showToast('Camera is busy or in use by another app. Close it and tap Start again.', 'danger', 6000);
+      } else if (errName === 'NotAllowedError' || errName === 'SecurityError' || errMsg.includes('NotAllowed') || errMsg.includes('Permission') || errMsg.includes('denied')) {
         showCameraPermissionModal('DISPATCH');
         if (isCriOS) {
           showToast('iPhone Chrome camera blocked: Open iPhone Settings > Chrome > Turn ON Camera', 'danger', 7000);
@@ -1538,10 +1566,8 @@
 
   async function stopDispatchScanner() {
     stopFrameSampler();
-    if (State.isCameraTransitioning) {
-      console.warn('[Camera] Dispatch stop waiting for in-flight transition...');
-      await new Promise(r => setTimeout(r, 250));
-    }
+    await waitForCameraIdle();
+    resetCameraControls();
 
     State.isCameraTransitioning = true;
     const container = document.getElementById('scannerContainer');
@@ -1679,6 +1705,8 @@
       }, 1000);
     } catch (err) {
       console.error('Settlement scanner error:', err);
+      stopFrameSampler();
+      resetCameraControls();
       if (State.scannerSettlement) {
         State.scannerSettlement = await safeStopScanner(State.scannerSettlement, 'qr-reader-settlement');
       } else {
@@ -1693,10 +1721,15 @@
       if (stopBtn) stopBtn.style.display = 'none';
 
       const errMsg = err?.message || String(err);
+      const errName = err?.name || '';
       const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
       const isCriOS = isIOS && /CriOS/i.test(navigator.userAgent);
 
-      if (errMsg.includes('NotAllowed') || errMsg.includes('Permission') || errMsg.includes('denied') || errMsg.includes('NotFoundError')) {
+      if (errName === 'NotFoundError' || errName === 'OverconstrainedError' || /no camera|requested device not found/i.test(errMsg)) {
+        showToast('No camera found on this device. Use a USB/Bluetooth scanner or the photo scan option.', 'danger', 6000);
+      } else if (errName === 'NotReadableError' || errName === 'AbortError' || /could not start video source|in use/i.test(errMsg)) {
+        showToast('Camera is busy or in use by another app. Close it and tap Start again.', 'danger', 6000);
+      } else if (errName === 'NotAllowedError' || errName === 'SecurityError' || errMsg.includes('NotAllowed') || errMsg.includes('Permission') || errMsg.includes('denied')) {
         showCameraPermissionModal('SETTLEMENT');
         if (isCriOS) {
           showToast('iPhone Chrome camera blocked: Open iPhone Settings > Chrome > Turn ON Camera', 'danger', 7000);
@@ -1715,10 +1748,8 @@
 
   async function stopSettlementScanner() {
     stopFrameSampler();
-    if (State.isCameraTransitioning) {
-      console.warn('[Camera] Settlement stop waiting for in-flight transition...');
-      await new Promise(r => setTimeout(r, 250));
-    }
+    await waitForCameraIdle();
+    resetCameraControls();
 
     State.isCameraTransitioning = true;
     const container = document.getElementById('settlementScannerContainer');
@@ -1751,6 +1782,33 @@
       State.isCameraTransitioning = false;
     }
   }
+
+  /**
+   * Release the camera when the page is hidden/backgrounded (saves battery, frees the
+   * hardware for other apps, avoids frozen streams on iOS) and resume when it returns.
+   */
+  let _resumeCameraAfterHidden = null;
+  async function releaseCameraOnHide() {
+    if (State.scannerDispatch) {
+      _resumeCameraAfterHidden = 'DISPATCH';
+      await stopDispatchScanner();
+    } else if (State.scannerSettlement) {
+      _resumeCameraAfterHidden = 'SETTLEMENT';
+      await stopSettlementScanner();
+    }
+  }
+  async function resumeCameraOnShow() {
+    const which = _resumeCameraAfterHidden;
+    _resumeCameraAfterHidden = null;
+    if (which === 'DISPATCH' && State.activeTab === 'tab-dispatch') await startDispatchScanner();
+    else if (which === 'SETTLEMENT' && State.activeTab === 'tab-settlement') await startSettlementScanner();
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) releaseCameraOnHide().catch(() => {});
+    else resumeCameraOnShow().catch(() => {});
+  });
+  window.addEventListener('pagehide', () => { releaseCameraOnHide().catch(() => {}); });
+
 
   /**
    * Fast Photo Scan Fallback for iPhone (100% Reliable via Native Camera + jsQR + ZXing)
