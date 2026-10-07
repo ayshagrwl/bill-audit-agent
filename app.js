@@ -686,7 +686,7 @@
 
   function parseQRCodeData(rawText) {
     if (!rawText || typeof rawText !== 'string') return null;
-    const text = rawText.trim();
+    const text = rawText.replace(/[\x00-\x09\x0B-\x1F\x7F]/g, '').trim();
     if (!text) return null;
 
     // 1. Check if the scanned string directly matches a bill in Master Sheet
@@ -1144,9 +1144,10 @@
   const HardwareScanner = {
     buffer: '',
     lastKeyTime: 0,
-    scannerThresholdMs: 65,
+    scannerThresholdMs: 95,
     isScanningBurst: false,
     _timeout: null,
+    _burstTimer: null,
 
     init() {
       window.addEventListener('keydown', (e) => {
@@ -1154,11 +1155,12 @@
         const diff = now - this.lastKeyTime;
         this.lastKeyTime = now;
 
-        if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab'].includes(e.key)) {
+        if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'].includes(e.key)) {
           return;
         }
 
-        if (e.key === 'Enter') {
+        if (e.key === 'Enter' || e.key === 'Tab') {
+          clearTimeout(this._burstTimer);
           if (this.buffer.length >= 2 && this.isScanningBurst) {
             e.preventDefault();
             e.stopPropagation();
@@ -1196,29 +1198,49 @@
             this.buffer = '';
             this.isScanningBurst = false;
           }, 250);
+
+          // Trailing timer: auto-fire if scanner does not append Enter/Tab suffix
+          clearTimeout(this._burstTimer);
+          if (this.isScanningBurst && this.buffer.length >= 3) {
+            this._burstTimer = setTimeout(() => {
+              if (this.buffer.length >= 3 && this.isScanningBurst) {
+                const scannedCode = this.buffer.trim();
+                this.buffer = '';
+                this.isScanningBurst = false;
+
+                const dInp = document.getElementById('dispatchInvoiceInput');
+                const sInp = document.getElementById('settlementInvoiceInput');
+                if (dInp) dInp.value = '';
+                if (sInp) sInp.value = '';
+
+                this.processScannedCode(scannedCode);
+              }
+            }, 110);
+          }
         }
       }, true);
     },
 
     processScannedCode(rawText) {
       if (!rawText) return;
+      const clean = String(rawText).replace(/[\x00-\x09\x0B-\x1F\x7F]/g, '').trim();
+      if (!clean) return;
 
       const now = Date.now();
-      if (rawText === State.lastScannedCode && (now - State.lastScanTimestamp) < 800) {
+      if (clean === State.lastScannedCode && (now - State.lastScanTimestamp) < 800) {
         return;
       }
-      State.lastScannedCode = rawText;
+      State.lastScannedCode = clean;
       State.lastScanTimestamp = now;
 
-      flashHardwareScannerIndicator(rawText);
+      flashHardwareScannerIndicator(clean);
 
+      // Close modal if open so scanning is never blocked
       if (State.isConfirmModalOpen) {
-        confirmPendingScannedBill();
-        setTimeout(() => this.routeScannedCode(rawText), 350);
-        return;
+        closeBillConfirmModal();
       }
 
-      this.routeScannedCode(rawText);
+      this.routeScannedCode(clean);
     },
 
     async routeScannedCode(rawText) {
@@ -1246,16 +1268,16 @@
   // ========================================================
 
   function handleScannedCodeDispatch(decodedText) {
-    if (State.isConfirmModalOpen) return;
+    if (!decodedText) return;
     try {
-      const now = Date.now();
-      if (decodedText === State.lastScannedCode && now - State.lastScanTimestamp < 800) {
-        return;
-      }
-      State.lastScannedCode = decodedText;
-      State.lastScanTimestamp = now;
-
       let parsed = parseQRCodeData(decodedText);
+      if (!parsed || !parsed.billNo) {
+        const cleanText = String(decodedText).replace(/[\x00-\x09\x0B-\x1F\x7F]/g, '').trim();
+        if (cleanText) {
+          parsed = { billNo: cleanText, party: 'Standard Account', amount: 0, raw: cleanText };
+        }
+      }
+
       if (!parsed || !parsed.billNo) {
         ScanFX.error('DISPATCH', 'Unrecognized code: ' + (decodedText.slice(0, 30)));
         return;
@@ -1263,7 +1285,9 @@
 
       parsed = enrichWithMaster(parsed);
       ScanFX.success('DISPATCH', decodedText, parsed);
-      showBillScannedConfirmation(parsed, 'DISPATCH');
+
+      // Directly add to dispatch basket so the list shows the scanned bill immediately!
+      addBillToDispatchBasket(parsed);
     } catch (err) {
       console.error('Dispatch scan handler error:', err);
       ScanFX.error('DISPATCH', 'Scan error: ' + (err.message || err));
@@ -1288,7 +1312,7 @@
 
     input.value = '';
     ScanFX.success('DISPATCH', val, parsed);
-    showBillScannedConfirmation(parsed, 'DISPATCH');
+    addBillToDispatchBasket(parsed);
     focusActiveScannerInput();
   }
 
@@ -1667,20 +1691,23 @@
   }
 
   function handleScannedCodeSettlement(decodedText) {
-    if (State.isConfirmModalOpen) return;
+    if (!decodedText) return;
     try {
-      const now = Date.now();
-      if (decodedText === State.lastScannedCode && now - State.lastScanTimestamp < 800) return;
-      State.lastScannedCode = decodedText;
-      State.lastScanTimestamp = now;
-
       let parsed = parseQRCodeData(decodedText);
-      if (parsed) {
-        parsed = enrichWithMaster(parsed);
-        ScanFX.success('SETTLEMENT', decodedText, parsed);
-      } else {
-        ScanFX.success('SETTLEMENT', decodedText, { billNo: decodedText, amount: 0 });
+      if (!parsed || !parsed.billNo) {
+        const cleanText = String(decodedText).replace(/[\x00-\x09\x0B-\x1F\x7F]/g, '').trim();
+        if (cleanText) {
+          parsed = { billNo: cleanText, party: 'Standard Account', amount: 0, raw: cleanText };
+        }
       }
+
+      if (!parsed || !parsed.billNo) {
+        ScanFX.error('SETTLEMENT', 'Unrecognized code: ' + (decodedText.slice(0, 30)));
+        return;
+      }
+
+      parsed = enrichWithMaster(parsed);
+      ScanFX.success('SETTLEMENT', decodedText, parsed);
 
       processCheckInCode(decodedText);
     } catch (err) {
@@ -1699,10 +1726,69 @@
     focusActiveScannerInput();
   }
 
+  function receiveBillSettlement(parsed) {
+    if (!parsed || !parsed.billNo) return;
+
+    let bill = State.bills.find(b => b.billNo === parsed.billNo) ||
+               State.bills.find(b => normalizeInvoiceNumber(b.billNo) === normalizeInvoiceNumber(parsed.billNo));
+
+    const billAmt = parseFloat(parsed.amount) || 0;
+    const outstanding = (parsed.outstanding !== undefined && parsed.outstanding !== null)
+      ? parseFloat(parsed.outstanding)
+      : 0;
+
+    if (!bill) {
+      const targetAgent = (State.activeAgent ? State.activeAgent.name : '') || State.activeSettlementAgent || (State.agents[0] ? State.agents[0].name : 'Rajesh');
+      bill = {
+        billNo: parsed.billNo,
+        party: parsed.party || 'Standard Account',
+        amount: billAmt,
+        agent: targetAgent,
+        dispatchDate: getTodayDateString(),
+        status: 'WITH_AGENT',
+        collectedAmt: 0,
+        paymentMode: '',
+        refNo: parsed.receipt || '',
+        returnReason: '',
+        remarks: 'Scanned at Check-IN',
+        lastActionDate: new Date().toISOString(),
+        history: []
+      };
+      State.bills.unshift(bill);
+    }
+
+    // Direct settlement: Mark as RECEIVED and refresh lists immediately
+    bill.status = 'RECEIVED';
+    bill.remarks = 'Received back from agent';
+    const timestamp = new Date().toISOString();
+    bill.lastActionDate = timestamp;
+    bill.history.push({ action: 'RECEIVED', agent: bill.agent, timestamp });
+
+    queueSyncAction('SETTLEMENT_RETURN', {
+      billNo: bill.billNo,
+      agent: bill.agent,
+      party: bill.party,
+      amount: bill.amount,
+      status: 'RECEIVED',
+      remarks: bill.remarks,
+      timestamp
+    });
+
+    saveState();
+    updateGlobalStats();
+    loadSettlementForSelectedAgent();
+    renderLeftOutTab();
+    updateHomeStats();
+    SoundFX.playBeep('success');
+    ConfettiFX.burst({ count: 25, x: 0.35, y: 0.45 });
+    showToast(`✓ Received ${bill.billNo} (${bill.agent})`, 'success', 2500);
+  }
+
   function processCheckInCode(rawInput) {
     let parsed = parseQRCodeData(rawInput);
     if (!parsed || !parsed.billNo) {
-      parsed = { billNo: rawInput.trim(), party: 'Standard Account', amount: 0, raw: rawInput };
+      const clean = String(rawInput).replace(/[\x00-\x09\x0B-\x1F\x7F]/g, '').trim();
+      parsed = { billNo: clean, party: 'Standard Account', amount: 0, raw: rawInput };
     }
     parsed = enrichWithMaster(parsed);
 
@@ -1729,9 +1815,7 @@
       }
     }
 
-    SoundFX.playBeep('success');
-    SoundFX.vibrate(50);
-    showBillScannedConfirmation(parsed, 'SETTLEMENT');
+    receiveBillSettlement(parsed);
   }
 
 
@@ -2084,60 +2168,7 @@
     if (source === 'DISPATCH') {
       addBillToDispatchBasket(parsed);
     } else {
-      // SETTLEMENT Check-IN
-      let bill = State.bills.find(b => b.billNo === parsed.billNo) ||
-                 State.bills.find(b => normalizeInvoiceNumber(b.billNo) === normalizeInvoiceNumber(parsed.billNo));
-
-      const billAmt = parseFloat(parsed.amount) || 0;
-      const outstanding = (parsed.outstanding !== undefined && parsed.outstanding !== null)
-        ? parseFloat(parsed.outstanding)
-        : 0;
-
-      const collectedAmt = Math.max(0, billAmt - outstanding);
-
-      if (!bill) {
-        const targetAgent = (State.activeAgent ? State.activeAgent.name : '') || State.activeSettlementAgent || (State.agents[0] ? State.agents[0].name : 'Rajesh');
-        bill = {
-          billNo: parsed.billNo,
-          party: parsed.party || 'Standard Account',
-          amount: billAmt,
-          agent: targetAgent,
-          dispatchDate: getTodayDateString(),
-          status: 'WITH_AGENT',
-          collectedAmt: 0,
-          paymentMode: '',
-          refNo: parsed.receipt || '',
-          returnReason: '',
-          remarks: 'Scanned at Check-IN',
-          lastActionDate: new Date().toISOString(),
-          history: []
-        };
-        State.bills.unshift(bill);
-      }
-
-      // Minimal Custody Flow: Mark as RECEIVED directly
-      bill.status = 'RECEIVED';
-      bill.remarks = 'Received back from agent';
-      const timestamp = new Date().toISOString();
-      bill.lastActionDate = timestamp;
-      bill.history.push({ action: 'RECEIVED', agent: bill.agent, timestamp });
-
-      queueSyncAction('SETTLEMENT_RETURN', {
-        billNo: bill.billNo,
-        agent: bill.agent,
-        party: bill.party,
-        amount: bill.amount,
-        status: 'RECEIVED',
-        remarks: bill.remarks,
-        timestamp
-      });
-      showToast(`Received: ${bill.billNo}`, 'success');
-
-      saveState();
-      updateGlobalStats();
-      loadSettlementForSelectedAgent();
-      renderLeftOutTab();
-      SoundFX.playBeep('success');
+      receiveBillSettlement(parsed);
     }
 
     closeBillConfirmModal();
