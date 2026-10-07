@@ -96,12 +96,7 @@
     activeSettlementAgent: null,
     settlementBills: [],
     diffDateFilter: 'TODAY', // 'TODAY', 'YESTERDAY', or 'ALL'
-    scannerDispatch: null,
-    scannerSettlement: null,
-    isCameraTransitioning: false,
     activeTab: 'tab-home',
-    availableCameras: [],
-    selectedCameraId: 'environment',
     lastScannedCode: null,
     lastScanTimestamp: 0,
     currentPaymentBill: null,
@@ -116,9 +111,7 @@
     selectedWeek: 'Week 1',
     selectedBeatName: '',
     activeScanMode: null,    // 'DISPATCH' or 'SETTLEMENT' — set by home card tap
-    frameSamplerInterval: null,
-    currentZoom: 1,
-    isTorchOn: false
+
   };
 
   // Web Audio Synthesizer for Fast Scan Feedback
@@ -879,323 +872,253 @@
 
 
   // ========================================================
-  // 4. CAMERA CONTROLLERS (IOS SAFARI OPTIMIZED HIGH-SPEED)
+  // 4. DESKTOP ANIMATIONS, 2D HARDWARE SCANNER & CONFETTI FX
   // ========================================================
 
-  function checkHttpsSecurity() {
-    const banner = document.getElementById('httpsWarningBanner');
-    if (!banner) return;
-    const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-    const isSecure = window.isSecureContext || location.protocol === 'https:' || isLocal;
-    banner.style.display = isSecure ? 'none' : 'flex';
-  }
+  const ConfettiFX = {
+    canvas: null,
+    ctx: null,
+    particles: [],
+    animationId: null,
 
-  function createScannerInstance(elementId) {
-    if (typeof Html5Qrcode === 'undefined') {
-      console.error('Html5Qrcode library is not loaded');
-      showToast('Camera scanner library is not loaded. Please check internet connection and reload.', 'danger', 5000);
-      throw new Error('Html5Qrcode library is not loaded');
-    }
+    init() {
+      this.canvas = document.getElementById('confettiCanvas');
+      if (!this.canvas) return;
+      this.ctx = this.canvas.getContext('2d');
+      this.resize();
+      window.addEventListener('resize', () => this.resize());
+    },
 
-    let supportedFormats = undefined;
-    if (typeof Html5QrcodeSupportedFormats !== 'undefined') {
-      // Support all common invoice formats: QR code, Code 128, Code 39, EAN 13, DataMatrix
-      supportedFormats = [
-        Html5QrcodeSupportedFormats.QR_CODE,
-        Html5QrcodeSupportedFormats.CODE_128,
-        Html5QrcodeSupportedFormats.CODE_39,
-        Html5QrcodeSupportedFormats.EAN_13,
-        Html5QrcodeSupportedFormats.DATA_MATRIX
-      ];
-    }
-    return new Html5Qrcode(elementId, {
-      formatsToSupport: supportedFormats,
-      verbose: false,
-      useBarCodeDetectorIfSupported: true,
-      experimentalFeatures: {
-        useBarCodeDetectorIfSupported: true
-      }
-    });
-  }
+    resize() {
+      if (!this.canvas) return;
+      this.canvas.width = window.innerWidth;
+      this.canvas.height = window.innerHeight;
+    },
 
-  /**
-   * Dual-Engine Live Video Frame Sampler (jsQR iOS 17 Acceleration)
-   */
-  function stopFrameSampler() {
-    if (State.frameSamplerInterval) {
-      clearInterval(State.frameSamplerInterval);
-      State.frameSamplerInterval = null;
-    }
-  }
+    burst({ count = 35, x = 0.35, y = 0.45 } = {}) {
+      this.init();
+      if (!this.ctx) return;
 
-  function startVideoFrameSampler(containerId, onDecoded) {
-    stopFrameSampler();
-    if (typeof jsQR === 'undefined') return;
+      const colors = ['#2563eb', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4'];
+      const originX = x * window.innerWidth;
+      const originY = y * window.innerHeight;
 
-    let canvas = null;
-    let ctx = null;
-    let isSampling = false;
-
-    State.frameSamplerInterval = setInterval(() => {
-      if (isSampling) return;
-      if (State.isConfirmModalOpen) return;
-
-      try {
-        const container = document.getElementById(containerId);
-        if (!container || container.style.display === 'none') return;
-        const video = container.querySelector('video');
-        if (!video || video.readyState < 2 || !video.videoWidth) return;
-
-        isSampling = true;
-
-        if (!canvas) {
-          canvas = document.createElement('canvas');
-          ctx = canvas.getContext('2d', { willReadFrequently: true });
-        }
-
-        // Downscale to max 640px for ultra-low latency (<10ms decode on iPhone)
-        const scale = Math.min(1, 640 / Math.max(video.videoWidth, video.videoHeight));
-        const sampleW = Math.floor(video.videoWidth * scale);
-        const sampleH = Math.floor(video.videoHeight * scale);
-
-        if (canvas.width !== sampleW || canvas.height !== sampleH) {
-          canvas.width = sampleW;
-          canvas.height = sampleH;
-        }
-
-        ctx.drawImage(video, 0, 0, sampleW, sampleH);
-        const imgData = ctx.getImageData(0, 0, sampleW, sampleH);
-
-        // Fast pass: regular QR code
-        let code = jsQR(imgData.data, sampleW, sampleH, { inversionAttempts: 'dontInvert' });
-        if (!code) {
-          // Fallback pass: inverted / dark mode QR code
-          code = jsQR(imgData.data, sampleW, sampleH, { inversionAttempts: 'onlyInvert' });
-        }
-
-        if (code && code.data && code.data.trim()) {
-          const now = Date.now();
-          if (code.data !== State.lastScannedCode || (now - State.lastScanTimestamp) > 1500) {
-            State.lastScannedCode = code.data;
-            State.lastScanTimestamp = now;
-            onDecoded(code.data);
-          }
-        }
-      } catch (e) {
-        // Non-critical frame sampling catch
-      } finally {
-        isSampling = false;
-      }
-    }, 180);
-  }
-
-  /** Wait (up to ~4s) for any in-flight camera start/stop to finish. */
-  async function waitForCameraIdle(timeoutMs = 4000) {
-    const startedAt = Date.now();
-    while (State.isCameraTransitioning && Date.now() - startedAt < timeoutMs) {
-      await new Promise(r => setTimeout(r, 80));
-    }
-  }
-
-  /** Torch/zoom reset: a restarted stream always begins at 1x with torch off. */
-  function resetCameraControls() {
-    State.isTorchOn = false;
-    State.currentZoom = 1;
-    ['dispatch', 'settlement'].forEach(prefix => {
-      document.getElementById(`${prefix}TorchBtn`)?.classList.remove('torch-active');
-      document.getElementById(`${prefix}Zoom1xBtn`)?.classList.add('active');
-      document.getElementById(`${prefix}Zoom2xBtn`)?.classList.remove('active');
-    });
-  }
-
-  async function applyScannerZoom(scannerInstance, zoomLevel, containerType) {
-    State.currentZoom = zoomLevel;
-    const prefix = containerType === 'SETTLEMENT' ? 'settlement' : 'dispatch';
-    const btn1x = document.getElementById(`${prefix}Zoom1xBtn`);
-    const btn2x = document.getElementById(`${prefix}Zoom2xBtn`);
-    if (btn1x && btn2x) {
-      if (zoomLevel === 1) {
-        btn1x.classList.add('active');
-        btn2x.classList.remove('active');
-      } else {
-        btn2x.classList.add('active');
-        btn1x.classList.remove('active');
-      }
-    }
-
-    if (!scannerInstance) return;
-    try {
-      if (typeof scannerInstance.applyVideoConstraints === 'function') {
-        await scannerInstance.applyVideoConstraints({
-          advanced: [{ zoom: zoomLevel }]
+      for (let i = 0; i < count; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 3 + Math.random() * 6;
+        this.particles.push({
+          x: originX,
+          y: originY,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed - 2,
+          size: 4 + Math.random() * 5,
+          color: colors[Math.floor(Math.random() * colors.length)],
+          rotation: Math.random() * 360,
+          rotationSpeed: (Math.random() - 0.5) * 12,
+          life: 1,
+          decay: 0.015 + Math.random() * 0.02
         });
       }
-    } catch (e) {
-      console.warn('[Camera] Zoom constraint not supported or failed:', e);
-      showToast('Zoom not supported on this camera', 'warning', 1500);
-    }
-  }
 
-  async function toggleScannerTorch(scannerInstance, containerType) {
-    if (!scannerInstance) return;
-    State.isTorchOn = !State.isTorchOn;
-    const prefix = containerType === 'SETTLEMENT' ? 'settlement' : 'dispatch';
-    const torchBtn = document.getElementById(`${prefix}TorchBtn`);
-    if (torchBtn) {
-      if (State.isTorchOn) {
-        torchBtn.classList.add('torch-active');
+      if (!this.animationId) {
+        this.loop();
+      }
+    },
+
+    celebrate() {
+      this.burst({ count: 70, x: 0.3, y: 0.35 });
+      setTimeout(() => this.burst({ count: 70, x: 0.7, y: 0.35 }), 150);
+      setTimeout(() => this.burst({ count: 80, x: 0.5, y: 0.4 }), 300);
+    },
+
+    loop() {
+      if (!this.ctx) return;
+      this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+
+      for (let i = this.particles.length - 1; i >= 0; i--) {
+        const p = this.particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.16;
+        p.vx *= 0.98;
+        p.rotation += p.rotationSpeed;
+        p.life -= p.decay;
+
+        if (p.life <= 0) {
+          this.particles.splice(i, 1);
+          continue;
+        }
+
+        this.ctx.save();
+        this.ctx.translate(p.x, p.y);
+        this.ctx.rotate((p.rotation * Math.PI) / 180);
+        this.ctx.fillStyle = p.color;
+        this.ctx.globalAlpha = Math.max(0, p.life);
+        this.ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size * 1.5);
+        this.ctx.restore();
+      }
+
+      if (this.particles.length > 0) {
+        this.animationId = requestAnimationFrame(() => this.loop());
       } else {
-        torchBtn.classList.remove('torch-active');
+        this.animationId = null;
+        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+      }
+    }
+  };
+
+  const ScanFX = {
+    success(mode, code, parsed) {
+      SoundFX.init();
+      SoundFX.playBeep('success');
+      SoundFX.vibrate(50);
+
+      const cardId = mode === 'DISPATCH' ? 'dispatchScannerCard' : 'settlementScannerCard';
+      const card = document.getElementById(cardId);
+      if (card) {
+        card.classList.add('scan-success-flash');
+        setTimeout(() => card.classList.remove('scan-success-flash'), 500);
+      }
+
+      if (mode === 'DISPATCH') {
+        const badge = document.getElementById('dispatchLastScanBadge');
+        const details = document.getElementById('dispatchLastScanDetails');
+        if (badge && parsed) badge.textContent = parsed.billNo;
+        if (details && parsed) {
+          details.textContent = `${parsed.party || 'Customer'} · ${formatINR(parsed.amount)}`;
+        }
+      }
+
+      ConfettiFX.burst({ count: 28, x: 0.28, y: 0.35 });
+    },
+
+    error(mode, message) {
+      SoundFX.init();
+      SoundFX.playBeep('error');
+      SoundFX.vibrate(100);
+
+      const cardId = mode === 'DISPATCH' ? 'dispatchScannerCard' : 'settlementScannerCard';
+      const card = document.getElementById(cardId);
+      if (card) {
+        card.classList.add('scan-error-shake');
+        setTimeout(() => card.classList.remove('scan-error-shake'), 400);
+      }
+
+      showToast(message, 'warning', 3000);
+    }
+  };
+
+  function animateNumber(element, targetVal, isCurrency = false) {
+    if (!element) return;
+    const target = Number(targetVal) || 0;
+    const currentText = (element.textContent || '').replace(/[^0-9.-]+/g, '');
+    const start = parseFloat(currentText) || 0;
+    if (start === target) {
+      element.textContent = isCurrency ? formatINR(target) : target;
+      return;
+    }
+
+    const duration = 360;
+    const startTime = performance.now();
+
+    function step(now) {
+      const elapsed = now - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      const ease = 1 - Math.pow(1 - progress, 3);
+      const current = Math.round(start + (target - start) * ease);
+
+      element.textContent = isCurrency ? formatINR(current) : current;
+
+      if (progress < 1) {
+        requestAnimationFrame(step);
+      } else {
+        element.textContent = isCurrency ? formatINR(target) : target;
       }
     }
 
-    try {
-      if (typeof scannerInstance.applyVideoConstraints === 'function') {
-        await scannerInstance.applyVideoConstraints({
-          advanced: [{ torch: State.isTorchOn }]
-        });
-      }
-    } catch (e) {
-      console.warn('[Camera] Torch constraint not supported:', e);
-      showToast('Flashlight not available on this camera', 'warning', 1500);
-      State.isTorchOn = false;
-      if (torchBtn) torchBtn.classList.remove('torch-active');
-    }
+    requestAnimationFrame(step);
   }
 
-  /**
-   * Hardware safety: Force-stop any active MediaStream tracks inside a container
-   */
-  function forceStopContainerTracks(elementId) {
-    try {
-      const el = document.getElementById(elementId);
-      if (!el) return;
-      const videos = el.querySelectorAll('video');
-      videos.forEach(v => {
-        try {
-          if (v.srcObject && typeof v.srcObject.getTracks === 'function') {
-            v.srcObject.getTracks().forEach(t => {
-              try { t.stop(); } catch (e) {}
-            });
-            v.srcObject = null;
-          }
-        } catch (e) {}
+  function renderHomeCharts(outCount, inCount, diffCount, outAmt, inAmt, diffAmt) {
+    const total = outCount || 0;
+    const receivedPct = total > 0 ? (inCount / total) : 0;
+    const pendingPct = total > 0 ? (diffCount / total) : 0;
+
+    const circumference = 389.56;
+    const receivedLength = receivedPct * circumference;
+    const pendingLength = pendingPct * circumference;
+
+    const segReceived = document.getElementById('donutSegReceived');
+    const segPending = document.getElementById('donutSegPending');
+    const centerTotal = document.getElementById('donutCenterTotal');
+
+    if (centerTotal) centerTotal.textContent = total;
+
+    if (segReceived) {
+      segReceived.style.strokeDasharray = `${receivedLength} ${circumference}`;
+      segReceived.style.strokeDashoffset = '0';
+    }
+
+    if (segPending) {
+      segPending.style.strokeDasharray = `${pendingLength} ${circumference}`;
+      segPending.style.strokeDashoffset = `${-receivedLength}`;
+    }
+
+    const legRec = document.getElementById('chartLegendReceived');
+    const legPend = document.getElementById('chartLegendPending');
+    const legTot = document.getElementById('chartLegendTotal');
+
+    if (legRec) legRec.textContent = `${inCount} (${Math.round(receivedPct * 100)}%)`;
+    if (legPend) legPend.textContent = `${diffCount} (${Math.round(pendingPct * 100)}%)`;
+    if (legTot) legTot.textContent = `${total} (${formatINR(outAmt)})`;
+
+    const container = document.getElementById('agentBarsContainer');
+    if (container) {
+      container.innerHTML = '';
+      State.agents.forEach(agent => {
+        const stats = getAgentLeftOutStats(agent.name);
+        const agTotal = stats.totalCount || 0;
+        const agRec = stats.checkedInCount || 0;
+        const agPct = agTotal > 0 ? Math.round((agRec / agTotal) * 100) : 0;
+
+        const row = document.createElement('div');
+        row.className = 'agent-bar-row';
+        row.innerHTML = `
+          <div class="agent-bar-info">
+            <span><i class="fa-solid fa-user-tie"></i> ${agent.name}</span>
+            <span class="font-mono">${agRec}/${agTotal} (${agPct}%)</span>
+          </div>
+          <div class="agent-bar-track">
+            <div class="agent-bar-fill" style="width: ${agPct}%;"></div>
+          </div>
+        `;
+        container.appendChild(row);
       });
-      el.innerHTML = '';
-    } catch (e) {}
+    }
   }
 
-  /**
-   * Safely stop and clear a Html5Qrcode instance without throwing state transition errors
-   */
-  async function safeStopScanner(scannerInstance, elementId) {
-    if (!scannerInstance) {
-      forceStopContainerTracks(elementId);
-      return null;
-    }
-
-    try {
-      const state = typeof scannerInstance.getState === 'function' ? scannerInstance.getState() : null;
-      // State 2 is SCANNING, 3 is PAUSED
-      if (state === 2 || state === 3 || scannerInstance.isScanning) {
-        await scannerInstance.stop();
+  function focusActiveScannerInput() {
+    setTimeout(() => {
+      if (State.activeTab === 'tab-dispatch') {
+        const input = document.getElementById('dispatchInvoiceInput');
+        if (input && document.activeElement !== input) input.focus();
+      } else if (State.activeTab === 'tab-settlement') {
+        const input = document.getElementById('settlementInvoiceInput');
+        if (input && document.activeElement !== input) input.focus();
       }
-    } catch (e) {
-      console.warn(`[Camera] Stop warning on ${elementId} (handled):`, e);
-    }
-
-    try {
-      await scannerInstance.clear();
-    } catch (e) {
-      console.warn(`[Camera] Clear warning on ${elementId} (handled):`, e);
-    }
-
-    forceStopContainerTracks(elementId);
-    return null;
+    }, 80);
   }
 
-  function ensureVideoInline(container) {
-    const applyInline = () => {
-      const video = container ? container.querySelector('video') : null;
-      if (video) {
-        video.setAttribute('playsinline', 'true');
-        video.setAttribute('webkit-playsinline', 'true');
-        video.muted = true;
-        video.setAttribute('muted', 'true');
-        if (video.paused) video.play().catch(() => {});
+  function initSystemClock() {
+    function tick() {
+      const clock = document.getElementById('systemClock');
+      if (clock) {
+        const now = new Date();
+        clock.textContent = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
       }
-    };
-    applyInline();
-    setTimeout(applyInline, 200);
-  }
-
-  async function initCameraSelectors(hasPermission = false) {
-    const select = document.getElementById('cameraSourceSelect');
-    if (!select) return;
-
-    try {
-      if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
-        return;
-      }
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const videoDevices = devices.filter(d => d.kind === 'videoinput');
-      State.availableCameras = videoDevices.map(d => ({ id: d.deviceId, label: d.label }));
-
-      const currentVal = State.selectedCameraId || select.value || 'environment';
-      select.innerHTML = '';
-
-      // 1. Always provide clean Primary Back & Front options (100% reliable cross-platform)
-      const optBack = document.createElement('option');
-      optBack.value = 'environment';
-      optBack.textContent = '📷 Back Camera (Primary 1x)';
-      select.appendChild(optBack);
-
-      const optFront = document.createElement('option');
-      optFront.value = 'user';
-      optFront.textContent = '🤳 Front Camera';
-      select.appendChild(optFront);
-
-      // 2. Only add specific lens devices if real labels are available (permissions granted)
-      const hasRealLabels = State.availableCameras.some(c => (c.label || '').trim().length > 0);
-      if (hasRealLabels) {
-        State.availableCameras.forEach((cam) => {
-          const rawLabel = (cam.label || '').trim();
-          if (!rawLabel) return;
-          const l = rawLabel.toLowerCase();
-          const opt = document.createElement('option');
-          opt.value = cam.id;
-          if (l.includes('usb') || l.includes('scanner') || l.includes('barcode') || l.includes('external')) {
-            opt.textContent = `🔌 ${rawLabel} (USB Device)`;
-          } else if (l.includes('ultra wide') || l.includes('0.5x')) {
-            opt.textContent = `📹 ${rawLabel} (Wide 0.5x)`;
-          } else if (l.includes('front') || l.includes('user') || l.includes('selfie')) {
-            opt.textContent = `🤳 ${rawLabel}`;
-          } else if (l.includes('back') || l.includes('rear') || l.includes('environment')) {
-            opt.textContent = `📷 ${rawLabel} (1x Sharp)`;
-          } else {
-            opt.textContent = `📹 ${rawLabel}`;
-          }
-          select.appendChild(opt);
-        });
-      }
-
-      // Restore selected value cleanly
-      if (currentVal) {
-        select.value = currentVal;
-      }
-
-      // Auto-refresh when USB camera devices are plugged in or unplugged on laptop
-      if (!window._deviceChangeListenerAttached && typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
-        window._deviceChangeListenerAttached = true;
-        navigator.mediaDevices.addEventListener('devicechange', async () => {
-          console.log('[Hardware] Media devicechange triggered (USB camera plugged/unplugged)');
-          await initCameraSelectors(true);
-          showToast('🔌 Video devices updated (USB camera detected)', 'info', 2000);
-        });
-      }
-    } catch (e) {
-      console.warn('Camera enumeration warning:', e);
     }
+    tick();
+    setInterval(tick, 1000);
   }
 
   function flashHardwareScannerIndicator(text) {
@@ -1216,13 +1139,12 @@
 
   /**
    * Hardware USB & Bluetooth Barcode / QR Scanner Wedge Listener
-   * Allows plugging in any USB / Bluetooth barcode gun, handheld QR reader,
-   * or desktop omnidirectional scanner on a laptop.
+   * Desktop-first high-speed keyboard emulation listener
    */
   const HardwareScanner = {
     buffer: '',
     lastKeyTime: 0,
-    scannerThresholdMs: 65, // Max ms between characters for hardware scanner burst (<65ms)
+    scannerThresholdMs: 65,
     isScanningBurst: false,
     _timeout: null,
 
@@ -1232,14 +1154,11 @@
         const diff = now - this.lastKeyTime;
         this.lastKeyTime = now;
 
-        // Ignore modifier keys alone
         if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab'].includes(e.key)) {
           return;
         }
 
-        // Check for Enter key (typical hardware scanner terminator)
         if (e.key === 'Enter') {
-          // If accumulated a high-speed scanner burst with valid length
           if (this.buffer.length >= 2 && this.isScanningBurst) {
             e.preventDefault();
             e.stopPropagation();
@@ -1248,24 +1167,26 @@
             this.buffer = '';
             this.isScanningBurst = false;
 
+            // Clear any active invoice input to avoid leftover text
+            const dInp = document.getElementById('dispatchInvoiceInput');
+            const sInp = document.getElementById('settlementInvoiceInput');
+            if (dInp) dInp.value = '';
+            if (sInp) sInp.value = '';
+
             this.processScannedCode(scannedCode);
             return;
           }
 
-          // Reset if normal enter
           this.buffer = '';
           this.isScanningBurst = false;
           return;
         }
 
-        // Printable characters
         if (e.key.length === 1) {
-          // Rapid keystrokes (<65ms) indicate a hardware scanner device
           if (diff <= this.scannerThresholdMs) {
             this.isScanningBurst = true;
             this.buffer += e.key;
           } else {
-            // Human typing pause or initial character of a scanner burst
             this.buffer = e.key;
             this.isScanningBurst = false;
           }
@@ -1276,17 +1197,21 @@
             this.isScanningBurst = false;
           }, 250);
         }
-      }, true); // Capture phase to catch scanner input before individual inputs
+      }, true);
     },
 
     processScannedCode(rawText) {
       if (!rawText) return;
 
-      SoundFX.init();
-      SoundFX.playBeep('success');
+      const now = Date.now();
+      if (rawText === State.lastScannedCode && (now - State.lastScanTimestamp) < 800) {
+        return;
+      }
+      State.lastScannedCode = rawText;
+      State.lastScanTimestamp = now;
+
       flashHardwareScannerIndicator(rawText);
 
-      // If Confirmation Modal is currently open, confirm it or advance
       if (State.isConfirmModalOpen) {
         confirmPendingScannedBill();
         setTimeout(() => this.routeScannedCode(rawText), 350);
@@ -1300,20 +1225,15 @@
       const activeTab = State.activeTab;
 
       if (activeTab === 'tab-dispatch') {
-        showToast(`🔌 USB Gun: ${rawText}`, 'success', 2200);
         handleScannedCodeDispatch(rawText);
       } else if (activeTab === 'tab-settlement') {
-        showToast(`🔌 USB Gun: ${rawText}`, 'success', 2200);
         handleScannedCodeSettlement(rawText);
       } else {
-        // If on Home tab or other tab
         if (!State.activeAgent) {
-          // Automatically prompt agent picker
           State.pendingHardwareScan = rawText;
-          showToast(`🔌 Scanned: "${rawText}". Select an agent:`, 'info', 3000);
+          showToast(`⚡ Scanned: "${rawText}". Select agent:`, 'info', 3000);
           openAgentPicker('DISPATCH');
         } else {
-          // Agent was already picked, default to Morning Dispatch
           await switchTab('tab-dispatch');
           handleScannedCodeDispatch(rawText);
         }
@@ -1321,618 +1241,32 @@
     }
   };
 
-  async function switchSelectedCamera(newCameraId) {
-    if (State.isCameraTransitioning) {
-      showToast('Camera busy, please wait...', 'warning', 1000);
-      return;
-    }
-
-    State.selectedCameraId = newCameraId;
-    State.settings.preferredCamera = newCameraId;
-    saveState('settings');
-
-    const select = document.getElementById('cameraSourceSelect');
-    if (select) select.value = newCameraId;
-
-    const isDispatch = !!State.scannerDispatch;
-    const isSettlement = !!State.scannerSettlement;
-
-    if (isDispatch) {
-      await stopDispatchScanner();
-      await new Promise(r => setTimeout(r, 250)); // Allow hardware sensor release
-      await startDispatchScanner();
-    } else if (isSettlement) {
-      await stopSettlementScanner();
-      await new Promise(r => setTimeout(r, 250)); // Allow hardware sensor release
-      await startSettlementScanner();
-    }
-
-    const camName = newCameraId === 'user' ? 'Front Camera' : (newCameraId === 'environment' ? 'Back Camera (1x)' : 'Camera');
-    showToast(`Switched to ${camName}`, 'info', 1200);
-  }
-
-  function cycleBackLens() {
-    const backCams = State.availableCameras.filter(c => {
-      const l = (c.label || '').toLowerCase();
-      return l.includes('back') || l.includes('rear') || l.includes('environment');
-    });
-
-    if (backCams.length > 1) {
-      const curIdx = backCams.findIndex(c => c.id === State.selectedCameraId);
-      const nextIdx = (curIdx + 1) % backCams.length;
-      switchSelectedCamera(backCams[nextIdx].id);
-    } else {
-      flipCamera();
-    }
-  }
-
-  function flipCamera() {
-    // Check if current camera is front-facing
-    const isCurrentlyFront = State.selectedCameraId === 'user' ||
-      (State.availableCameras.find(c => c.id === State.selectedCameraId)?.label || '').toLowerCase().includes('front');
-
-    if (isCurrentlyFront) {
-      switchSelectedCamera('environment');
-    } else {
-      switchSelectedCamera('user');
-    }
-  }
-
-  function getCameraConfigsToTry(camId) {
-    const list = [];
-    if (camId === 'user') {
-      // User explicitly wants Front Camera
-      list.push({ facingMode: 'user' });
-      list.push({});
-    } else if (!camId || camId === 'environment') {
-      // 1. HD 720p balanced constraint (avoids CPU choking on 4K sensors, super sharp focus)
-      list.push({
-        facingMode: 'environment',
-        width: { ideal: 1280, max: 1920 },
-        height: { ideal: 720, max: 1080 }
-      });
-      list.push({ facingMode: 'environment' });
-      list.push({});
-    } else {
-      list.push({
-        deviceId: camId,
-        width: { ideal: 1280, max: 1920 },
-        height: { ideal: 720, max: 1080 }
-      });
-      list.push(camId);
-      list.push({ facingMode: 'environment' });
-      list.push({});
-    }
-    return list;
-  }
-
-  function getScannerRunConfig() {
-    return {
-      fps: 10, // 10 fps prevents frame queue lag on mobile CPUs, ensuring real-time instant detection
-      disableFlip: false
-    };
-  }
-
-  function showCameraPermissionModal(source = 'DISPATCH') {
-    State.pendingCameraSource = source;
-    const modal = document.getElementById('cameraPermissionModal');
-    if (modal) modal.style.display = 'flex';
-  }
-
-  async function startDispatchScanner() {
-    if (State.isCameraTransitioning) {
-      console.warn('[Camera] Dispatch start ignored: transition already in progress');
-      return;
-    }
-    if (State.scannerDispatch) {
-      return;
-    }
-
-    State.isCameraTransitioning = true;
-    const container = document.getElementById('scannerContainer');
-    const startBtn = document.getElementById('startScanBtn');
-    const stopBtn = document.getElementById('stopScanBtn');
-
-    if (startBtn) {
-      startBtn.disabled = true;
-      startBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Starting...';
-    }
-
-    SoundFX.init();
-
-    try {
-      // 1. If settlement scanner is running, safely stop it first
-      if (State.scannerSettlement) {
-        State.scannerSettlement = await safeStopScanner(State.scannerSettlement, 'qr-reader-settlement');
-        const sContainer = document.getElementById('settlementScannerContainer');
-        const sStartBtn = document.getElementById('startSettlementScanBtn');
-        const sStopBtn = document.getElementById('stopSettlementScanBtn');
-        if (sContainer) sContainer.style.display = 'none';
-        if (sStartBtn) sStartBtn.style.display = 'block';
-        if (sStopBtn) sStopBtn.style.display = 'none';
-      }
-
-      // 2. Clean leftover scanner instance or orphan video tracks
-      if (State.scannerDispatch) {
-        State.scannerDispatch = await safeStopScanner(State.scannerDispatch, 'qr-reader');
-      } else {
-        forceStopContainerTracks('qr-reader');
-      }
-
-      if (State.availableCameras.length === 0) {
-        await initCameraSelectors();
-      }
-
-      if (container) container.style.display = 'block';
-      if (startBtn) startBtn.style.display = 'none';
-      if (stopBtn) {
-        stopBtn.style.display = 'block';
-        stopBtn.disabled = false;
-      }
-
-      // 3. Start scanner attempting candidate configs in order
-      const configsToTry = getCameraConfigsToTry(State.selectedCameraId);
-      const runConfig = getScannerRunConfig();
-      let scanner = createScannerInstance('qr-reader');
-      State.scannerDispatch = scanner;
-      let startedSuccessfully = false;
-      let lastErr = null;
-
-      for (let i = 0; i < configsToTry.length; i++) {
-        const config = configsToTry[i];
-        try {
-          await scanner.start(
-            config,
-            runConfig,
-            (decodedText) => handleScannedCodeDispatch(decodedText),
-            () => {}
-          );
-          startedSuccessfully = true;
-          break;
-        } catch (attemptErr) {
-          lastErr = attemptErr;
-          console.warn(`[Camera] Dispatch start attempt ${i + 1} failed:`, config, attemptErr);
-          await safeStopScanner(scanner, 'qr-reader');
-          await new Promise(r => setTimeout(r, 200));
-          scanner = createScannerInstance('qr-reader');
-          State.scannerDispatch = scanner;
-        }
-      }
-
-      if (!startedSuccessfully) {
-        throw lastErr || new Error('Could not access requested camera');
-      }
-
-      ensureVideoInline(container);
-      startVideoFrameSampler('qr-reader', (decodedText) => handleScannedCodeDispatch(decodedText));
-
-      // Apply iOS 17 / modern mobile continuous autofocus if supported
-      setTimeout(() => {
-        try {
-          if (scanner && typeof scanner.applyVideoConstraints === 'function') {
-            scanner.applyVideoConstraints({
-              advanced: [{ focusMode: 'continuous' }]
-            }).catch(() => {});
-          }
-        } catch (e) {}
-      }, 800);
-
-      // Populate camera labels quietly in background without killing active stream
-      setTimeout(() => {
-        initCameraSelectors().catch(() => {});
-      }, 1000);
-    } catch (err) {
-      console.error('Dispatch scanner error:', err);
-      stopFrameSampler();
-      resetCameraControls();
-      if (State.scannerDispatch) {
-        State.scannerDispatch = await safeStopScanner(State.scannerDispatch, 'qr-reader');
-      } else {
-        forceStopContainerTracks('qr-reader');
-      }
-      if (container) container.style.display = 'none';
-      if (startBtn) {
-        startBtn.style.display = 'block';
-        startBtn.disabled = false;
-        startBtn.innerHTML = '<i class="fa-solid fa-camera"></i> Start Camera Scanner';
-      }
-      if (stopBtn) stopBtn.style.display = 'none';
-
-      const errMsg = err?.message || String(err);
-      const errName = err?.name || '';
-      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
-      const isCriOS = isIOS && /CriOS/i.test(navigator.userAgent);
-
-      if (errName === 'NotFoundError' || errName === 'OverconstrainedError' || /no camera|requested device not found/i.test(errMsg)) {
-        showToast('No camera found on this device. Use a USB/Bluetooth scanner or the photo scan option.', 'danger', 6000);
-      } else if (errName === 'NotReadableError' || errName === 'AbortError' || /could not start video source|in use/i.test(errMsg)) {
-        showToast('Camera is busy or in use by another app. Close it and tap Start again.', 'danger', 6000);
-      } else if (errName === 'NotAllowedError' || errName === 'SecurityError' || errMsg.includes('NotAllowed') || errMsg.includes('Permission') || errMsg.includes('denied')) {
-        showCameraPermissionModal('DISPATCH');
-        if (isCriOS) {
-          showToast('iPhone Chrome camera blocked: Open iPhone Settings > Chrome > Turn ON Camera', 'danger', 7000);
-        }
-      } else if (!errMsg.includes('already under transition')) {
-        showToast('Camera error: ' + errMsg, 'danger', 4500);
-      }
-    } finally {
-      State.isCameraTransitioning = false;
-      if (startBtn) {
-        startBtn.disabled = false;
-        startBtn.innerHTML = '<i class="fa-solid fa-camera"></i> Start Camera Scanner';
-      }
-    }
-  }
-
-  async function stopDispatchScanner() {
-    stopFrameSampler();
-    await waitForCameraIdle();
-    resetCameraControls();
-
-    State.isCameraTransitioning = true;
-    const container = document.getElementById('scannerContainer');
-    const startBtn = document.getElementById('startScanBtn');
-    const stopBtn = document.getElementById('stopScanBtn');
-
-    if (stopBtn) {
-      stopBtn.disabled = true;
-      stopBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Stopping...';
-    }
-
-    try {
-      if (State.scannerDispatch) {
-        State.scannerDispatch = await safeStopScanner(State.scannerDispatch, 'qr-reader');
-      } else {
-        forceStopContainerTracks('qr-reader');
-      }
-    } finally {
-      if (container) container.style.display = 'none';
-      if (startBtn) {
-        startBtn.style.display = 'block';
-        startBtn.disabled = false;
-        startBtn.innerHTML = '<i class="fa-solid fa-camera"></i> Start Camera Scanner';
-      }
-      if (stopBtn) {
-        stopBtn.style.display = 'none';
-        stopBtn.disabled = false;
-        stopBtn.innerHTML = '<i class="fa-solid fa-stop"></i> Stop Camera';
-      }
-      State.isCameraTransitioning = false;
-    }
-  }
-
-  async function startSettlementScanner() {
-    if (State.isCameraTransitioning) {
-      console.warn('[Camera] Settlement start ignored: transition already in progress');
-      return;
-    }
-    if (State.scannerSettlement) {
-      return;
-    }
-
-    State.isCameraTransitioning = true;
-    const container = document.getElementById('settlementScannerContainer');
-    const startBtn = document.getElementById('startSettlementScanBtn');
-    const stopBtn = document.getElementById('stopSettlementScanBtn');
-
-    if (startBtn) {
-      startBtn.disabled = true;
-      startBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Starting...';
-    }
-
-    SoundFX.init();
-
-    try {
-      // 1. If dispatch scanner is running, safely stop it first
-      if (State.scannerDispatch) {
-        State.scannerDispatch = await safeStopScanner(State.scannerDispatch, 'qr-reader');
-        const dContainer = document.getElementById('scannerContainer');
-        const dStartBtn = document.getElementById('startScanBtn');
-        const dStopBtn = document.getElementById('stopScanBtn');
-        if (dContainer) dContainer.style.display = 'none';
-        if (dStartBtn) dStartBtn.style.display = 'block';
-        if (dStopBtn) dStopBtn.style.display = 'none';
-      }
-
-      // 2. Clean leftover scanner instance or orphan video tracks
-      if (State.scannerSettlement) {
-        State.scannerSettlement = await safeStopScanner(State.scannerSettlement, 'qr-reader-settlement');
-      } else {
-        forceStopContainerTracks('qr-reader-settlement');
-      }
-
-      if (State.availableCameras.length === 0) {
-        await initCameraSelectors();
-      }
-
-      if (container) container.style.display = 'block';
-      if (startBtn) startBtn.style.display = 'none';
-      if (stopBtn) {
-        stopBtn.style.display = 'block';
-        stopBtn.disabled = false;
-      }
-
-      // 3. Start scanner attempting candidate configs in order
-      const configsToTry = getCameraConfigsToTry(State.selectedCameraId);
-      const runConfig = getScannerRunConfig();
-      let scanner = createScannerInstance('qr-reader-settlement');
-      State.scannerSettlement = scanner;
-      let startedSuccessfully = false;
-      let lastErr = null;
-
-      for (let i = 0; i < configsToTry.length; i++) {
-        const config = configsToTry[i];
-        try {
-          await scanner.start(
-            config,
-            runConfig,
-            (decodedText) => handleScannedCodeSettlement(decodedText),
-            () => {}
-          );
-          startedSuccessfully = true;
-          break;
-        } catch (attemptErr) {
-          lastErr = attemptErr;
-          console.warn(`[Camera] Settlement start attempt ${i + 1} failed:`, config, attemptErr);
-          await safeStopScanner(scanner, 'qr-reader-settlement');
-          await new Promise(r => setTimeout(r, 200));
-          scanner = createScannerInstance('qr-reader-settlement');
-          State.scannerSettlement = scanner;
-        }
-      }
-
-      if (!startedSuccessfully) {
-        throw lastErr || new Error('Could not access requested camera');
-      }
-
-      ensureVideoInline(container);
-      startVideoFrameSampler('qr-reader-settlement', (decodedText) => handleScannedCodeSettlement(decodedText));
-
-      // Apply iOS 17 / modern mobile continuous autofocus if supported
-      setTimeout(() => {
-        try {
-          if (scanner && typeof scanner.applyVideoConstraints === 'function') {
-            scanner.applyVideoConstraints({
-              advanced: [{ focusMode: 'continuous' }]
-            }).catch(() => {});
-          }
-        } catch (e) {}
-      }, 800);
-
-      // Populate camera labels quietly in background without killing active stream
-      setTimeout(() => {
-        initCameraSelectors().catch(() => {});
-      }, 1000);
-    } catch (err) {
-      console.error('Settlement scanner error:', err);
-      stopFrameSampler();
-      resetCameraControls();
-      if (State.scannerSettlement) {
-        State.scannerSettlement = await safeStopScanner(State.scannerSettlement, 'qr-reader-settlement');
-      } else {
-        forceStopContainerTracks('qr-reader-settlement');
-      }
-      if (container) container.style.display = 'none';
-      if (startBtn) {
-        startBtn.style.display = 'block';
-        startBtn.disabled = false;
-        startBtn.innerHTML = '<i class="fa-solid fa-camera"></i> Start Camera Scanner';
-      }
-      if (stopBtn) stopBtn.style.display = 'none';
-
-      const errMsg = err?.message || String(err);
-      const errName = err?.name || '';
-      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
-      const isCriOS = isIOS && /CriOS/i.test(navigator.userAgent);
-
-      if (errName === 'NotFoundError' || errName === 'OverconstrainedError' || /no camera|requested device not found/i.test(errMsg)) {
-        showToast('No camera found on this device. Use a USB/Bluetooth scanner or the photo scan option.', 'danger', 6000);
-      } else if (errName === 'NotReadableError' || errName === 'AbortError' || /could not start video source|in use/i.test(errMsg)) {
-        showToast('Camera is busy or in use by another app. Close it and tap Start again.', 'danger', 6000);
-      } else if (errName === 'NotAllowedError' || errName === 'SecurityError' || errMsg.includes('NotAllowed') || errMsg.includes('Permission') || errMsg.includes('denied')) {
-        showCameraPermissionModal('SETTLEMENT');
-        if (isCriOS) {
-          showToast('iPhone Chrome camera blocked: Open iPhone Settings > Chrome > Turn ON Camera', 'danger', 7000);
-        }
-      } else if (!errMsg.includes('already under transition')) {
-        showToast('Camera error: ' + errMsg, 'danger', 4500);
-      }
-    } finally {
-      State.isCameraTransitioning = false;
-      if (startBtn) {
-        startBtn.disabled = false;
-        startBtn.innerHTML = '<i class="fa-solid fa-camera"></i> Start Camera Scanner';
-      }
-    }
-  }
-
-  async function stopSettlementScanner() {
-    stopFrameSampler();
-    await waitForCameraIdle();
-    resetCameraControls();
-
-    State.isCameraTransitioning = true;
-    const container = document.getElementById('settlementScannerContainer');
-    const startBtn = document.getElementById('startSettlementScanBtn');
-    const stopBtn = document.getElementById('stopSettlementScanBtn');
-
-    if (stopBtn) {
-      stopBtn.disabled = true;
-      stopBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Stopping...';
-    }
-
-    try {
-      if (State.scannerSettlement) {
-        State.scannerSettlement = await safeStopScanner(State.scannerSettlement, 'qr-reader-settlement');
-      } else {
-        forceStopContainerTracks('qr-reader-settlement');
-      }
-    } finally {
-      if (container) container.style.display = 'none';
-      if (startBtn) {
-        startBtn.style.display = 'block';
-        startBtn.disabled = false;
-        startBtn.innerHTML = '<i class="fa-solid fa-camera"></i> Start Camera Scanner';
-      }
-      if (stopBtn) {
-        stopBtn.style.display = 'none';
-        stopBtn.disabled = false;
-        stopBtn.innerHTML = '<i class="fa-solid fa-stop"></i> Stop Camera';
-      }
-      State.isCameraTransitioning = false;
-    }
-  }
-
-  /**
-   * Release the camera when the page is hidden/backgrounded (saves battery, frees the
-   * hardware for other apps, avoids frozen streams on iOS) and resume when it returns.
-   */
-  let _resumeCameraAfterHidden = null;
-  async function releaseCameraOnHide() {
-    if (State.scannerDispatch) {
-      _resumeCameraAfterHidden = 'DISPATCH';
-      await stopDispatchScanner();
-    } else if (State.scannerSettlement) {
-      _resumeCameraAfterHidden = 'SETTLEMENT';
-      await stopSettlementScanner();
-    }
-  }
-  async function resumeCameraOnShow() {
-    const which = _resumeCameraAfterHidden;
-    _resumeCameraAfterHidden = null;
-    if (which === 'DISPATCH' && State.activeTab === 'tab-dispatch') await startDispatchScanner();
-    else if (which === 'SETTLEMENT' && State.activeTab === 'tab-settlement') await startSettlementScanner();
-  }
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) releaseCameraOnHide().catch(() => {});
-    else resumeCameraOnShow().catch(() => {});
-  });
-  window.addEventListener('pagehide', () => { releaseCameraOnHide().catch(() => {}); });
-
-
-  /**
-   * Fast Photo Scan Fallback for iPhone (100% Reliable via Native Camera + jsQR + ZXing)
-   */
-  async function handlePhotoScan(file, onDecoded) {
-    if (!file) return;
-    showToast('Analyzing bill photo...', 'info', 1500);
-
-    // Stop active live camera if running to avoid container collision
-    if (State.scannerDispatch) {
-      await stopDispatchScanner();
-    }
-    if (State.scannerSettlement) {
-      await stopSettlementScanner();
-    }
-
-    try {
-      // 1. Load image and scale down on canvas to prevent iPhone 12MP-48MP memory freeze
-      const img = await new Promise((resolve, reject) => {
-        const image = new Image();
-        const url = URL.createObjectURL(file);
-        image.onload = () => {
-          URL.revokeObjectURL(url);
-          resolve(image);
-        };
-        image.onerror = (e) => {
-          URL.revokeObjectURL(url);
-          reject(e);
-        };
-        image.src = url;
-      });
-
-      const maxDim = 1280;
-      let w = img.naturalWidth || img.width;
-      let h = img.naturalHeight || img.height;
-      if (w > maxDim || h > maxDim) {
-        if (w > h) {
-          h = Math.round((h * maxDim) / w);
-          w = maxDim;
-        } else {
-          w = Math.round((w * maxDim) / h);
-          h = maxDim;
-        }
-      }
-
-      const canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      ctx.drawImage(img, 0, 0, w, h);
-
-      // 2. Fast Pass 1: jsQR on scaled image (decodes in ~15ms)
-      if (typeof jsQR !== 'undefined') {
-        const imgData = ctx.getImageData(0, 0, w, h);
-        let code = jsQR(imgData.data, w, h, { inversionAttempts: 'attemptBoth' });
-        if (code && code.data && code.data.trim()) {
-          SoundFX.playBeep('success');
-          onDecoded(code.data.trim());
-          return;
-        }
-      }
-
-      // 3. Fallback Pass 2: html5-qrcode scanFile on resized blob (supports barcodes like Code 128)
-      if (typeof Html5Qrcode !== 'undefined') {
-        const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.9));
-        if (blob) {
-          const tempScanner = createScannerInstance('qr-reader');
-          try {
-            const decodedText = await tempScanner.scanFile(blob, false);
-            if (decodedText && decodedText.trim()) {
-              SoundFX.playBeep('success');
-              onDecoded(decodedText.trim());
-              return;
-            }
-          } finally {
-            try { await tempScanner.clear(); } catch(e) {}
-          }
-        }
-      }
-
-      throw new Error('No QR code or barcode found in photo');
-    } catch (err) {
-      console.warn('Photo scan error:', err);
-      showToast('Could not read code. Make sure QR/barcode is clear and well-lit.', 'warning', 4000);
-    }
-  }
-
-
   // ========================================================
-  // 5. TAB 1: SCAN OUT (AFTERNOON HANDOVER)
+  // 5. TAB 1: SCAN OUT (MORNING DISPATCH)
   // ========================================================
 
   function handleScannedCodeDispatch(decodedText) {
     if (State.isConfirmModalOpen) return;
     try {
       const now = Date.now();
-      if (decodedText === State.lastScannedCode && now - State.lastScanTimestamp < 700) {
+      if (decodedText === State.lastScannedCode && now - State.lastScanTimestamp < 800) {
         return;
       }
       State.lastScannedCode = decodedText;
       State.lastScanTimestamp = now;
 
-      // Visual flash on viewfinder box
-      const container = document.getElementById('scannerContainer');
-      const scanBox = container ? container.querySelector('.scan-box') : null;
-      if (scanBox) {
-        scanBox.classList.add('scan-success-glow');
-        setTimeout(() => scanBox.classList.remove('scan-success-glow'), 400);
-      }
-
       let parsed = parseQRCodeData(decodedText);
       if (!parsed || !parsed.billNo) {
-        SoundFX.playBeep('error');
-        showToast('Unrecognized code: ' + (decodedText.slice(0, 30)), 'warning');
+        ScanFX.error('DISPATCH', 'Unrecognized code: ' + (decodedText.slice(0, 30)));
         return;
       }
 
       parsed = enrichWithMaster(parsed);
-      SoundFX.playBeep('success');
-      SoundFX.vibrate(50);
+      ScanFX.success('DISPATCH', decodedText, parsed);
       showBillScannedConfirmation(parsed, 'DISPATCH');
     } catch (err) {
       console.error('Dispatch scan handler error:', err);
-      showToast('Scan error: ' + (err.message || err), 'danger');
+      ScanFX.error('DISPATCH', 'Scan error: ' + (err.message || err));
     }
   }
 
@@ -1948,14 +1282,14 @@
     parsed = enrichWithMaster(parsed);
 
     if (!parsed || !parsed.billNo) {
-      SoundFX.playBeep('error');
-      showToast('Please enter a valid invoice number', 'warning');
+      ScanFX.error('DISPATCH', 'Please enter a valid invoice number');
       return;
     }
 
     input.value = '';
-    SoundFX.playBeep('success');
+    ScanFX.success('DISPATCH', val, parsed);
     showBillScannedConfirmation(parsed, 'DISPATCH');
+    focusActiveScannerInput();
   }
 
   function addBillToDispatchBasket(parsed) {
@@ -2171,6 +1505,7 @@
     renderDispatchBasket();
 
     SoundFX.playBeep('success');
+    ConfettiFX.celebrate();
     showToast(`Confirmed ${count} bills handed OUT!`, 'success', 3000);
   }
 
@@ -2335,22 +1670,22 @@
     if (State.isConfirmModalOpen) return;
     try {
       const now = Date.now();
-      if (decodedText === State.lastScannedCode && now - State.lastScanTimestamp < 700) return;
+      if (decodedText === State.lastScannedCode && now - State.lastScanTimestamp < 800) return;
       State.lastScannedCode = decodedText;
       State.lastScanTimestamp = now;
 
-      // Visual flash on viewfinder box
-      const container = document.getElementById('settlementScannerContainer');
-      const scanBox = container ? container.querySelector('.scan-box') : null;
-      if (scanBox) {
-        scanBox.classList.add('scan-success-glow');
-        setTimeout(() => scanBox.classList.remove('scan-success-glow'), 400);
+      let parsed = parseQRCodeData(decodedText);
+      if (parsed) {
+        parsed = enrichWithMaster(parsed);
+        ScanFX.success('SETTLEMENT', decodedText, parsed);
+      } else {
+        ScanFX.success('SETTLEMENT', decodedText, { billNo: decodedText, amount: 0 });
       }
 
       processCheckInCode(decodedText);
     } catch (err) {
       console.error('Settlement scan handler error:', err);
-      showToast('Scan error: ' + (err.message || err), 'danger');
+      ScanFX.error('SETTLEMENT', 'Scan error: ' + (err.message || err));
     }
   }
 
@@ -2361,7 +1696,7 @@
 
     processCheckInCode(val);
     input.value = '';
-    input.focus();
+    focusActiveScannerInput();
   }
 
   function processCheckInCode(rawInput) {
@@ -2815,6 +2150,7 @@
     State.pendingScanSource = null;
     State.isConfirmModalOpen = false;
     State.lastScanTimestamp = Date.now();
+    focusActiveScannerInput();
   }
 
 
@@ -2880,6 +2216,7 @@
   function closePaymentModal() {
     document.getElementById('paymentModal').style.display = 'none';
     State.currentPaymentBill = null;
+    focusActiveScannerInput();
   }
 
   function setQuickPaymentMode(mode) {
@@ -2949,6 +2286,7 @@
   function closeReturnModal() {
     document.getElementById('returnModal').style.display = 'none';
     State.currentReturnBill = null;
+    focusActiveScannerInput();
   }
 
   function saveReturnRecord(e) {
@@ -3016,6 +2354,7 @@
     }
 
     SoundFX.playBeep('success');
+    ConfettiFX.celebrate();
     showToast(`Settlement closed for ${agent}!`, 'success', 3500);
   }
 
@@ -3393,6 +2732,414 @@ _BillAudit Pro_`;
       }
       sendLeftOutWhatsApp(agentsWithLeftOut[0].name);
     }
+  }
+
+  // ========================================================
+  // 8B. AUDIT & PAYMENT RECONCILIATION ENGINE
+  // ========================================================
+
+  /**
+   * Synchronize active custody bills directly from Tracking Sheet (Live_Custody tab)
+   */
+  async function syncBillsFromTrackingSheet(showFeedback = false) {
+    const targetUrl = State.settings.trackingSheetScriptUrl;
+    if (!targetUrl) return;
+
+    try {
+      const resp = await fetch(`${targetUrl}?action=GET_CUSTODY&t=${Date.now()}`);
+      const data = await resp.json();
+
+      if (data && data.status === 'OK' && Array.isArray(data.bills)) {
+        const custodyBills = data.bills;
+        const existingMap = new Map();
+        State.bills.forEach((b, idx) => {
+          existingMap.set(normalizeInvoiceNumber(b.billNo), idx);
+        });
+
+        let updatedCount = 0;
+        let newCount = 0;
+
+        custodyBills.forEach(cb => {
+          if (!cb || !cb.billNo) return;
+          const norm = normalizeInvoiceNumber(cb.billNo);
+          const existingIdx = existingMap.get(norm);
+
+          const formattedBill = {
+            billNo: cb.billNo,
+            party: cb.party || 'Standard Customer',
+            amount: Number(cb.amount) || 0,
+            agent: cb.agent || 'Sales Agent',
+            dispatchDate: cb.dispatchDate ? String(cb.dispatchDate).slice(0, 10) : getTodayDateString(),
+            status: cb.status || 'WITH_AGENT',
+            collectedAmt: Number(cb.collectedAmt) || 0,
+            outstanding: cb.outstanding !== undefined ? Number(cb.outstanding) : (Number(cb.amount) || 0),
+            paymentMode: cb.paymentMode || '',
+            refNo: cb.refNo || '',
+            returnReason: cb.returnReason || '',
+            remarks: cb.remarks || '',
+            lastActionDate: cb.lastActionDate || new Date().toISOString(),
+            history: []
+          };
+
+          if (existingIdx !== undefined) {
+            const b = State.bills[existingIdx];
+            b.party = formattedBill.party;
+            b.amount = formattedBill.amount || b.amount;
+            b.agent = formattedBill.agent;
+            b.status = formattedBill.status;
+            b.collectedAmt = formattedBill.collectedAmt;
+            b.outstanding = formattedBill.outstanding;
+            b.paymentMode = formattedBill.paymentMode;
+            b.refNo = formattedBill.refNo;
+            b.remarks = formattedBill.remarks;
+            b.lastActionDate = formattedBill.lastActionDate;
+            updatedCount++;
+          } else {
+            State.bills.push(formattedBill);
+            existingMap.set(norm, State.bills.length - 1);
+            newCount++;
+          }
+        });
+
+        saveState('bills');
+        updateGlobalStats();
+        renderLeftOutTab();
+        updateHomeStats();
+
+        if (showFeedback) {
+          SoundFX.playBeep('success');
+          showToast(`Synced ${custodyBills.length} custody bills from Tracking Sheet!`, 'success');
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to sync custody bills from Tracking Sheet:', err);
+      if (showFeedback) {
+        showToast('Could not fetch tracking bills. Check connection.', 'warning');
+      }
+    }
+  }
+
+  let reconciliationData = {
+    all: [],
+    paid: [],
+    partial: [],
+    unpaid: [],
+    activeFilter: 'ALL',
+    activeAgent: 'ALL'
+  };
+
+  async function openPaymentReconciliationModal() {
+    const modal = document.getElementById('paymentReconcileModal');
+    if (!modal) return;
+    modal.style.display = 'flex';
+
+    const tbody = document.getElementById('reconcileTableBody');
+    if (tbody) {
+      tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; padding: 24px;"><i class="fa-solid fa-spinner fa-spin"></i> Cross-referencing payment records from Master Invoice Sheet...</td></tr>`;
+    }
+
+    await syncBillsFromTrackingSheet(false).catch(() => {});
+    analyzeAndRenderPaymentReconciliation();
+  }
+
+  function closePaymentReconciliationModal() {
+    const modal = document.getElementById('paymentReconcileModal');
+    if (modal) modal.style.display = 'none';
+  }
+
+  function analyzeAndRenderPaymentReconciliation() {
+    const bills = State.bills || [];
+    const paidList = [];
+    const partialList = [];
+    const unpaidList = [];
+    const allList = [];
+
+    let paidAmt = 0;
+    let partCollAmt = 0;
+    let partDueAmt = 0;
+    let unpaidDueAmt = 0;
+
+    const agentsSet = new Set();
+
+    bills.forEach(b => {
+      if (b.agent) agentsSet.add(b.agent);
+
+      const mm = findMasterBill(b.billNo) || {};
+      const amt = Number(b.amount) || Number(mm.amount) || 0;
+      const outstanding = (mm.outstanding !== undefined) ? Number(mm.outstanding) : (b.outstanding !== undefined ? Number(b.outstanding) : amt);
+      const receipt = mm.receipt || b.refNo || '';
+      const mode = mm.mode || b.paymentMode || 'Cash';
+      const sheetStatus = (mm.status || '').toUpperCase();
+
+      const isCurrentComplete = b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'RETURNED_IN_HAND';
+
+      let statusType = 'UNPAID';
+      let paidAmount = 0;
+      let remainingDue = amt;
+
+      if (sheetStatus === 'PAID' || (outstanding <= 0 && (amt > 0 || receipt))) {
+        statusType = 'PAID';
+        paidAmount = amt;
+        remainingDue = 0;
+      } else if (sheetStatus === 'PARTIAL' || (receipt && outstanding > 0) || (amt > outstanding && outstanding > 0)) {
+        statusType = 'PARTIAL';
+        paidAmount = Math.max(0, amt - outstanding);
+        remainingDue = outstanding;
+      } else if (isCurrentComplete) {
+        statusType = 'PAID';
+        paidAmount = Number(b.collectedAmt) || amt;
+        remainingDue = 0;
+      } else {
+        statusType = 'UNPAID';
+        paidAmount = 0;
+        remainingDue = amt;
+      }
+
+      const item = {
+        billNo: b.billNo,
+        agent: b.agent || mm.agent || 'Sales Agent',
+        party: b.party || mm.party || 'Standard Customer',
+        amount: amt,
+        sheetStatus: sheetStatus || (statusType === 'PAID' ? 'PAID' : (statusType === 'PARTIAL' ? 'PARTIAL' : 'PENDING')),
+        statusType: statusType,
+        paidAmount: paidAmount,
+        remainingDue: remainingDue,
+        receipt: receipt,
+        mode: mode,
+        currentCustodyStatus: b.status,
+        originalBill: b
+      };
+
+      allList.push(item);
+
+      if (statusType === 'PAID') {
+        paidList.push(item);
+        paidAmt += amt;
+      } else if (statusType === 'PARTIAL') {
+        partialList.push(item);
+        partCollAmt += paidAmount;
+        partDueAmt += remainingDue;
+      } else {
+        unpaidList.push(item);
+        unpaidDueAmt += remainingDue;
+      }
+    });
+
+    reconciliationData = {
+      all: allList,
+      paid: paidList,
+      partial: partialList,
+      unpaid: unpaidList,
+      activeFilter: reconciliationData.activeFilter || 'ALL',
+      activeAgent: reconciliationData.activeAgent || 'ALL'
+    };
+
+    const elPaidCnt = document.getElementById('recPaidCount');
+    const elPaidAmt = document.getElementById('recPaidAmt');
+    const elPartCnt = document.getElementById('recPartialCount');
+    const elPartAmt = document.getElementById('recPartialAmt');
+    const elUnpaidCnt = document.getElementById('recUnpaidCount');
+    const elUnpaidAmt = document.getElementById('recUnpaidAmt');
+    const elBtnPaidCount = document.getElementById('btnPaidCount');
+
+    if (elPaidCnt) elPaidCnt.textContent = `${paidList.length} bills`;
+    if (elPaidAmt) elPaidAmt.textContent = formatINR(paidAmt);
+    if (elPartCnt) elPartCnt.textContent = `${partialList.length} bills`;
+    if (elPartAmt) elPartAmt.textContent = `Coll: ${formatINR(partCollAmt)} | Due: ${formatINR(partDueAmt)}`;
+    if (elUnpaidCnt) elUnpaidCnt.textContent = `${unpaidList.length} bills`;
+    if (elUnpaidAmt) elUnpaidAmt.textContent = `Pending: ${formatINR(unpaidDueAmt)}`;
+    if (elBtnPaidCount) elBtnPaidCount.textContent = paidList.length;
+
+    const tabAll = document.getElementById('recTabAllCount');
+    const tabPaid = document.getElementById('recTabPaidCount');
+    const tabPart = document.getElementById('recTabPartCount');
+    const tabUnpaid = document.getElementById('recTabUnpaidCount');
+
+    if (tabAll) tabAll.textContent = allList.length;
+    if (tabPaid) tabPaid.textContent = paidList.length;
+    if (tabPart) tabPart.textContent = partialList.length;
+    if (tabUnpaid) tabUnpaid.textContent = unpaidList.length;
+
+    const agentSelect = document.getElementById('reconcileAgentSelect');
+    if (agentSelect) {
+      const curAgent = reconciliationData.activeAgent || 'ALL';
+      agentSelect.innerHTML = '<option value="ALL">All Agents</option>';
+      Array.from(agentsSet).sort().forEach(ag => {
+        const opt = document.createElement('option');
+        opt.value = ag;
+        opt.textContent = ag;
+        if (ag === curAgent) opt.selected = true;
+        agentSelect.appendChild(opt);
+      });
+    }
+
+    renderReconcileTable();
+  }
+
+  function renderReconcileTable() {
+    const tbody = document.getElementById('reconcileTableBody');
+    if (!tbody) return;
+
+    let items = reconciliationData.all;
+    if (reconciliationData.activeFilter === 'PAID') {
+      items = reconciliationData.paid;
+    } else if (reconciliationData.activeFilter === 'PARTIAL') {
+      items = reconciliationData.partial;
+    } else if (reconciliationData.activeFilter === 'UNPAID') {
+      items = reconciliationData.unpaid;
+    }
+
+    if (reconciliationData.activeAgent && reconciliationData.activeAgent !== 'ALL') {
+      items = items.filter(it => it.agent === reconciliationData.activeAgent);
+    }
+
+    if (items.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; padding: 24px; color: #64748b;">No bills found for the selected filter.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = '';
+    items.forEach(it => {
+      const tr = document.createElement('tr');
+
+      let statusBadge = '';
+      if (it.statusType === 'PAID') {
+        statusBadge = '<span class="status-tag-paid"><i class="fa-solid fa-circle-check"></i> FULLY PAID</span>';
+      } else if (it.statusType === 'PARTIAL') {
+        statusBadge = '<span class="status-tag-partial"><i class="fa-solid fa-circle-exclamation"></i> PARTIAL</span>';
+      } else {
+        statusBadge = '<span class="status-tag-unpaid"><i class="fa-solid fa-clock"></i> UNPAID</span>';
+      }
+
+      const isComplete = it.currentCustodyStatus === 'PAID_FULL' || it.currentCustodyStatus === 'RECEIVED';
+      const actionBtn = isComplete
+        ? `<span class="text-success font-bold" style="font-size:0.85rem;"><i class="fa-solid fa-check"></i> Complete</span>`
+        : `<button class="btn btn-success btn-xs" data-reconcile-bill="${it.billNo}">
+             <i class="fa-solid fa-check"></i> Complete Audit
+           </button>`;
+
+      tr.innerHTML = `
+        <td><strong class="font-mono">${it.billNo}</strong></td>
+        <td><strong>${it.agent}</strong></td>
+        <td>${it.party}</td>
+        <td class="font-mono font-bold">${formatINR(it.amount)}</td>
+        <td>${statusBadge}</td>
+        <td class="font-mono text-success">${formatINR(it.paidAmount)}</td>
+        <td class="font-mono ${it.remainingDue > 0 ? 'text-danger font-bold' : ''}">${formatINR(it.remainingDue)}</td>
+        <td>${it.receipt ? `<span class="badge-receipt"><i class="fa-solid fa-receipt"></i> ${it.receipt}</span>` : '-'}</td>
+        <td>${actionBtn}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    tbody.querySelectorAll('[data-reconcile-bill]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        completeSingleBillAudit(btn.dataset.reconcileBill);
+      });
+    });
+  }
+
+  function completeSingleBillAudit(billNo) {
+    const item = reconciliationData.all.find(it => it.billNo === billNo);
+    if (!item) return;
+
+    const b = item.originalBill;
+    const nowIST = new Date().toISOString();
+
+    b.status = item.statusType === 'PARTIAL' ? 'PAID_PARTIAL' : 'PAID_FULL';
+    b.collectedAmt = item.paidAmount || b.amount;
+    b.outstanding = item.remainingDue;
+    b.refNo = item.receipt || b.refNo || 'PAID IN FULL';
+    b.paymentMode = item.mode || 'Cash';
+    b.remarks = `Audit Complete: Payment verified in sheet (Receipt: ${b.refNo}, Paid: ${formatINR(b.collectedAmt)})`;
+    b.lastActionDate = nowIST;
+
+    b.history.push({
+      action: b.status,
+      amount: b.collectedAmt,
+      ref: b.refNo,
+      timestamp: nowIST
+    });
+
+    queueSyncAction('SETTLEMENT_PAYMENT', {
+      billNo: b.billNo,
+      agent: b.agent,
+      party: b.party,
+      totalAmount: b.amount,
+      status: b.status,
+      collectedAmt: b.collectedAmt,
+      remainingDue: b.outstanding,
+      paymentMode: b.paymentMode,
+      refNo: b.refNo,
+      remarks: b.remarks,
+      timestamp: nowIST
+    });
+
+    saveState('bills');
+    updateGlobalStats();
+    renderLeftOutTab();
+    updateHomeStats();
+    analyzeAndRenderPaymentReconciliation();
+
+    SoundFX.playBeep('success');
+    showToast(`Audit Completed for ${billNo}!`, 'success');
+  }
+
+  function completeAuditForAllPaidBills() {
+    const paidItems = reconciliationData.paid.filter(it => it.currentCustodyStatus !== 'PAID_FULL' && it.currentCustodyStatus !== 'RECEIVED');
+    if (paidItems.length === 0) {
+      showToast('All received bills are already marked complete in audit!', 'info');
+      return;
+    }
+
+    const nowIST = new Date().toISOString();
+    let completedCount = 0;
+    let totalAmt = 0;
+
+    paidItems.forEach(it => {
+      const b = it.originalBill;
+      b.status = 'PAID_FULL';
+      b.collectedAmt = it.paidAmount || b.amount;
+      b.outstanding = 0;
+      b.refNo = it.receipt || b.refNo || 'PAID IN FULL';
+      b.paymentMode = it.mode || 'Settled in Full';
+      b.remarks = `Audit Complete: Fully paid in sheet (Receipt: ${b.refNo})`;
+      b.lastActionDate = nowIST;
+
+      b.history.push({
+        action: 'PAID_FULL',
+        amount: b.collectedAmt,
+        ref: b.refNo,
+        timestamp: nowIST
+      });
+
+      queueSyncAction('SETTLEMENT_PAYMENT', {
+        billNo: b.billNo,
+        agent: b.agent,
+        party: b.party,
+        totalAmount: b.amount,
+        status: 'PAID_FULL',
+        collectedAmt: b.collectedAmt,
+        remainingDue: 0,
+        paymentMode: b.paymentMode,
+        refNo: b.refNo,
+        remarks: b.remarks,
+        timestamp: nowIST
+      });
+
+      completedCount++;
+      totalAmt += (Number(b.collectedAmt) || Number(b.amount) || 0);
+    });
+
+    saveState('bills');
+    updateGlobalStats();
+    renderLeftOutTab();
+    updateHomeStats();
+    analyzeAndRenderPaymentReconciliation();
+
+    SoundFX.playBeep('success');
+    ConfettiFX.celebrate();
+    showToast(`🎉 Made ${completedCount} bills complete from audit (${formatINR(totalAmt)})!`, 'success', 4000);
   }
 
 
@@ -4290,7 +4037,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
   }
 
   async function switchTab(tabId) {
-    if (State.activeTab === tabId && !State.isCameraTransitioning) return;
+    if (State.activeTab === tabId) return;
     State.activeTab = tabId;
 
     if (State.isConfirmModalOpen) {
@@ -4304,20 +4051,14 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       view.classList.toggle('active', view.id === tabId);
     });
 
-    if (tabId !== 'tab-dispatch' && State.scannerDispatch) {
-      await stopDispatchScanner();
-    }
-    if (tabId !== 'tab-settlement' && State.scannerSettlement) {
-      await stopSettlementScanner();
-    }
-
     if (tabId === 'tab-home') {
       updateHomeStats();
     } else if (tabId === 'tab-dispatch') {
-      await startDispatchScanner();
+      renderDispatchBasket();
+      focusActiveScannerInput();
     } else if (tabId === 'tab-settlement') {
       loadSettlementForSelectedAgent();
-      await startSettlementScanner();
+      focusActiveScannerInput();
     } else if (tabId === 'tab-ledger') {
       renderMasterLedger();
     } else if (tabId === 'tab-leftout') {
@@ -4332,15 +4073,61 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     const today = getTodayDateString();
     const todayBills = State.bills.filter(b => b.dispatchDate === today);
     const outCount = todayBills.length;
-    const inCount = todayBills.filter(b => b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND').length;
-    const diffCount = todayBills.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT').length;
+    const inBills = todayBills.filter(b => b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND');
+    const inCount = inBills.length;
+    const diffBills = todayBills.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT');
+    const diffCount = diffBills.length;
+
+    const outAmt = todayBills.reduce((s, b) => s + (Number(b.amount) || 0), 0);
+    const inAmt = inBills.reduce((s, b) => s + (Number(b.collectedAmt !== undefined ? b.collectedAmt : b.amount) || 0), 0);
+    const diffAmt = diffBills.reduce((s, b) => s + (Number(b.outstanding !== undefined ? b.outstanding : b.amount) || 0), 0);
 
     const elOut = document.getElementById('homeStatOut');
     const elIn = document.getElementById('homeStatIn');
     const elLeft = document.getElementById('homeStatLeft');
-    if (elOut) elOut.textContent = outCount;
-    if (elIn) elIn.textContent = inCount;
-    if (elLeft) elLeft.textContent = diffCount;
+    if (elOut) animateNumber(elOut, outCount);
+    if (elIn) animateNumber(elIn, inCount);
+    if (elLeft) animateNumber(elLeft, diffCount);
+
+    const elOutAmt = document.getElementById('homeStatOutAmt');
+    const elInAmt = document.getElementById('homeStatInAmt');
+    const elLeftAmt = document.getElementById('homeStatLeftAmt');
+    if (elOutAmt) elOutAmt.textContent = `${formatINR(outAmt)} in transit`;
+    if (elInAmt) elInAmt.textContent = `${formatINR(inAmt)} accounted`;
+    if (elLeftAmt) elLeftAmt.textContent = `${formatINR(diffAmt)} still pending`;
+
+    const sideBadge = document.getElementById('sidebarDiffBadge');
+    if (sideBadge) {
+      sideBadge.textContent = diffCount;
+      sideBadge.style.display = diffCount > 0 ? 'inline-flex' : 'none';
+    }
+
+    // Format today's date badge
+    const dateBadge = document.getElementById('homeDateBadge');
+    if (dateBadge) {
+      const now = new Date();
+      dateBadge.textContent = now.toLocaleDateString('en-IN', {
+        weekday: 'short',
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric'
+      });
+    }
+
+    // High-contrast alert card styling if difference > 0
+    const diffCard = document.getElementById('homeDiffCardPro');
+    const diffFooter = document.getElementById('homeDiffFooter');
+    if (diffCard) {
+      if (diffCount > 0) {
+        diffCard.classList.add('has-alert');
+        if (diffFooter) diffFooter.innerHTML = `<span class="text-danger font-bold">⚠️ ${diffCount} bills unreturned</span> — Click to Audit`;
+      } else {
+        diffCard.classList.remove('has-alert');
+        if (diffFooter) diffFooter.innerHTML = `<span class="text-success font-bold">✓ Zero differences</span> — All accounted`;
+      }
+    }
+
+    renderHomeCharts(outCount, inCount, diffCount, outAmt, inAmt, diffAmt);
 
     // Render Home Agent Difference Cards
     const diffGrid = document.getElementById('homeAgentDiffGrid');
@@ -4352,13 +4139,13 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
         card.className = 'agent-diff-card';
         card.innerHTML = `
           <div class="agent-diff-header">
-            <span><i class="fa-solid fa-user"></i> ${agent.name}</span>
+            <span><i class="fa-solid fa-user-tie"></i> ${agent.name}</span>
             <span class="count-pill ${stats.leftOutCount > 0 ? 'bg-danger text-white' : ''}" style="font-size:0.75rem;">
               ${stats.leftOutCount} Pending
             </span>
           </div>
           <div class="agent-diff-metric">
-            <span class="agent-diff-val ${stats.leftOutCount > 0 ? 'has-diff' : ''}">
+            <span class="agent-diff-val ${stats.leftOutCount > 0 ? 'has-diff text-danger' : 'text-success'}">
               ${formatINR(stats.leftOutAmt)}
             </span>
             <span class="agent-diff-sub">Dispatched: ${stats.totalCount} | Received: ${stats.checkedInCount}</span>
@@ -4575,7 +4362,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     await proceedToScanTab(true);
   }
 
-  async function proceedToScanTab(autoStartCamera = true) {
+  async function proceedToScanTab() {
     const modal = document.getElementById('agentPickerModal');
     if (modal) modal.style.display = 'none';
     resetPickerSteps();
@@ -4603,26 +4390,10 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       }
 
       await switchTab('tab-dispatch');
-
-      // Auto-start camera scanner immediately
-      if (autoStartCamera && !pendingScan) {
-        setTimeout(async () => {
-          try {
-            await startDispatchScanner();
-          } catch (err) {
-            console.warn('[Camera] Auto-start dispatch scanner error:', err);
-          }
-        }, 150);
-      }
-
-      // Auto-focus manual invoice entry input
-      setTimeout(() => {
-        const input = document.getElementById('dispatchInvoiceInput');
-        if (input) input.focus();
-      }, 350);
+      focusActiveScannerInput();
 
       if (pendingScan) {
-        setTimeout(() => handleScannedCodeDispatch(pendingScan), 350);
+        setTimeout(() => handleScannedCodeDispatch(pendingScan), 200);
       }
     } else {
       State.activeSettlementAgent = agentName;
@@ -4642,26 +4413,10 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       }
 
       await switchTab('tab-settlement');
-
-      // Auto-start camera scanner immediately
-      if (autoStartCamera && !pendingScan) {
-        setTimeout(async () => {
-          try {
-            await startSettlementScanner();
-          } catch (err) {
-            console.warn('[Camera] Auto-start settlement scanner error:', err);
-          }
-        }, 150);
-      }
-
-      // Auto-focus manual invoice entry input
-      setTimeout(() => {
-        const input = document.getElementById('settlementInvoiceInput');
-        if (input) input.focus();
-      }, 350);
+      focusActiveScannerInput();
 
       if (pendingScan) {
-        setTimeout(() => handleScannedCodeSettlement(pendingScan), 350);
+        setTimeout(() => handleScannedCodeSettlement(pendingScan), 200);
       }
     }
   }
@@ -4722,6 +4477,11 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     document.getElementById('homeDispatchCard')?.addEventListener('click', () => openAgentPicker('DISPATCH'));
     document.getElementById('homeSettlementCard')?.addEventListener('click', () => openAgentPicker('SETTLEMENT'));
 
+    // HOME TAB: metric cards shortcut directly to detailed views
+    document.getElementById('homeDiffCardPro')?.addEventListener('click', () => switchTab('tab-leftout'));
+    document.getElementById('homeOutCardPro')?.addEventListener('click', () => switchTab('tab-history'));
+    document.getElementById('homeInCardPro')?.addEventListener('click', () => switchTab('tab-history'));
+
     // AGENT & BEAT / WEEK PICKER MODAL
     document.querySelectorAll('.agent-pick-btn, .agent-select-card').forEach(btn => {
       btn.addEventListener('click', () => openBeatPickerForAgent(btn.dataset.agent));
@@ -4776,36 +4536,24 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       switchTab('tab-settings');
     });
 
-    // Camera Selector Dropdown Change
-    document.getElementById('cameraSourceSelect')?.addEventListener('change', (e) => {
-      switchSelectedCamera(e.target.value);
-    });
+    // Global Keyboard Navigation (1-6 for Tabs)
+    window.addEventListener('keydown', (e) => {
+      const activeTag = document.activeElement ? document.activeElement.tagName : '';
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(activeTag)) return;
+      if (State.isConfirmModalOpen) return;
 
-    // Flip Camera Buttons
-    document.getElementById('flipCameraBtn')?.addEventListener('click', flipCamera);
-    document.getElementById('flipSettlementCameraBtn')?.addEventListener('click', flipCamera);
+      const tabMap = {
+        '1': 'tab-home',
+        '2': 'tab-dispatch',
+        '3': 'tab-settlement',
+        '4': 'tab-leftout',
+        '5': 'tab-ledger',
+        '6': 'tab-settings'
+      };
 
-    // ================== TAB 1: SCAN OUT ==================
-    document.getElementById('startScanBtn')?.addEventListener('click', startDispatchScanner);
-    document.getElementById('stopScanBtn')?.addEventListener('click', stopDispatchScanner);
-
-    // Viewfinder Zoom & Torch Controls (OUT)
-    document.getElementById('dispatchZoom1xBtn')?.addEventListener('click', () => applyScannerZoom(State.scannerDispatch, 1, 'DISPATCH'));
-    document.getElementById('dispatchZoom2xBtn')?.addEventListener('click', () => applyScannerZoom(State.scannerDispatch, 2, 'DISPATCH'));
-    document.getElementById('dispatchTorchBtn')?.addEventListener('click', () => toggleScannerTorch(State.scannerDispatch, 'DISPATCH'));
-
-    // Viewfinder Zoom & Torch Controls (IN)
-    document.getElementById('settlementZoom1xBtn')?.addEventListener('click', () => applyScannerZoom(State.scannerSettlement, 1, 'SETTLEMENT'));
-    document.getElementById('settlementZoom2xBtn')?.addEventListener('click', () => applyScannerZoom(State.scannerSettlement, 2, 'SETTLEMENT'));
-    document.getElementById('settlementTorchBtn')?.addEventListener('click', () => toggleScannerTorch(State.scannerSettlement, 'SETTLEMENT'));
-
-    // Snap Photo / Native Camera fallback (OUT)
-    const dispatchFileInput = document.getElementById('dispatchFileInput');
-    dispatchFileInput?.addEventListener('change', (e) => {
-      const file = e.target.files?.[0];
-      if (file) {
-        handlePhotoScan(file, (decodedText) => handleScannedCodeDispatch(decodedText));
-        e.target.value = '';
+      if (tabMap[e.key]) {
+        e.preventDefault();
+        switchTab(tabMap[e.key]);
       }
     });
 
@@ -4860,36 +4608,7 @@ _BillAudit Pro_`;
       modePay.classList.remove('active');
     });
 
-    document.getElementById('startSettlementScanBtn')?.addEventListener('click', startSettlementScanner);
-    document.getElementById('stopSettlementScanBtn')?.addEventListener('click', stopSettlementScanner);
 
-    // Snap Photo / Native Camera fallback (IN)
-    const settlementFileInput = document.getElementById('settlementFileInput');
-    settlementFileInput?.addEventListener('change', (e) => {
-      const file = e.target.files?.[0];
-      if (file) {
-        handlePhotoScan(file, (decodedText) => handleScannedCodeSettlement(decodedText));
-        e.target.value = '';
-      }
-    });
-
-    // Camera Permission Modal Listeners
-    document.getElementById('closeCameraPermissionModalBtn')?.addEventListener('click', () => {
-      document.getElementById('cameraPermissionModal').style.display = 'none';
-    });
-    document.getElementById('retryCameraBtn')?.addEventListener('click', async () => {
-      document.getElementById('cameraPermissionModal').style.display = 'none';
-      if (State.pendingCameraSource === 'DISPATCH') {
-        await startDispatchScanner();
-      } else {
-        await startSettlementScanner();
-      }
-    });
-    document.getElementById('permModalSnapPhotoBtn')?.addEventListener('click', () => {
-      document.getElementById('cameraPermissionModal').style.display = 'none';
-      const targetInput = State.pendingCameraSource === 'DISPATCH' ? dispatchFileInput : settlementFileInput;
-      if (targetInput) targetInput.click();
-    });
 
     // Dedicated Fast Manual Invoice Entry (IN)
     document.getElementById('settlementManualSubmitBtn')?.addEventListener('click', handleManualInvoiceSettlement);
@@ -5132,6 +4851,30 @@ _BillAudit Pro_`;
     document.getElementById('closeQrPreviewModalBtn')?.addEventListener('click', () => document.getElementById('qrPreviewModal').style.display = 'none');
     document.getElementById('closeQrPreviewBottomBtn')?.addEventListener('click', () => document.getElementById('qrPreviewModal').style.display = 'none');
     document.getElementById('printTestQrBtn')?.addEventListener('click', () => window.print());
+
+    // Audit & Payment Reconciliation Modal Controls
+    document.getElementById('btnOpenReconcileModal')?.addEventListener('click', openPaymentReconciliationModal);
+    document.getElementById('btnSettlementReconcile')?.addEventListener('click', openPaymentReconciliationModal);
+    document.getElementById('closeReconcileModalBtn')?.addEventListener('click', closePaymentReconciliationModal);
+    document.getElementById('btnCloseReconcileModal')?.addEventListener('click', closePaymentReconciliationModal);
+    document.getElementById('btnRefreshReconcile')?.addEventListener('click', () => {
+      syncBillsFromTrackingSheet(true).then(() => analyzeAndRenderPaymentReconciliation());
+    });
+    document.getElementById('btnApplyAllReconcile')?.addEventListener('click', completeAuditForAllPaidBills);
+
+    document.querySelectorAll('#reconcileFilterTabs [data-rec-filter]').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('#reconcileFilterTabs [data-rec-filter]').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        reconciliationData.activeFilter = tab.dataset.recFilter;
+        renderReconcileTable();
+      });
+    });
+
+    document.getElementById('reconcileAgentSelect')?.addEventListener('change', (e) => {
+      reconciliationData.activeAgent = e.target.value;
+      renderReconcileTable();
+    });
   }
 
   // Application Startup
@@ -5171,15 +4914,17 @@ _BillAudit Pro_`;
     // Update home tab stats on load
     updateHomeStats();
 
-    // Pre-warm camera selector in background (doesn't start camera, just enumerates devices)
-    setTimeout(() => {
-      initCameraSelectors().catch(() => {});
-    }, 500);
+    initSystemClock();
+    ConfettiFX.init();
+    focusActiveScannerInput();
 
-    // Auto-sync Google Sheet directly in background on website load / refresh
+    // Auto-sync Google Sheet & Tracking Sheet directly in background on website load / refresh
     setTimeout(() => {
       syncSheetDirect(false).catch(err => {
         console.warn('Background auto-sync warning:', err);
+      });
+      syncBillsFromTrackingSheet(false).catch(err => {
+        console.warn('Background tracking custody sync warning:', err);
       });
     }, 300);
   });

@@ -780,161 +780,118 @@ assert.strictEqual(lookupR3.billNo, 'IN-FY26/27-3965');
 console.log(`  3 Lookups across 15,000 bills executed in ${lookupDurationMs.toFixed(4)}ms!`);
 console.log('✅ Test 20 Passed! Approach C O(1) Hash Map Indexing verified 100%!\n');
 
-// Test 21: Camera Lifecycle Transition Guard & State Safety
-console.log('Test 21: Camera Lifecycle Transition Guard & State Safety');
+// Test 21: Handheld 2D Barcode/QR Scanner Keystroke Burst Detection & Wedge Buffer
+(async () => {
+console.log('Test 21: Handheld 2D Barcode/QR Scanner Keystroke Burst Detection & Wedge Buffer');
 
-// Mock Html5Qrcode instance state machine
-class MockHtml5Qrcode {
-  constructor(elementId) {
-    this.elementId = elementId;
-    this.state = 1; // 1: NOT_STARTED, 2: SCANNING, 3: PAUSED
-    this.transitionInProgress = false;
+class MockHardwareScanner {
+  constructor(thresholdMs = 65) {
+    this.buffer = '';
+    this.lastKeyTime = 0;
+    this.thresholdMs = thresholdMs;
+    this.isScanningBurst = false;
+    this.processedCodes = [];
   }
 
-  async start() {
-    if (this.transitionInProgress) {
-      throw new Error('Cannot transition to a new state, already under transition');
+  handleKeyDown(key, timestamp) {
+    const diff = timestamp - this.lastKeyTime;
+    this.lastKeyTime = timestamp;
+
+    if (['Shift', 'Control', 'Alt', 'Meta'].includes(key)) return;
+
+    if (key === 'Enter') {
+      if (this.buffer.length >= 2 && this.isScanningBurst) {
+        const code = this.buffer.trim();
+        this.buffer = '';
+        this.isScanningBurst = false;
+        this.processedCodes.push(code);
+        return code;
+      }
+      this.buffer = '';
+      this.isScanningBurst = false;
+      return null;
     }
-    this.transitionInProgress = true;
-    await new Promise(r => setTimeout(r, 10));
-    this.state = 2; // SCANNING
-    this.transitionInProgress = false;
-  }
 
-  async stop() {
-    if (this.transitionInProgress) {
-      throw new Error('Cannot transition to a new state, already under transition');
+    if (key.length === 1) {
+      if (diff <= this.thresholdMs) {
+        this.isScanningBurst = true;
+        this.buffer += key;
+      } else {
+        this.buffer = key;
+        this.isScanningBurst = false;
+      }
     }
-    if (this.state !== 2 && this.state !== 3) {
-      throw new Error('Cannot stop scanner when not running');
-    }
-    this.transitionInProgress = true;
-    await new Promise(r => setTimeout(r, 10));
-    this.state = 1; // NOT_STARTED
-    this.transitionInProgress = false;
-  }
-
-  getState() {
-    return this.state;
-  }
-
-  async clear() {
-    this.state = 1;
+    return null;
   }
 }
 
-// Verification 1: Safe stop helper never throws on NOT_STARTED scanner
-(async () => {
-  const mockScanner = new MockHtml5Qrcode('test-reader');
-  assert.strictEqual(mockScanner.getState(), 1); // NOT_STARTED
+// Verification 1: Rapid hardware burst (<20ms per character) simulates USB 2D scanner gun
+const scanner1 = new MockHardwareScanner(65);
+let t = 1000;
+const testBarcode = 'IN-FY26/27-3921';
+for (const char of testBarcode) {
+  t += 15; // 15ms per character (rapid hardware scanner wedge)
+  scanner1.handleKeyDown(char, t);
+}
+t += 15;
+const result1 = scanner1.handleKeyDown('Enter', t);
 
-  // Safe stop pattern: check state before stop
-  let stopped = false;
-  if (mockScanner.getState() === 2 || mockScanner.getState() === 3) {
-    await mockScanner.stop();
-    stopped = true;
+assert.strictEqual(result1, 'IN-FY26/27-3921', 'Hardware scanner burst must be correctly assembled and dispatched on Enter');
+assert.strictEqual(scanner1.processedCodes.length, 1);
+assert.strictEqual(scanner1.buffer, '', 'Buffer must be clean after Enter');
+
+// Verification 2: Slow human typing (>150ms per character) does NOT trigger burst scanner
+const scanner2 = new MockHardwareScanner(65);
+t = 2000;
+for (const char of '3921') {
+  t += 200; // 200ms per character (human typing)
+  scanner2.handleKeyDown(char, t);
+}
+t += 200;
+const result2 = scanner2.handleKeyDown('Enter', t);
+assert.strictEqual(result2, null, 'Slow manual typing must not be intercepted by scanner burst listener (allows manual submit)');
+
+console.log('✅ Test 21 Passed! Handheld 2D Barcode/QR Scanner Keystroke Burst Detection & Buffer verified 100%!\n');
+
+// Test 22: Rapid Scan Debounce & Duplicate Guard
+console.log('Test 22: Rapid Scan Debounce & Duplicate Guard');
+
+class MockScanDebouncer {
+  constructor(debounceWindowMs = 700) {
+    this.debounceWindowMs = debounceWindowMs;
+    this.lastScannedCode = null;
+    this.lastScanTimestamp = 0;
   }
-  assert.strictEqual(stopped, false, 'Should not attempt stop on unstarted scanner');
 
-  // Verification 2: Normal start, then safe stop
-  await mockScanner.start();
-  assert.strictEqual(mockScanner.getState(), 2); // SCANNING
-  if (mockScanner.getState() === 2 || mockScanner.getState() === 3) {
-    await mockScanner.stop();
-  }
-  assert.strictEqual(mockScanner.getState(), 1); // NOT_STARTED
-
-  // Verification 3: Concurrency transition mutex prevents double-start collision
-  let isTransitioning = false;
-  let rejectedCalls = 0;
-
-  async function guardedStart(scanner) {
-    if (isTransitioning) {
-      rejectedCalls++;
-      return;
+  processCode(code, timestamp) {
+    if (code === this.lastScannedCode && (timestamp - this.lastScanTimestamp) < this.debounceWindowMs) {
+      return { accepted: false, reason: 'DUPLICATE_DEBOUNCE' };
     }
-    isTransitioning = true;
-    try {
-      await scanner.start();
-    } finally {
-      isTransitioning = false;
-    }
+    this.lastScannedCode = code;
+    this.lastScanTimestamp = timestamp;
+    return { accepted: true, code };
   }
+}
 
-  const s2 = new MockHtml5Qrcode('test-reader-2');
-  await Promise.all([
-    guardedStart(s2),
-    guardedStart(s2) // Concurrent call must be safely rejected
-  ]);
+const debouncer = new MockScanDebouncer(700);
 
-  assert.strictEqual(rejectedCalls, 1, 'Second concurrent call must be caught by transition mutex');
-  assert.strictEqual(s2.getState(), 2, 'Scanner must be successfully SCANNING');
-  await s2.stop();
+// Scan 1 at t = 1000
+const s1 = debouncer.processCode('IN-3921', 1000);
+assert.strictEqual(s1.accepted, true, 'First scan of IN-3921 must be accepted');
 
-  console.log('✅ Test 21 Passed! Camera lifecycle transition guard & state safety verified 100%!\n');
+// Scan 2 of SAME bill at t = 1300 (300ms later - accidental double-trigger)
+const s2 = debouncer.processCode('IN-3921', 1300);
+assert.strictEqual(s2.accepted, false, 'Rapid duplicate of same bill within 700ms must be safely debounced');
 
-  // Test 22: Camera Switching & Lens Selection Verification
-  console.log('Test 22: Camera Switching & Lens Selection Verification');
+// Scan 3 of DIFFERENT bill at t = 1400 (400ms later - rapid batch scanning of next bill)
+const s3 = debouncer.processCode('IN-3922', 1400);
+assert.strictEqual(s3.accepted, true, 'Distinct bill IN-3922 must be accepted immediately without delay');
 
-  function getCameraConfigsToTry(camId) {
-    const list = [];
-    if (camId === 'user') {
-      list.push({ facingMode: 'user' });
-      list.push({});
-    } else if (!camId || camId === 'environment') {
-      list.push({ facingMode: 'environment' });
-      list.push({});
-    } else {
-      list.push(camId);
-      list.push({ deviceId: camId });
-      list.push({ facingMode: 'environment' });
-      list.push({});
-    }
-    return list;
-  }
+// Scan 4 of original bill after debounce window expired at t = 2200 (1200ms later)
+const s4 = debouncer.processCode('IN-3921', 2200);
+assert.strictEqual(s4.accepted, true, 'Rescan of IN-3921 after debounce window must be allowed');
 
-  // 1. Back Camera configuration verification (Standard non-exact to avoid OverconstrainedError)
-  const backConfigs = getCameraConfigsToTry('environment');
-  assert.strictEqual(backConfigs.length, 2);
-  assert.deepStrictEqual(backConfigs[0], { facingMode: 'environment' }, 'Primary back config must be standard environment');
-  assert.deepStrictEqual(backConfigs[1], {}, 'Fallback back config must allow any camera');
-
-  // 2. Front Camera configuration verification
-  const frontConfigs = getCameraConfigsToTry('user');
-  assert.strictEqual(frontConfigs.length, 2);
-  assert.deepStrictEqual(frontConfigs[0], { facingMode: 'user' });
-  assert.deepStrictEqual(frontConfigs[1], {});
-
-  // 3. Specific lens device ID with back fallback
-  const lensConfigs = getCameraConfigsToTry('camera-hex-id-1234');
-  assert.strictEqual(lensConfigs.length, 4);
-  assert.strictEqual(lensConfigs[0], 'camera-hex-id-1234');
-  assert.deepStrictEqual(lensConfigs[1], { deviceId: 'camera-hex-id-1234' });
-  assert.deepStrictEqual(lensConfigs[2], { facingMode: 'environment' });
-  assert.deepStrictEqual(lensConfigs[3], {});
-
-  // 4. Flip camera toggling verification (never gets trapped in front camera)
-  let testSelectedCamera = 'environment';
-  function testFlip(currentCam, availableCams = []) {
-    const isFront = currentCam === 'user' ||
-      (availableCams.find(c => c.id === currentCam)?.label || '').toLowerCase().includes('front');
-    return isFront ? 'environment' : 'user';
-  }
-
-  // Back -> Flip -> Front
-  testSelectedCamera = testFlip(testSelectedCamera);
-  assert.strictEqual(testSelectedCamera, 'user', 'Flipping from back camera must yield user');
-
-  // Front -> Flip -> Back
-  testSelectedCamera = testFlip(testSelectedCamera);
-  assert.strictEqual(testSelectedCamera, 'environment', 'Flipping from front camera must yield environment');
-
-  // Labeled front camera device ID -> Flip -> Back
-  const mockCams = [{ id: 'dev-0', label: 'FaceTime HD Front Camera' }, { id: 'dev-1', label: 'Back Camera 1' }];
-  const flipFromDev0 = testFlip('dev-0', mockCams);
-  assert.strictEqual(flipFromDev0, 'environment', 'Flipping from labeled front camera device ID must yield environment');
-
-  console.log('✅ Test 22 Passed! Camera switching & lens selection verified 100%!\n');
+console.log('✅ Test 22 Passed! Rapid Scan Debounce & Duplicate Guard verified 100%!\n');
 
   // Test 23: Direct Google Sheet BigTable Query, Auto-Sync & Column Extraction
   console.log('Test 23: Direct Google Sheet BigTable Query, Auto-Sync & Column Extraction');
@@ -1804,7 +1761,140 @@ google.visualization.Query.setResponse({
 
   console.log('✅ Test 32 Passed! Official Weekly Route Schedule & Agent->Beat->Scan Workflow verified 100%!\n');
 
-  console.log('🎉 ALL 32 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+  // ========================================================
+  // TEST 33: Payment Details Fetch & Audit Completion Engine
+  // ========================================================
+  console.log('Test 33: Payment Details Fetch & Audit Completion Engine');
+
+  const sampleCustodyBills = [
+    {
+      billNo: 'IN-FY26/27-4356',
+      party: 'Rahul Genral Store - 12572438',
+      amount: 3036,
+      agent: 'Rajesh Chaurasiya(OM MARKETING)',
+      status: 'WITH_AGENT',
+      collectedAmt: 0,
+      outstanding: 3036
+    },
+    {
+      billNo: 'IN-FY26/27-4359',
+      party: 'anmol kirana - 187238957',
+      amount: 1770,
+      agent: 'Rajesh Chaurasiya(OM MARKETING)',
+      status: 'WITH_AGENT',
+      collectedAmt: 0,
+      outstanding: 1770
+    },
+    {
+      billNo: 'IN-FY26/27-4355',
+      party: 'Santosh pan - 187683805',
+      amount: 1735,
+      agent: 'Rajesh Chaurasiya(OM MARKETING)',
+      status: 'WITH_AGENT',
+      collectedAmt: 0,
+      outstanding: 1735
+    }
+  ];
+
+  const sampleMasterInvoiceRecords = {
+    'IN-FY26/27-4356': {
+      status: 'PAID',
+      paidUp: 3000,
+      outstanding: 0,
+      receipt: 'R4597',
+      mode: '24-Sep-2026 CASH ₹3,000 + DISCOUNT ₹36'
+    },
+    'IN-FY26/27-4359': {
+      status: 'PARTIAL',
+      paidUp: 1000,
+      outstanding: 770,
+      receipt: 'R4579 + R3861',
+      mode: '17-Sep-2026 CASH ₹500 + 01-Oct-2026 CASH ₹500'
+    },
+    'IN-FY26/27-4355': {
+      status: '',
+      paidUp: 0,
+      outstanding: 1735,
+      receipt: '',
+      mode: ''
+    }
+  };
+
+  function simulateAuditReconciliation(custodyList, masterRecords) {
+    const reconciled = [];
+    custodyList.forEach(b => {
+      const mr = masterRecords[b.billNo] || {};
+      const amt = b.amount;
+      const outstanding = mr.outstanding !== undefined ? mr.outstanding : amt;
+      const receipt = mr.receipt || '';
+      const mode = mr.mode || 'Cash';
+      const status = (mr.status || '').toUpperCase();
+
+      if (status === 'PAID' || (outstanding === 0 && (amt > 0 || receipt))) {
+        reconciled.push({
+          ...b,
+          status: 'PAID_FULL',
+          collectedAmt: mr.paidUp || amt,
+          outstanding: 0,
+          refNo: receipt,
+          paymentMode: mode,
+          remarks: `Audit Complete: Fully paid in sheet (Receipt: ${receipt})`,
+          isComplete: true
+        });
+      } else if (status === 'PARTIAL' || (receipt && outstanding > 0)) {
+        reconciled.push({
+          ...b,
+          status: 'PAID_PARTIAL',
+          collectedAmt: mr.paidUp || (amt - outstanding),
+          outstanding: outstanding,
+          refNo: receipt,
+          paymentMode: mode,
+          remarks: `Audit Updated: Partial payment (Receipt: ${receipt}, Due: ₹${outstanding})`,
+          isComplete: false
+        });
+      } else {
+        reconciled.push({
+          ...b,
+          status: 'WITH_AGENT',
+          collectedAmt: 0,
+          outstanding: amt,
+          remarks: 'Pending payment / uncollected from party',
+          isComplete: false
+        });
+      }
+    });
+    return reconciled;
+  }
+
+  const recResult = simulateAuditReconciliation(sampleCustodyBills, sampleMasterInvoiceRecords);
+  assert.strictEqual(recResult.length, 3);
+
+  // 1. Fully Paid Bill (Rahul Genral Store)
+  const rahulBill = recResult.find(b => b.billNo === 'IN-FY26/27-4356');
+  assert.strictEqual(rahulBill.status, 'PAID_FULL');
+  assert.strictEqual(rahulBill.collectedAmt, 3000);
+  assert.strictEqual(rahulBill.outstanding, 0);
+  assert.strictEqual(rahulBill.refNo, 'R4597');
+  assert.strictEqual(rahulBill.isComplete, true);
+
+  // 2. Partial Bill (anmol kirana)
+  const anmolBill = recResult.find(b => b.billNo === 'IN-FY26/27-4359');
+  assert.strictEqual(anmolBill.status, 'PAID_PARTIAL');
+  assert.strictEqual(anmolBill.collectedAmt, 1000);
+  assert.strictEqual(anmolBill.outstanding, 770);
+  assert.strictEqual(anmolBill.refNo, 'R4579 + R3861');
+  assert.strictEqual(anmolBill.isComplete, false);
+
+  // 3. Unpaid Bill (Santosh pan)
+  const santoshBill = recResult.find(b => b.billNo === 'IN-FY26/27-4355');
+  assert.strictEqual(santoshBill.status, 'WITH_AGENT');
+  assert.strictEqual(santoshBill.collectedAmt, 0);
+  assert.strictEqual(santoshBill.outstanding, 1735);
+  assert.strictEqual(santoshBill.isComplete, false);
+
+  console.log('✅ Test 33 Passed! Payment Details Fetch & Audit Completion Engine verified 100%!\n');
+
+  console.log('🎉 ALL 33 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
 })();
 
 
