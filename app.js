@@ -1339,6 +1339,72 @@
   // 5. TAB 1: SCAN OUT (MORNING DISPATCH)
   // ========================================================
 
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  /**
+   * Generates rich HTML badges for Receipt number and Payment Status (Recorded vs Pending)
+   */
+  function renderBillPaymentBadgesHtml(item) {
+    const isFetching = !!item.isFetching;
+    const notInSheet = !!item.notFound;
+    const rawReceipt = String(item.receipt || item.refNo || '').trim();
+    const amount = Number(item.amount) || 0;
+
+    let outstanding = 0;
+    if (item.outstanding !== undefined && item.outstanding !== null && !isNaN(item.outstanding)) {
+      outstanding = Number(item.outstanding);
+    } else if (item.status === 'RECEIVED' || item.status === 'PAID_FULL') {
+      outstanding = 0;
+    } else {
+      outstanding = amount;
+    }
+
+    // Check if rawReceipt is a payment remark like "PAID IN FULL" or "PAID (₹...)"
+    const isPaidRemark = /^PAID/i.test(rawReceipt);
+    const isPartialRemark = /^PARTIAL/i.test(rawReceipt);
+    const hasActualReceipt = Boolean(rawReceipt && !isPaidRemark && !isPartialRemark && !/^(nil|none|n\/a|-)$/i.test(rawReceipt));
+
+    // 1. Receipt Badge
+    let receiptBadge = '';
+    if (hasActualReceipt) {
+      receiptBadge = `<span class="badge-receipt" title="Column M Receipt: ${escapeHtml(rawReceipt)}"><i class="fa-solid fa-receipt"></i> Receipt: <strong>${escapeHtml(rawReceipt)}</strong></span>`;
+    } else if (isPaidRemark) {
+      receiptBadge = `<span class="badge-receipt" title="Recorded as Paid"><i class="fa-solid fa-receipt"></i> ${escapeHtml(rawReceipt)}</span>`;
+    } else if (!isFetching) {
+      receiptBadge = `<span class="badge-no-receipt" title="No receipt number on sheet"><i class="fa-solid fa-receipt"></i> No Receipt</span>`;
+    }
+
+    // 2. Payment Status Badge
+    let paymentBadge = '';
+    if (isFetching) {
+      paymentBadge = `<span class="badge-payment-checking"><i class="fa-solid fa-spinner fa-spin"></i> Checking Payment...</span>`;
+    } else if (notInSheet) {
+      paymentBadge = `<span class="badge-not-in-sheet"><i class="fa-solid fa-triangle-exclamation"></i> Not In Master Sheet</span>`;
+    } else if (outstanding <= 0 && (amount > 0 || isPaidRemark || hasActualReceipt || item.fromMaster || item.status === 'RECEIVED')) {
+      paymentBadge = `<span class="badge-payment-recorded"><i class="fa-solid fa-circle-check"></i> Payment Recorded (Paid in Full)</span>`;
+    } else if (outstanding > 0 && amount > 0 && (outstanding < amount || isPartialRemark)) {
+      const paidAmt = Math.max(0, amount - outstanding);
+      paymentBadge = `
+        <span class="badge-payment-partial"><i class="fa-solid fa-circle-half-stroke"></i> Partial Paid (${formatINR(paidAmt)})</span>
+        <span class="badge-payment-due"><i class="fa-solid fa-coins"></i> Due: ${formatINR(outstanding)}</span>
+      `;
+    } else if (outstanding > 0) {
+      paymentBadge = `<span class="badge-payment-pending"><i class="fa-solid fa-clock"></i> Payment Pending &bull; Due: ${formatINR(outstanding)}</span>`;
+    } else {
+      paymentBadge = `<span class="badge-payment-recorded"><i class="fa-solid fa-circle-check"></i> Payment Recorded</span>`;
+    }
+
+    return { receiptBadge, paymentBadge, outstanding, amount, hasActualReceipt, rawReceipt };
+  }
+
   function handleScannedCodeDispatch(decodedText) {
     if (!decodedText) return;
     try {
@@ -1357,6 +1423,12 @@
 
       parsed = enrichWithMaster(parsed);
       ScanFX.success('DISPATCH', decodedText, parsed);
+
+      // Trigger background fast sheet lookup if payment details / receipt are not cached
+      if (!parsed.fromMaster || (!parsed.receipt && parsed.outstanding === undefined)) {
+        parsed.isFetching = true;
+        fetchSingleBillDetailsFromSheet(parsed.billNo, 'DISPATCH');
+      }
 
       // Directly add to dispatch basket so the list shows the scanned bill immediately!
       addBillToDispatchBasket(parsed);
@@ -1384,6 +1456,13 @@
 
     input.value = '';
     ScanFX.success('DISPATCH', val, parsed);
+
+    // Trigger background fast sheet lookup if payment details / receipt are not cached
+    if (!parsed.fromMaster || (!parsed.receipt && parsed.outstanding === undefined)) {
+      parsed.isFetching = true;
+      fetchSingleBillDetailsFromSheet(parsed.billNo, 'DISPATCH');
+    }
+
     addBillToDispatchBasket(parsed);
     focusActiveScannerInput();
   }
@@ -1409,6 +1488,8 @@
       assignedAgent = State.agents[0].name;
     }
 
+    const receiptVal = parsed.receipt || parsed.refNo || '';
+
     // Check duplicate in current basket — update if already present
     const existingBasketIdx = State.dispatchBasket.findIndex(b => b.billNo === parsed.billNo);
     if (existingBasketIdx >= 0) {
@@ -1419,8 +1500,13 @@
       State.dispatchBasket[existingBasketIdx].week = assignedWeek;
       if (parsed.party && parsed.party !== 'Standard Account') State.dispatchBasket[existingBasketIdx].party = parsed.party;
       if (parsed.amount) State.dispatchBasket[existingBasketIdx].amount = parsed.amount;
-      if (parsed.receipt) State.dispatchBasket[existingBasketIdx].receipt = parsed.receipt;
+      if (receiptVal) {
+        State.dispatchBasket[existingBasketIdx].receipt = receiptVal;
+        State.dispatchBasket[existingBasketIdx].refNo = receiptVal;
+      }
       if (parsed.outstanding !== undefined) State.dispatchBasket[existingBasketIdx].outstanding = parsed.outstanding;
+      if (parsed.isFetching !== undefined) State.dispatchBasket[existingBasketIdx].isFetching = parsed.isFetching;
+      if (parsed.fromMaster !== undefined) State.dispatchBasket[existingBasketIdx].fromMaster = parsed.fromMaster;
       SoundFX.playBeep('success');
       showToast(`Updated ${parsed.billNo} in dispatch list`, 'info', 1500);
       renderDispatchBasket();
@@ -1443,8 +1529,11 @@
       beatName: assignedBeatName,
       day: assignedDay,
       week: assignedWeek,
-      receipt: parsed.receipt || '',
+      receipt: receiptVal,
+      refNo: receiptVal,
       outstanding: parsed.outstanding !== undefined ? parsed.outstanding : (parsed.amount || 0),
+      isFetching: !!parsed.isFetching,
+      fromMaster: !!parsed.fromMaster,
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       raw: parsed.raw
     });
@@ -1486,23 +1575,26 @@
 
     State.dispatchBasket.forEach((item, index) => {
       total += Number(item.amount) || 0;
+      const { receiptBadge, paymentBadge, outstanding, amount } = renderBillPaymentBadgesHtml(item);
+
       const row = document.createElement('div');
       row.className = 'bill-card-row';
       row.innerHTML = `
         <div class="bill-info-main">
-          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-            <span class="b-num font-mono">${item.billNo}</span>
-            <span class="count-pill" style="font-size: 0.68rem; background: var(--bg-subtle); color: var(--text-main);">
-              <i class="fa-solid fa-user"></i> ${item.agent || 'Unassigned'}
+          <div class="bill-pills-row">
+            <span class="b-num font-mono">${escapeHtml(item.billNo)}</span>
+            <span class="b-agent-pill">
+              <i class="fa-solid fa-user"></i> ${escapeHtml(item.agent || 'Unassigned')}
             </span>
-            ${item.beat ? `<span class="badge-beat"><i class="fa-solid fa-location-dot"></i> ${item.beat}</span>` : ''}
-            ${item.receipt ? `<span class="badge-receipt"><i class="fa-solid fa-receipt"></i> ${item.receipt}</span>` : ''}
-            ${(item.outstanding !== undefined && item.outstanding > 0) ? `<span class="badge-pending" style="font-size: 0.68rem; background: #fef2f2; color: #dc2626; padding: 1px 6px; border-radius: 4px; font-weight: 600;"><i class="fa-solid fa-coins"></i> Due: ${formatINR(item.outstanding)}</span>` : ''}
+            ${item.beat ? `<span class="badge-beat"><i class="fa-solid fa-location-dot"></i> ${escapeHtml(item.beat)}</span>` : ''}
+            ${receiptBadge}
+            ${paymentBadge}
           </div>
-          <span class="b-party">${item.party}</span>
+          <span class="b-party" title="${escapeHtml(item.party)}"><i class="fa-regular fa-building"></i> ${escapeHtml(item.party)}</span>
         </div>
         <div class="bill-info-meta">
-          <span class="b-amount font-mono text-success">${formatINR(item.amount)}</span>
+          <span class="b-amount font-mono text-success">${formatINR(amount)}</span>
+          ${outstanding > 0 ? `<span class="b-due-label font-mono text-danger">Pending: ${formatINR(outstanding)}</span>` : (amount > 0 ? `<span class="b-due-label font-mono text-success">Cleared: ₹0 Due</span>` : '')}
           <button class="del-btn" data-del-index="${index}" title="Remove">
             <i class="fa-solid fa-trash-can"></i>
           </button>
@@ -1713,29 +1805,31 @@
     list.innerHTML = '';
     filtered.forEach(bill => {
       const isPending = bill.status === 'WITH_AGENT' || bill.status === 'MISSING_ALERT';
-      const row = document.createElement('div');
-      row.className = `bill-card-row ${isPending ? 'is-missing' : ''}`;
+      const { receiptBadge, paymentBadge, outstanding, amount } = renderBillPaymentBadgesHtml(bill);
 
-      let statusText = '';
-      if (isPending) {
-        statusText = '<span class="text-danger font-bold">⚠️ Pending Difference</span>';
-      } else {
-        statusText = '<span class="text-success font-bold">✓ Received</span>';
-      }
+      const row = document.createElement('div');
+      row.className = `bill-card-row ${isPending ? 'is-missing' : 'is-received'}`;
+
+      let custodyStatusHtml = isPending
+        ? '<span class="text-danger font-bold"><i class="fa-solid fa-hourglass-half"></i> Handed OUT (Pending Return)</span>'
+        : '<span class="text-success font-bold"><i class="fa-solid fa-check-double"></i> Received Back</span>';
 
       row.innerHTML = `
         <div class="bill-info-main">
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <span class="b-num font-mono">${bill.billNo}</span>
-            <small>${statusText}</small>
-            ${bill.refNo ? `<span class="badge-receipt"><i class="fa-solid fa-receipt"></i> ${bill.refNo}</span>` : ''}
+          <div class="bill-pills-row">
+            <span class="b-num font-mono">${escapeHtml(bill.billNo)}</span>
+            <small>${custodyStatusHtml}</small>
+            ${bill.beat ? `<span class="badge-beat"><i class="fa-solid fa-location-dot"></i> ${escapeHtml(bill.beat)}</span>` : ''}
+            ${receiptBadge}
+            ${paymentBadge}
           </div>
-          <span class="b-party">${bill.party}</span>
+          <span class="b-party" title="${escapeHtml(bill.party)}"><i class="fa-regular fa-building"></i> ${escapeHtml(bill.party)}</span>
         </div>
         <div class="bill-info-meta">
-          <span class="b-amount font-mono">${formatINR(bill.amount)}</span>
+          <span class="b-amount font-mono">${formatINR(amount)}</span>
+          ${outstanding > 0 ? `<span class="b-due-label font-mono text-danger">Pending Due: ${formatINR(outstanding)}</span>` : `<span class="b-due-label font-mono text-success">Paid in Full</span>`}
           <div class="bill-action-btns">
-            ${isPending ? `<button class="mini-action-btn pay" data-quick-receive="${bill.billNo}">✓ Receive</button>` : ''}
+            ${isPending ? `<button class="mini-action-btn pay" data-quick-receive="${escapeHtml(bill.billNo)}"><i class="fa-solid fa-check"></i> Receive</button>` : ''}
           </div>
         </div>
       `;
@@ -1750,6 +1844,18 @@
           b.status = 'RECEIVED';
           b.remarks = 'Manually received';
           b.lastActionDate = new Date().toISOString();
+          if (!b.receipt || b.outstanding === undefined) {
+            const mm = findMasterBill(b.billNo);
+            if (mm) {
+              b.receipt = mm.receipt || b.receipt;
+              b.refNo = mm.receipt || b.refNo;
+              b.outstanding = mm.outstanding !== undefined ? mm.outstanding : b.outstanding;
+              if (mm.party && mm.party !== 'Customer') b.party = mm.party;
+              if (mm.amount) b.amount = mm.amount;
+            } else {
+              fetchSingleBillDetailsFromSheet(b.billNo, 'SETTLEMENT');
+            }
+          }
           saveState();
           updateGlobalStats();
           loadSettlementForSelectedAgent();
@@ -1808,6 +1914,7 @@
     const outstanding = (parsed.outstanding !== undefined && parsed.outstanding !== null)
       ? parseFloat(parsed.outstanding)
       : 0;
+    const receiptVal = parsed.receipt || parsed.refNo || '';
 
     if (!bill) {
       const targetAgent = (State.activeAgent ? State.activeAgent.name : '') || State.activeSettlementAgent || (State.agents[0] ? State.agents[0].name : 'Rajesh');
@@ -1816,25 +1923,46 @@
         party: parsed.party || 'Standard Account',
         amount: billAmt,
         agent: targetAgent,
+        beat: parsed.beat || '',
         dispatchDate: getTodayDateString(),
-        status: 'WITH_AGENT',
-        collectedAmt: 0,
+        status: 'RECEIVED',
+        collectedAmt: Math.max(0, billAmt - outstanding),
+        outstanding: outstanding,
         paymentMode: '',
-        refNo: parsed.receipt || '',
+        refNo: receiptVal,
+        receipt: receiptVal,
+        isFetching: !!parsed.isFetching,
+        fromMaster: !!parsed.fromMaster,
         returnReason: '',
         remarks: 'Scanned at Check-IN',
         lastActionDate: new Date().toISOString(),
         history: []
       };
       State.bills.unshift(bill);
+    } else {
+      bill.status = 'RECEIVED';
+      if (receiptVal) {
+        bill.receipt = receiptVal;
+        bill.refNo = receiptVal;
+      }
+      if (parsed.outstanding !== undefined) {
+        bill.outstanding = parsed.outstanding;
+        bill.collectedAmt = Math.max(0, (bill.amount || billAmt) - parsed.outstanding);
+      }
+      if (parsed.party && parsed.party !== 'Standard Account' && parsed.party !== 'Customer') {
+        bill.party = parsed.party;
+      }
+      if (parsed.amount && parsed.amount > 0) {
+        bill.amount = parsed.amount;
+      }
+      if (parsed.beat) bill.beat = parsed.beat;
+      bill.isFetching = !!parsed.isFetching;
+      bill.fromMaster = parsed.fromMaster || bill.fromMaster;
+      bill.remarks = 'Received back from agent';
+      const timestamp = new Date().toISOString();
+      bill.lastActionDate = timestamp;
+      bill.history.push({ action: 'RECEIVED', agent: bill.agent, timestamp });
     }
-
-    // Direct settlement: Mark as RECEIVED and refresh lists immediately
-    bill.status = 'RECEIVED';
-    bill.remarks = 'Received back from agent';
-    const timestamp = new Date().toISOString();
-    bill.lastActionDate = timestamp;
-    bill.history.push({ action: 'RECEIVED', agent: bill.agent, timestamp });
 
     queueSyncAction('SETTLEMENT_RETURN', {
       billNo: bill.billNo,
@@ -1842,6 +1970,8 @@
       party: bill.party,
       amount: bill.amount,
       status: 'RECEIVED',
+      receipt: bill.receipt || '',
+      outstanding: bill.outstanding !== undefined ? bill.outstanding : 0,
       remarks: bill.remarks,
       timestamp
     });
@@ -1881,10 +2011,19 @@
         parsed.amount = existing.amount;
       }
       if (!parsed.agent) parsed.agent = existing.agent;
-      if (!parsed.receipt && existing.refNo) parsed.receipt = existing.refNo;
-      if (parsed.outstanding === undefined) {
-        parsed.outstanding = Math.max(0, existing.amount - (existing.collectedAmt || 0));
+      if (!parsed.beat && existing.beat) parsed.beat = existing.beat;
+      if (!parsed.receipt && (existing.receipt || existing.refNo)) {
+        parsed.receipt = existing.receipt || existing.refNo;
       }
+      if (parsed.outstanding === undefined) {
+        parsed.outstanding = existing.outstanding !== undefined ? existing.outstanding : Math.max(0, existing.amount - (existing.collectedAmt || 0));
+      }
+    }
+
+    // Trigger background fast sheet lookup if payment details / receipt are not cached
+    if (!parsed.fromMaster || (!parsed.receipt && parsed.outstanding === undefined)) {
+      parsed.isFetching = true;
+      fetchSingleBillDetailsFromSheet(parsed.billNo, 'SETTLEMENT');
     }
 
     receiveBillSettlement(parsed);
@@ -2199,15 +2338,49 @@
           updateModalFraudBanner(State.pendingScannedBill, source, false);
         }
 
-        // Also update in dispatch basket if already confirmed
-        const basketItem = State.dispatchBasket.find(x => normalizeInvoiceNumber(x.billNo) === normalizeInvoiceNumber(billNo));
-        if (basketItem) {
-          basketItem.party = b.party;
-          basketItem.amount = b.amount;
-          if (b.agent) basketItem.agent = b.agent;
-          basketItem.receipt = b.receipt;
-          basketItem.outstanding = b.outstanding;
+        // 1. Update in Dispatch Basket if present
+        let basketUpdated = false;
+        State.dispatchBasket.forEach(item => {
+          if (normalizeInvoiceNumber(item.billNo) === normalizeInvoiceNumber(billNo) ||
+              normalizeInvoiceNumber(item.billNo) === normalizeInvoiceNumber(b.billNo)) {
+            if (b.party && b.party !== 'Customer' && b.party !== 'Standard Account') item.party = b.party;
+            if (b.amount) item.amount = b.amount;
+            if (b.agent) item.agent = b.agent;
+            if (b.beat) item.beat = b.beat;
+            item.receipt = b.receipt || '';
+            item.refNo = b.receipt || '';
+            item.outstanding = b.outstanding !== undefined ? b.outstanding : 0;
+            item.isFetching = false;
+            item.fromMaster = true;
+            basketUpdated = true;
+          }
+        });
+        if (basketUpdated) {
           renderDispatchBasket();
+        }
+
+        // 2. Update in State.bills (Active Custody / Settlement) if present
+        let billsUpdated = false;
+        State.bills.forEach(item => {
+          if (normalizeInvoiceNumber(item.billNo) === normalizeInvoiceNumber(billNo) ||
+              normalizeInvoiceNumber(item.billNo) === normalizeInvoiceNumber(b.billNo)) {
+            if (b.party && b.party !== 'Customer' && b.party !== 'Standard Account') item.party = b.party;
+            if (b.amount) item.amount = b.amount;
+            if (b.agent) item.agent = b.agent;
+            if (b.beat) item.beat = b.beat;
+            item.receipt = b.receipt || '';
+            item.refNo = b.receipt || '';
+            item.outstanding = b.outstanding !== undefined ? b.outstanding : 0;
+            item.isFetching = false;
+            item.fromMaster = true;
+            billsUpdated = true;
+          }
+        });
+        if (billsUpdated) {
+          saveState('bills');
+          loadSettlementForSelectedAgent();
+          renderLeftOutTab();
+          updateHomeStats();
         }
       } else {
         if (receiptEl && receiptEl.innerHTML.includes('Fetching')) {
@@ -2217,6 +2390,26 @@
           State.pendingScannedBill.fromMaster = false;
           updateModalFraudBanner(State.pendingScannedBill, source, false);
         }
+
+        let basketUpdated = false;
+        State.dispatchBasket.forEach(item => {
+          if (normalizeInvoiceNumber(item.billNo) === normalizeInvoiceNumber(billNo)) {
+            item.isFetching = false;
+            item.notFound = true;
+            basketUpdated = true;
+          }
+        });
+        if (basketUpdated) renderDispatchBasket();
+
+        let billsUpdated = false;
+        State.bills.forEach(item => {
+          if (normalizeInvoiceNumber(item.billNo) === normalizeInvoiceNumber(billNo)) {
+            item.isFetching = false;
+            item.notFound = true;
+            billsUpdated = true;
+          }
+        });
+        if (billsUpdated) loadSettlementForSelectedAgent();
       }
     } catch (e) {
       console.warn('Fast bill lookup from sheet failed:', e);
@@ -2226,6 +2419,20 @@
       if (State.isConfirmModalOpen && State.pendingScannedBill) {
         updateModalFraudBanner(State.pendingScannedBill, source, false);
       }
+
+      State.dispatchBasket.forEach(item => {
+        if (normalizeInvoiceNumber(item.billNo) === normalizeInvoiceNumber(billNo)) {
+          item.isFetching = false;
+        }
+      });
+      renderDispatchBasket();
+
+      State.bills.forEach(item => {
+        if (normalizeInvoiceNumber(item.billNo) === normalizeInvoiceNumber(billNo)) {
+          item.isFetching = false;
+        }
+      });
+      loadSettlementForSelectedAgent();
     }
   }
 
@@ -2634,20 +2841,22 @@
 
     // Populate Left Out Table
     if (allLeftOutBills.length === 0) {
-      tbody.innerHTML = `<tr class="empty-row"><td colspan="7">🎉 Zero difference for ${activeDateFilter.toLowerCase()}! All dispatched bills are accounted for.</td></tr>`;
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="8">🎉 Zero difference for ${activeDateFilter.toLowerCase()}! All dispatched bills are accounted for.</td></tr>`;
     } else {
       allLeftOutBills.forEach(b => {
         const tr = document.createElement('tr');
-        const beatTag = b.beat ? `<div style="font-size:0.75rem; color:#64748b; margin-top:2px;"><i class="fa-solid fa-location-dot"></i> ${b.beat}</div>` : '';
+        const beatTag = b.beat ? `<div style="font-size:0.75rem; color:#64748b; margin-top:2px;"><i class="fa-solid fa-location-dot"></i> ${escapeHtml(b.beat)}</div>` : '';
+        const { receiptBadge, paymentBadge } = renderBillPaymentBadgesHtml(b);
         tr.innerHTML = `
-          <td><strong class="font-mono text-danger">${b.billNo}</strong></td>
-          <td><strong>${b.agent}</strong>${beatTag}</td>
-          <td>${b.party}</td>
+          <td><strong class="font-mono text-danger">${escapeHtml(b.billNo)}</strong></td>
+          <td><strong>${escapeHtml(b.agent)}</strong>${beatTag}</td>
+          <td>${escapeHtml(b.party)}</td>
           <td class="font-mono font-bold">${formatINR(b.amount)}</td>
           <td>${b.dispatchDate || '-'}</td>
-          <td>${b.refNo ? `<span class="badge-receipt">${b.refNo}</span>` : '-'}</td>
+          <td>${receiptBadge}</td>
+          <td>${paymentBadge}</td>
           <td>
-            <button class="btn btn-success btn-sm" data-table-checkin="${b.billNo}">
+            <button class="btn btn-success btn-sm" data-table-checkin="${escapeHtml(b.billNo)}">
               <i class="fa-solid fa-check"></i> Receive
             </button>
           </td>
@@ -2675,10 +2884,23 @@
           b.status = 'RECEIVED';
           b.remarks = 'Directly received from Difference list';
           b.lastActionDate = new Date().toISOString();
+          if (!b.receipt || b.outstanding === undefined) {
+            const mm = findMasterBill(b.billNo);
+            if (mm) {
+              b.receipt = mm.receipt || b.receipt;
+              b.refNo = mm.receipt || b.refNo;
+              b.outstanding = mm.outstanding !== undefined ? mm.outstanding : b.outstanding;
+              if (mm.party && mm.party !== 'Customer') b.party = mm.party;
+              if (mm.amount) b.amount = mm.amount;
+            } else {
+              fetchSingleBillDetailsFromSheet(b.billNo, 'SETTLEMENT');
+            }
+          }
           saveState();
           updateGlobalStats();
           renderLeftOutTab();
           updateHomeStats();
+          loadSettlementForSelectedAgent();
           SoundFX.playBeep('success');
           showToast(`Received ${b.billNo}`, 'success');
         }

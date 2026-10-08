@@ -1983,7 +1983,106 @@ google.visualization.Query.setResponse({
 
   console.log('✅ Test 34 Passed! Dashboard Multi-Day Custody Filter Engine verified 100%!\n');
 
-  console.log('🎉 ALL 34 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+  // Test 35: Live Payment Recorded / Pending Audit Badges & Receipt Number Verification
+  console.log('Test 35: Live Payment Recorded / Pending Audit Badges & Receipt Number Engine');
+
+  function formatINR(n) {
+    return '₹' + Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function renderBillPaymentBadgesHtml(item) {
+    const isFetching = !!item.isFetching;
+    const notInSheet = !!item.notFound;
+    const rawReceipt = String(item.receipt || item.refNo || '').trim();
+    const amount = Number(item.amount) || 0;
+
+    let outstanding = 0;
+    if (item.outstanding !== undefined && item.outstanding !== null && !isNaN(item.outstanding)) {
+      outstanding = Number(item.outstanding);
+    } else if (item.status === 'RECEIVED' || item.status === 'PAID_FULL') {
+      outstanding = 0;
+    } else {
+      outstanding = amount;
+    }
+
+    const isPaidRemark = /^PAID/i.test(rawReceipt);
+    const isPartialRemark = /^PARTIAL/i.test(rawReceipt);
+    const hasActualReceipt = Boolean(rawReceipt && !isPaidRemark && !isPartialRemark && !/^(nil|none|n\/a|-)$/i.test(rawReceipt));
+
+    let receiptBadge = '';
+    if (hasActualReceipt) {
+      receiptBadge = `<span class="badge-receipt" title="Column M Receipt: ${escapeHtml(rawReceipt)}"><i class="fa-solid fa-receipt"></i> Receipt: <strong>${escapeHtml(rawReceipt)}</strong></span>`;
+    } else if (isPaidRemark) {
+      receiptBadge = `<span class="badge-receipt" title="Recorded as Paid"><i class="fa-solid fa-receipt"></i> ${escapeHtml(rawReceipt)}</span>`;
+    } else if (!isFetching) {
+      receiptBadge = `<span class="badge-no-receipt" title="No receipt number on sheet"><i class="fa-solid fa-receipt"></i> No Receipt</span>`;
+    }
+
+    let paymentBadge = '';
+    if (isFetching) {
+      paymentBadge = `<span class="badge-payment-checking"><i class="fa-solid fa-spinner fa-spin"></i> Checking Payment...</span>`;
+    } else if (notInSheet) {
+      paymentBadge = `<span class="badge-not-in-sheet"><i class="fa-solid fa-triangle-exclamation"></i> Not In Master Sheet</span>`;
+    } else if (outstanding <= 0 && (amount > 0 || isPaidRemark || hasActualReceipt || item.fromMaster || item.status === 'RECEIVED')) {
+      paymentBadge = `<span class="badge-payment-recorded"><i class="fa-solid fa-circle-check"></i> Payment Recorded (Paid in Full)</span>`;
+    } else if (outstanding > 0 && amount > 0 && (outstanding < amount || isPartialRemark)) {
+      const paidAmt = Math.max(0, amount - outstanding);
+      paymentBadge = `
+        <span class="badge-payment-partial"><i class="fa-solid fa-circle-half-stroke"></i> Partial Paid (${formatINR(paidAmt)})</span>
+        <span class="badge-payment-due"><i class="fa-solid fa-coins"></i> Due: ${formatINR(outstanding)}</span>
+      `;
+    } else if (outstanding > 0) {
+      paymentBadge = `<span class="badge-payment-pending"><i class="fa-solid fa-clock"></i> Payment Pending &bull; Due: ${formatINR(outstanding)}</span>`;
+    } else {
+      paymentBadge = `<span class="badge-payment-recorded"><i class="fa-solid fa-circle-check"></i> Payment Recorded</span>`;
+    }
+
+    return { receiptBadge, paymentBadge, outstanding, amount, hasActualReceipt, rawReceipt };
+  }
+
+  // 1. Fully Paid bill with Receipt
+  const billPaid = { billNo: 'IN-3965', amount: 1336, receipt: 'R4083', outstanding: 0 };
+  const badgesPaid = renderBillPaymentBadgesHtml(billPaid);
+  assert.ok(badgesPaid.receiptBadge.includes('Receipt: <strong>R4083</strong>'), 'Must display Receipt R4083');
+  assert.ok(badgesPaid.paymentBadge.includes('badge-payment-recorded'), 'Must display Payment Recorded badge');
+  assert.ok(badgesPaid.paymentBadge.includes('Paid in Full'), 'Must state Paid in Full');
+
+  // 2. Partial Payment bill with Receipt
+  const billPartial = { billNo: 'IN-3921', amount: 5465, receipt: 'R102', outstanding: 1465 };
+  const badgesPartial = renderBillPaymentBadgesHtml(billPartial);
+  assert.ok(badgesPartial.receiptBadge.includes('Receipt: <strong>R102</strong>'), 'Must display Receipt R102');
+  assert.ok(badgesPartial.paymentBadge.includes('badge-payment-partial'), 'Must display Partial Paid badge');
+  assert.ok(badgesPartial.paymentBadge.includes('badge-payment-due'), 'Must display Due badge');
+
+  // 3. Pending Payment bill with No Receipt
+  const billPending = { billNo: 'IN-888', amount: 7200, receipt: '', outstanding: 7200 };
+  const badgesPending = renderBillPaymentBadgesHtml(billPending);
+  assert.ok(badgesPending.receiptBadge.includes('badge-no-receipt'), 'Must display No Receipt badge');
+  assert.ok(badgesPending.paymentBadge.includes('badge-payment-pending'), 'Must display Payment Pending badge');
+
+  // 4. Background Fetching bill
+  const billFetching = { billNo: 'IN-999', amount: 0, receipt: '', outstanding: 0, isFetching: true };
+  const badgesFetching = renderBillPaymentBadgesHtml(billFetching);
+  assert.ok(badgesFetching.paymentBadge.includes('badge-payment-checking'), 'Must display Checking Payment badge');
+
+  // 5. Bill with payment recorded remark (e.g. "PAID IN FULL")
+  const billRemark = { billNo: 'IN-777', amount: 2000, receipt: 'PAID IN FULL', outstanding: 0 };
+  const badgesRemark = renderBillPaymentBadgesHtml(billRemark);
+  assert.ok(badgesRemark.paymentBadge.includes('badge-payment-recorded'), 'Must recognize PAID remark as Payment Recorded');
+
+  console.log('✅ Test 35 Passed! Live Payment Recorded / Pending Audit Badges & Receipt Number Engine verified 100%!\n');
+
+  console.log('🎉 ALL 35 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
 })();
 
 
