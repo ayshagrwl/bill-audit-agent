@@ -230,7 +230,10 @@
               </div>
               <div class="card-pro-amount font-mono" id="homeStatOutAmt">₹0.00 in transit</div>
             </div>
-            <div class="card-pro-footer">Total bills taken by agents today</div>
+            <div class="card-pro-footer">
+              Total bills taken by agents today
+              <div class="card-click-hint"><i class="fa-solid fa-list-ul"></i> Click to view bill breakdown</div>
+            </div>
           </div>
 
           <!-- METRIC 2: RECEIVED BACK -->
@@ -246,7 +249,10 @@
               </div>
               <div class="card-pro-amount font-mono text-success" id="homeStatInAmt">₹0.00 accounted</div>
             </div>
-            <div class="card-pro-footer">Bills returned or collected safely</div>
+            <div class="card-pro-footer">
+              Bills returned or collected safely
+              <div class="card-click-hint"><i class="fa-solid fa-list-ul"></i> Click to view bill breakdown</div>
+            </div>
           </div>
 
           <!-- METRIC 3: DIFFERENCE (ALERT CARD) -->
@@ -264,6 +270,7 @@
             </div>
             <div class="card-pro-footer footer-diff" id="homeDiffFooter">
               Bills still unreturned with agents
+              <div class="card-click-hint"><i class="fa-solid fa-list-ul"></i> Click to view bill breakdown</div>
             </div>
           </div>
         </div>
@@ -1281,6 +1288,109 @@
             <i class="fa-solid fa-rotate"></i> Refresh from Sheets
           </button>
           <button type="button" class="btn btn-dark btn-sm" id="btnCloseReconcileModal">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================================================== -->
+  <!-- DASHBOARD BREAKDOWN MODAL (Compressed Form / Deep Insights) -->
+  <!-- ======================================================== -->
+  <div id="dashboardBreakdownModal" class="modal-backdrop" style="display: none;">
+    <div class="modal-card modal-xl breakdown-modal-card">
+      <div class="modal-head">
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <div class="breakdown-icon-box" id="breakdownHeadIcon">
+            <i class="fa-solid fa-list-check"></i>
+          </div>
+          <div>
+            <h3 id="breakdownModalTitle">Dispatched Bills Breakdown</h3>
+            <p class="modal-subtitle" id="breakdownModalSubtitle">Compressed list breakdown of scans and custody records</p>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span class="breakdown-filter-tag font-mono" id="breakdownDateTag">TODAY</span>
+          <button type="button" class="modal-close" id="closeBreakdownModalBtn">&times;</button>
+        </div>
+      </div>
+
+      <!-- Quick KPI Insights Strip -->
+      <div class="breakdown-kpi-strip mt-2" id="breakdownKpiStrip">
+        <div class="kpi-box kpi-total">
+          <span class="kpi-label"><i class="fa-solid fa-file-invoice"></i> Total Bills</span>
+          <span class="kpi-val font-mono" id="breakdownKpiTotal">0</span>
+          <small class="kpi-sub font-mono" id="breakdownKpiTotalAmt">₹0.00</small>
+        </div>
+        <div class="kpi-box kpi-paid">
+          <span class="kpi-label"><i class="fa-solid fa-circle-check"></i> Payment Recorded</span>
+          <span class="kpi-val font-mono text-success" id="breakdownKpiPaid">0</span>
+          <small class="kpi-sub font-mono text-success" id="breakdownKpiPaidAmt">₹0.00</small>
+        </div>
+        <div class="kpi-box kpi-pending">
+          <span class="kpi-label"><i class="fa-solid fa-clock"></i> Pending Due</span>
+          <span class="kpi-val font-mono text-danger" id="breakdownKpiDue">0</span>
+          <small class="kpi-sub font-mono text-danger" id="breakdownKpiDueAmt">₹0.00</small>
+        </div>
+        <div class="kpi-box kpi-receipts">
+          <span class="kpi-label"><i class="fa-solid fa-receipt"></i> With Receipt</span>
+          <span class="kpi-val font-mono text-primary" id="breakdownKpiReceipts">0</span>
+          <small class="kpi-sub text-muted" id="breakdownKpiAgents">3 agents</small>
+        </div>
+      </div>
+
+      <!-- Search, Sub-Filters & Controls Toolbar -->
+      <div class="breakdown-toolbar mt-3">
+        <div class="breakdown-search-wrap">
+          <i class="fa-solid fa-magnifying-glass"></i>
+          <input type="text" id="breakdownSearchInput" class="form-input form-input-compact" placeholder="Search invoice no, party, receipt, beat..." />
+          <button type="button" id="breakdownClearSearchBtn" class="clear-search-btn" style="display:none;">&times;</button>
+        </div>
+        <div class="breakdown-filter-chips" id="breakdownFilterTabs">
+          <button type="button" class="breakdown-chip active" data-b-filter="ALL">All (<span id="bCountAll">0</span>)</button>
+          <button type="button" class="breakdown-chip" data-b-filter="PENDING">Pending Due (<span id="bCountPending">0</span>)</button>
+          <button type="button" class="breakdown-chip" data-b-filter="PAID">Paid / Cleared (<span id="bCountPaid">0</span>)</button>
+          <button type="button" class="breakdown-chip" data-b-filter="RECEIPT">Has Receipt (<span id="bCountReceipt">0</span>)</button>
+        </div>
+        <div class="breakdown-actions">
+          <select id="breakdownAgentSelect" class="form-select form-input-compact">
+            <option value="ALL">All Agents</option>
+          </select>
+          <button type="button" class="btn btn-outline-secondary btn-sm" id="breakdownCopySummaryBtn" title="Copy text summary">
+            <i class="fa-regular fa-copy"></i> Copy
+          </button>
+        </div>
+      </div>
+
+      <!-- Compressed High-Density Table Wrap -->
+      <div class="breakdown-table-wrap mt-2">
+        <table class="compressed-breakdown-table">
+          <thead>
+            <tr>
+              <th style="width: 36px;">#</th>
+              <th>Invoice No</th>
+              <th>Agent &amp; Route</th>
+              <th>Customer / Party Name</th>
+              <th style="text-align: right;">Amount</th>
+              <th>Receipt No</th>
+              <th>Payment Status</th>
+              <th style="text-align: right;">Balance Due</th>
+              <th>Custody</th>
+              <th style="text-align: center;">Action</th>
+            </tr>
+          </thead>
+          <tbody id="breakdownTableBody">
+            <!-- Dynamically populated rows -->
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Modal Footer with Total Summary -->
+      <div class="modal-foot mt-3" style="display: flex; justify-content: space-between; align-items: center;">
+        <div class="breakdown-footer-metrics text-muted" id="breakdownFooterMetrics">
+          Showing 0 bills &bull; Total: ₹0.00
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button type="button" class="btn btn-dark btn-sm" id="closeBreakdownModalFooterBtn">Close</button>
         </div>
       </div>
     </div>

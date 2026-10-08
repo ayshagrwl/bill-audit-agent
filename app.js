@@ -113,7 +113,11 @@
     selectedWeek: 'Week 1',
     selectedBeatName: '',
     activeScanMode: null,    // 'DISPATCH' or 'SETTLEMENT' — set by home card tap
-
+    breakdownCategory: null, // 'OUT', 'IN', 'DIFF', or 'AGENT'
+    breakdownAgent: 'ALL',   // 'ALL' or specific agent name
+    breakdownFilter: 'ALL',  // 'ALL', 'PENDING', 'PAID', 'RECEIPT'
+    breakdownSearch: '',     // search query
+    isBreakdownModalOpen: false,
   };
 
   // Web Audio Synthesizer for Fast Scan Feedback
@@ -1310,6 +1314,9 @@
       // Close modal if open so scanning is never blocked
       if (State.isConfirmModalOpen) {
         closeBillConfirmModal();
+      }
+      if (State.isBreakdownModalOpen) {
+        closeDashboardBreakdownModal();
       }
 
       this.routeScannedCode(clean);
@@ -4497,7 +4504,10 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       State.agents.forEach(agent => {
         const stats = getAgentLeftOutStats(agent.name, filterMode, null, customDate);
         const card = document.createElement('div');
-        card.className = 'agent-diff-card';
+        card.className = 'agent-diff-card clickable-card';
+        card.setAttribute('role', 'button');
+        card.setAttribute('tabindex', '0');
+        card.title = `Click to view breakdown for ${agent.name}`;
         card.innerHTML = `
           <div class="agent-diff-header">
             <span><i class="fa-solid fa-user-tie"></i> ${agent.name}</span>
@@ -4511,9 +4521,465 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
             </span>
             <span class="agent-diff-sub">Dispatched: ${stats.totalCount} | Received: ${stats.checkedInCount}</span>
           </div>
+          <div class="card-click-hint">
+            <i class="fa-solid fa-arrow-up-right-from-square"></i> Click to view ${agent.name}'s list
+          </div>
         `;
+        card.addEventListener('click', () => openDashboardBreakdown('AGENT', agent.name));
         diffGrid.appendChild(card);
       });
+    }
+  }
+
+  // ========================================================
+  // DASHBOARD NUMBER CARD BREAKDOWN ENGINE
+  // ========================================================
+
+  function getBreakdownBaseBills() {
+    const filterMode = State.homeDateFilter || 'TODAY';
+    const customDate = State.homeCustomDate;
+    const category = State.breakdownCategory || 'OUT';
+    const targetAgent = State.breakdownAgent || 'ALL';
+
+    const dateFiltered = State.bills.filter(b => matchesDateFilter(b.dispatchDate || b.lastActionDate, filterMode, customDate));
+
+    let list = [];
+    if (category === 'OUT') {
+      list = [...dateFiltered];
+      if (filterMode === 'TODAY' && State.dispatchBasket && State.dispatchBasket.length > 0) {
+        State.dispatchBasket.forEach(b => {
+          list.push({
+            ...b,
+            isBasket: true,
+            status: 'IN_BASKET'
+          });
+        });
+      }
+    } else if (category === 'IN') {
+      list = dateFiltered.filter(b => b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND');
+    } else if (category === 'DIFF') {
+      list = dateFiltered.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT');
+    } else if (category === 'AGENT') {
+      list = [...dateFiltered];
+      if (filterMode === 'TODAY' && State.dispatchBasket && State.dispatchBasket.length > 0) {
+        State.dispatchBasket.forEach(b => {
+          list.push({
+            ...b,
+            isBasket: true,
+            status: 'IN_BASKET'
+          });
+        });
+      }
+    }
+
+    if (targetAgent && targetAgent !== 'ALL') {
+      list = list.filter(b => (b.agent || '').toLowerCase() === targetAgent.toLowerCase());
+    }
+
+    return list;
+  }
+
+  function renderDashboardBreakdownTable() {
+    const baseBills = getBreakdownBaseBills();
+
+    let countAll = baseBills.length;
+    let countPending = 0;
+    let countPaid = 0;
+    let countReceipt = 0;
+
+    let totalAmt = 0;
+    let paidAmt = 0;
+    let dueAmt = 0;
+    const uniqueAgents = new Set();
+
+    baseBills.forEach(b => {
+      const amt = Number(b.amount) || 0;
+      totalAmt += amt;
+      if (b.agent) uniqueAgents.add(b.agent);
+
+      let outDue = 0;
+      if (b.outstanding !== undefined && b.outstanding !== null && !isNaN(b.outstanding)) {
+        outDue = Number(b.outstanding);
+      } else if (b.status === 'RECEIVED' || b.status === 'PAID_FULL') {
+        outDue = 0;
+      } else {
+        outDue = amt;
+      }
+
+      const rawReceipt = String(b.receipt || b.refNo || '').trim();
+      const isPaidRemark = /^PAID/i.test(rawReceipt);
+      const isPartialRemark = /^PARTIAL/i.test(rawReceipt);
+      const hasActualReceipt = Boolean(rawReceipt && !isPaidRemark && !isPartialRemark && !/^(nil|none|n\/a|-)$/i.test(rawReceipt));
+
+      if (hasActualReceipt) countReceipt++;
+
+      if (outDue > 0) {
+        countPending++;
+        dueAmt += outDue;
+        if (outDue < amt) {
+          paidAmt += (amt - outDue);
+        }
+      } else {
+        countPaid++;
+        paidAmt += (b.collectedAmt !== undefined ? Number(b.collectedAmt) : amt);
+      }
+    });
+
+    // Update KPI strip
+    const elTotal = document.getElementById('breakdownKpiTotal');
+    const elTotalAmt = document.getElementById('breakdownKpiTotalAmt');
+    const elPaid = document.getElementById('breakdownKpiPaid');
+    const elPaidAmt = document.getElementById('breakdownKpiPaidAmt');
+    const elDue = document.getElementById('breakdownKpiDue');
+    const elDueAmt = document.getElementById('breakdownKpiDueAmt');
+    const elReceipts = document.getElementById('breakdownKpiReceipts');
+    const elAgents = document.getElementById('breakdownKpiAgents');
+
+    if (elTotal) elTotal.textContent = countAll;
+    if (elTotalAmt) elTotalAmt.textContent = formatINR(totalAmt);
+    if (elPaid) elPaid.textContent = countPaid;
+    if (elPaidAmt) elPaidAmt.textContent = formatINR(paidAmt);
+    if (elDue) elDue.textContent = countPending;
+    if (elDueAmt) elDueAmt.textContent = formatINR(dueAmt);
+    if (elReceipts) elReceipts.textContent = countReceipt;
+    if (elAgents) elAgents.textContent = `${uniqueAgents.size} agent${uniqueAgents.size === 1 ? '' : 's'}`;
+
+    // Filter chip count badges
+    const elCntAll = document.getElementById('bCountAll');
+    const elCntPending = document.getElementById('bCountPending');
+    const elCntPaid = document.getElementById('bCountPaid');
+    const elCntReceipt = document.getElementById('bCountReceipt');
+    if (elCntAll) elCntAll.textContent = countAll;
+    if (elCntPending) elCntPending.textContent = countPending;
+    if (elCntPaid) elCntPaid.textContent = countPaid;
+    if (elCntReceipt) elCntReceipt.textContent = countReceipt;
+
+    // Apply sub-filter
+    let filtered = baseBills.filter(b => {
+      let outDue = 0;
+      if (b.outstanding !== undefined && b.outstanding !== null && !isNaN(b.outstanding)) {
+        outDue = Number(b.outstanding);
+      } else if (b.status === 'RECEIVED' || b.status === 'PAID_FULL') {
+        outDue = 0;
+      } else {
+        outDue = Number(b.amount) || 0;
+      }
+
+      const rawReceipt = String(b.receipt || b.refNo || '').trim();
+      const isPaidRemark = /^PAID/i.test(rawReceipt);
+      const isPartialRemark = /^PARTIAL/i.test(rawReceipt);
+      const hasActualReceipt = Boolean(rawReceipt && !isPaidRemark && !isPartialRemark && !/^(nil|none|n\/a|-)$/i.test(rawReceipt));
+
+      if (State.breakdownFilter === 'PENDING') return outDue > 0;
+      if (State.breakdownFilter === 'PAID') return outDue <= 0;
+      if (State.breakdownFilter === 'RECEIPT') return hasActualReceipt;
+      return true;
+    });
+
+    // Apply search query
+    const query = (State.breakdownSearch || '').trim().toLowerCase();
+    if (query) {
+      filtered = filtered.filter(b => {
+        const billNo = String(b.billNo || '').toLowerCase();
+        const party = String(b.party || '').toLowerCase();
+        const agent = String(b.agent || '').toLowerCase();
+        const beat = String(b.beat || b.beatName || '').toLowerCase();
+        const receipt = String(b.receipt || b.refNo || '').toLowerCase();
+        return billNo.includes(query) || party.includes(query) || agent.includes(query) || beat.includes(query) || receipt.includes(query);
+      });
+    }
+
+    const tbody = document.getElementById('breakdownTableBody');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+
+    if (filtered.length === 0) {
+      tbody.innerHTML = `
+        <tr class="empty-row">
+          <td colspan="10" style="text-align:center; padding: 28px 12px; color: #64748b;">
+            <i class="fa-solid fa-magnifying-glass" style="font-size: 1.5rem; margin-bottom: 8px; opacity: 0.5;"></i>
+            <div>No bills match the selected filter or search query.</div>
+          </td>
+        </tr>
+      `;
+    } else {
+      filtered.forEach((b, idx) => {
+        const tr = document.createElement('tr');
+        const { receiptBadge, paymentBadge, outstanding, amount } = renderBillPaymentBadgesHtml(b);
+
+        let custodyBadge = '';
+        const isPendingCustody = (b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT');
+        if (b.isBasket) {
+          custodyBadge = `<span class="b-cell-custody-basket"><i class="fa-solid fa-basket-shopping"></i> In Basket</span>`;
+        } else if (b.status === 'WITH_AGENT') {
+          custodyBadge = `<span class="b-cell-custody-out"><i class="fa-solid fa-person-walking"></i> With Agent</span>`;
+        } else if (b.status === 'MISSING_ALERT') {
+          custodyBadge = `<span class="b-cell-custody-diff"><i class="fa-solid fa-triangle-exclamation"></i> Missing</span>`;
+        } else if (b.status === 'RETURNED_IN_HAND') {
+          custodyBadge = `<span class="b-cell-custody-in"><i class="fa-solid fa-rotate-left"></i> Returned</span>`;
+        } else {
+          custodyBadge = `<span class="b-cell-custody-in"><i class="fa-solid fa-check"></i> Accounted</span>`;
+        }
+
+        if (isPendingCustody) {
+          tr.classList.add('row-diff');
+        }
+
+        const beatStr = b.beat || b.beatName || '';
+        const beatHtml = beatStr ? `<div style="font-size:0.7rem; color:#64748b; line-height:1.2; margin-top:2px;"><i class="fa-solid fa-location-dot"></i> ${escapeHtml(beatStr)}</div>` : '';
+
+        let actionHtml = '';
+        if (isPendingCustody) {
+          actionHtml = `
+            <button type="button" class="btn btn-success btn-xs b-action-btn" data-b-receive="${escapeHtml(b.billNo)}" title="Receive / Check-in this bill now">
+              <i class="fa-solid fa-check"></i> Receive
+            </button>
+          `;
+        } else if (b.isBasket) {
+          actionHtml = `<span class="text-muted font-mono" style="font-size:0.75rem;">Basket</span>`;
+        } else {
+          actionHtml = `
+            <button type="button" class="btn btn-outline-secondary btn-xs b-action-btn" data-b-details="${escapeHtml(b.billNo)}" title="View payment details">
+              <i class="fa-solid fa-receipt"></i> Details
+            </button>
+          `;
+        }
+
+        tr.innerHTML = `
+          <td class="text-muted font-mono" style="font-size:0.75rem;">${idx + 1}</td>
+          <td>
+            <strong class="font-mono ${isPendingCustody ? 'text-danger' : (b.isBasket ? 'text-primary' : 'text-success')}">
+              ${escapeHtml(b.billNo)}
+            </strong>
+          </td>
+          <td>
+            <strong>${escapeHtml(b.agent || 'Unassigned')}</strong>
+            ${beatHtml}
+          </td>
+          <td style="max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(b.party || '')}">
+            ${escapeHtml(b.party || 'Customer')}
+          </td>
+          <td style="text-align: right;" class="font-mono font-bold">${formatINR(amount)}</td>
+          <td>${receiptBadge}</td>
+          <td>${paymentBadge}</td>
+          <td style="text-align: right;" class="font-mono font-bold ${outstanding > 0 ? 'text-danger' : 'text-success'}">
+            ${formatINR(outstanding)}
+          </td>
+          <td>${custodyBadge}</td>
+          <td style="text-align: center;">${actionHtml}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    // Modal footer metrics
+    const dispAmt = filtered.reduce((s, b) => s + (Number(b.amount) || 0), 0);
+    const dispDue = filtered.reduce((s, b) => {
+      if (b.outstanding !== undefined && b.outstanding !== null && !isNaN(b.outstanding)) {
+        return s + Number(b.outstanding);
+      }
+      if (b.status === 'RECEIVED' || b.status === 'PAID_FULL') return s;
+      return s + (Number(b.amount) || 0);
+    }, 0);
+
+    const foot = document.getElementById('breakdownFooterMetrics');
+    if (foot) {
+      foot.innerHTML = `Showing <strong>${filtered.length}</strong> of ${baseBills.length} bills &bull; Total: <strong>${formatINR(dispAmt)}</strong> &bull; Pending Due: <strong class="${dispDue > 0 ? 'text-danger' : 'text-success'}">${formatINR(dispDue)}</strong>`;
+    }
+
+    // Attach row button handlers
+    tbody.querySelectorAll('[data-b-receive]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        receiveBillDirectly(btn.dataset.bReceive);
+      });
+    });
+
+    tbody.querySelectorAll('[data-b-details]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const bill = State.bills.find(b => b.billNo === btn.dataset.bDetails);
+        if (bill) {
+          openPaymentModal(bill);
+        }
+      });
+    });
+  }
+
+  function openDashboardBreakdown(category, targetAgent = 'ALL') {
+    State.breakdownCategory = category;
+    State.breakdownAgent = targetAgent;
+    State.breakdownFilter = 'ALL';
+    State.breakdownSearch = '';
+    State.isBreakdownModalOpen = true;
+
+    // Reset toolbar UI elements
+    const searchInp = document.getElementById('breakdownSearchInput');
+    if (searchInp) searchInp.value = '';
+    const clearBtn = document.getElementById('breakdownClearSearchBtn');
+    if (clearBtn) clearBtn.style.display = 'none';
+
+    document.querySelectorAll('#breakdownFilterTabs .breakdown-chip').forEach(chip => {
+      chip.classList.toggle('active', chip.dataset.bFilter === 'ALL');
+    });
+
+    // Populate Agent Select
+    const agentSelect = document.getElementById('breakdownAgentSelect');
+    if (agentSelect) {
+      agentSelect.innerHTML = '<option value="ALL">All Agents</option>';
+      State.agents.forEach(a => {
+        const opt = document.createElement('option');
+        opt.value = a.name;
+        opt.textContent = a.name;
+        if (a.name.toLowerCase() === targetAgent.toLowerCase()) opt.selected = true;
+        agentSelect.appendChild(opt);
+      });
+      if (targetAgent === 'ALL') {
+        agentSelect.value = 'ALL';
+      }
+    }
+
+    // Modal head icon, title, subtitle
+    const iconBox = document.getElementById('breakdownHeadIcon');
+    const titleEl = document.getElementById('breakdownModalTitle');
+    const subEl = document.getElementById('breakdownModalSubtitle');
+    const dateTag = document.getElementById('breakdownDateTag');
+
+    if (iconBox) {
+      iconBox.className = 'breakdown-icon-box';
+      if (category === 'OUT') {
+        iconBox.classList.add('icon-out');
+        iconBox.innerHTML = '<i class="fa-solid fa-arrow-up-right-from-square"></i>';
+      } else if (category === 'IN') {
+        iconBox.classList.add('icon-in');
+        iconBox.innerHTML = '<i class="fa-solid fa-arrow-down-left-and-up-right-to-center"></i>';
+      } else if (category === 'DIFF') {
+        iconBox.classList.add('icon-diff');
+        iconBox.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i>';
+      } else if (category === 'AGENT') {
+        iconBox.classList.add('icon-agent');
+        iconBox.innerHTML = '<i class="fa-solid fa-user-tie"></i>';
+      }
+    }
+
+    if (titleEl) {
+      if (category === 'OUT') titleEl.textContent = 'Dispatched Bills Breakdown (Out)';
+      else if (category === 'IN') titleEl.textContent = 'Received & Accounted Bills Breakdown (In)';
+      else if (category === 'DIFF') titleEl.textContent = 'Custody Difference & Pending Bills Breakdown';
+      else if (category === 'AGENT') titleEl.textContent = `${targetAgent}'s Custody & Scans Breakdown`;
+    }
+
+    if (subEl) {
+      if (category === 'OUT') subEl.textContent = 'Detailed list of all bills dispatched into agent custody';
+      else if (category === 'IN') subEl.textContent = 'Bills safely collected, settled or returned to office custody';
+      else if (category === 'DIFF') subEl.textContent = 'Audit list of bills currently in agent custody awaiting return';
+      else if (category === 'AGENT') subEl.textContent = `Individual breakdown of all bills and custody status for ${targetAgent}`;
+    }
+
+    if (dateTag) {
+      const filterMode = State.homeDateFilter || 'TODAY';
+      const customDate = State.homeCustomDate;
+      if (filterMode === 'TODAY') {
+        const now = new Date();
+        const formatted = now.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+        dateTag.textContent = `TODAY (${formatted})`;
+      } else if (filterMode === 'YESTERDAY') {
+        const yest = new Date();
+        yest.setDate(yest.getDate() - 1);
+        const formatted = yest.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+        dateTag.textContent = `YESTERDAY (${formatted})`;
+      } else if (filterMode === 'ALL') {
+        dateTag.textContent = 'ALL CUSTODY';
+      } else if (filterMode === 'CUSTOM' && customDate) {
+        dateTag.textContent = customDate;
+      }
+    }
+
+    renderDashboardBreakdownTable();
+
+    const modal = document.getElementById('dashboardBreakdownModal');
+    if (modal) {
+      modal.style.display = 'flex';
+    }
+  }
+
+  function closeDashboardBreakdownModal() {
+    State.isBreakdownModalOpen = false;
+    const modal = document.getElementById('dashboardBreakdownModal');
+    if (modal) {
+      modal.style.display = 'none';
+    }
+  }
+
+  function receiveBillDirectly(billNo) {
+    if (!billNo) return;
+    const b = State.bills.find(item => item.billNo === billNo);
+    if (!b) return;
+
+    b.status = 'RECEIVED';
+    b.remarks = 'Directly received from Breakdown modal';
+    b.lastActionDate = new Date().toISOString();
+
+    if (!b.receipt || b.outstanding === undefined) {
+      const mm = findMasterBill(b.billNo);
+      if (mm) {
+        b.receipt = mm.receipt || b.receipt;
+        b.refNo = mm.receipt || b.refNo;
+        b.outstanding = mm.outstanding !== undefined ? mm.outstanding : b.outstanding;
+        if (mm.party && mm.party !== 'Customer') b.party = mm.party;
+        if (mm.amount) b.amount = mm.amount;
+      } else {
+        fetchSingleBillDetailsFromSheet(b.billNo, 'SETTLEMENT');
+      }
+    }
+
+    addAuditLog('RECEIVED_BREAKDOWN', `Received invoice ${b.billNo} via Breakdown modal`, { billNo: b.billNo, agent: b.agent, amount: b.amount });
+    saveState();
+    updateGlobalStats();
+    updateHomeStats();
+    if (typeof renderLeftOutTab === 'function') renderLeftOutTab();
+    if (typeof loadSettlementForSelectedAgent === 'function') loadSettlementForSelectedAgent();
+    renderDashboardBreakdownTable();
+    SoundFX.playBeep('success');
+    showToast(`Received ${b.billNo} successfully`, 'success');
+  }
+
+  function copyBreakdownSummaryText() {
+    const baseBills = getBreakdownBaseBills();
+    const filterMode = State.homeDateFilter || 'TODAY';
+    let catTitle = 'Custody Breakdown';
+    if (State.breakdownCategory === 'OUT') catTitle = 'Dispatched Out';
+    else if (State.breakdownCategory === 'IN') catTitle = 'Received / Accounted';
+    else if (State.breakdownCategory === 'DIFF') catTitle = 'Custody Differences';
+    else if (State.breakdownCategory === 'AGENT') catTitle = `${State.breakdownAgent || 'Agent'} Breakdown`;
+
+    const totalAmt = baseBills.reduce((s, b) => s + (Number(b.amount) || 0), 0);
+    const pendingBills = baseBills.filter(b => (b.outstanding || 0) > 0 || b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT');
+    const pendingAmt = pendingBills.reduce((s, b) => s + (Number(b.outstanding !== undefined ? b.outstanding : b.amount) || 0), 0);
+
+    let text = `📊 BILLAUDIT PRO - ${catTitle.toUpperCase()}\n`;
+    text += `Date Filter: ${filterMode} (${document.getElementById('breakdownDateTag')?.textContent || ''})\n`;
+    text += `Total Bills: ${baseBills.length} | Amount: ${formatINR(totalAmt)}\n`;
+    text += `Pending Due: ${pendingBills.length} | Due Amount: ${formatINR(pendingAmt)}\n`;
+    text += `--------------------------------------\n`;
+
+    baseBills.slice(0, 25).forEach((b, i) => {
+      const rec = b.receipt || b.refNo || '-';
+      text += `${i + 1}. ${b.billNo} | ${b.agent || 'No Agent'} | ${b.party} | ${formatINR(b.amount)} | [Receipt: ${rec}] | Status: ${b.status}\n`;
+    });
+
+    if (baseBills.length > 25) {
+      text += `...and ${baseBills.length - 25} more bills.\n`;
+    }
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => {
+        showToast('Breakdown summary copied to clipboard!', 'success');
+      }).catch(() => {
+        showToast('Could not copy automatically', 'warning');
+      });
+    } else {
+      showToast('Clipboard not supported', 'warning');
     }
   }
 
@@ -4838,10 +5304,10 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     document.getElementById('homeDispatchCard')?.addEventListener('click', () => openAgentPicker('DISPATCH'));
     document.getElementById('homeSettlementCard')?.addEventListener('click', () => openAgentPicker('SETTLEMENT'));
 
-    // HOME TAB: metric cards shortcut directly to detailed views
-    document.getElementById('homeDiffCardPro')?.addEventListener('click', () => switchTab('tab-leftout'));
-    document.getElementById('homeOutCardPro')?.addEventListener('click', () => switchTab('tab-history'));
-    document.getElementById('homeInCardPro')?.addEventListener('click', () => switchTab('tab-history'));
+    // HOME TAB: metric cards shortcut directly to interactive breakdown views
+    document.getElementById('homeOutCardPro')?.addEventListener('click', () => openDashboardBreakdown('OUT'));
+    document.getElementById('homeInCardPro')?.addEventListener('click', () => openDashboardBreakdown('IN'));
+    document.getElementById('homeDiffCardPro')?.addEventListener('click', () => openDashboardBreakdown('DIFF'));
 
     // HOME TAB: date filter chips (Today, Yesterday, All Active Custody)
     document.querySelectorAll('#homeDateFilters .home-date-chip').forEach(chip => {
@@ -4921,7 +5387,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     window.addEventListener('keydown', (e) => {
       const activeTag = document.activeElement ? document.activeElement.tagName : '';
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(activeTag)) return;
-      if (State.isConfirmModalOpen) return;
+      if (State.isConfirmModalOpen || State.isBreakdownModalOpen) return;
 
       const tabMap = {
         '1': 'tab-home',
@@ -5211,6 +5677,11 @@ _BillAudit Pro_`;
           e.preventDefault();
           closeBillConfirmModal();
         }
+      } else if (State.isBreakdownModalOpen) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          closeDashboardBreakdownModal();
+        }
       }
     });
 
@@ -5226,8 +5697,6 @@ _BillAudit Pro_`;
     document.getElementById('closeReturnModalBtn')?.addEventListener('click', closeReturnModal);
     document.getElementById('cancelReturnModalBtn')?.addEventListener('click', closeReturnModal);
     document.getElementById('returnRecordForm')?.addEventListener('submit', saveReturnRecord);
-
-
 
     document.getElementById('closeQrPreviewModalBtn')?.addEventListener('click', () => document.getElementById('qrPreviewModal').style.display = 'none');
     document.getElementById('closeQrPreviewBottomBtn')?.addEventListener('click', () => document.getElementById('qrPreviewModal').style.display = 'none');
@@ -5256,6 +5725,48 @@ _BillAudit Pro_`;
       reconciliationData.activeAgent = e.target.value;
       renderReconcileTable();
     });
+
+    // Dashboard Breakdown Modal Event Listeners
+    document.getElementById('closeBreakdownModalBtn')?.addEventListener('click', closeDashboardBreakdownModal);
+    document.getElementById('closeBreakdownModalFooterBtn')?.addEventListener('click', closeDashboardBreakdownModal);
+    document.getElementById('dashboardBreakdownModal')?.addEventListener('click', (e) => {
+      if (e.target.id === 'dashboardBreakdownModal') {
+        closeDashboardBreakdownModal();
+      }
+    });
+
+    document.getElementById('breakdownSearchInput')?.addEventListener('input', (e) => {
+      State.breakdownSearch = e.target.value;
+      const clearBtn = document.getElementById('breakdownClearSearchBtn');
+      if (clearBtn) clearBtn.style.display = e.target.value ? 'inline-block' : 'none';
+      renderDashboardBreakdownTable();
+    });
+
+    document.getElementById('breakdownClearSearchBtn')?.addEventListener('click', () => {
+      const searchInp = document.getElementById('breakdownSearchInput');
+      if (searchInp) searchInp.value = '';
+      State.breakdownSearch = '';
+      const clearBtn = document.getElementById('breakdownClearSearchBtn');
+      if (clearBtn) clearBtn.style.display = 'none';
+      renderDashboardBreakdownTable();
+      searchInp?.focus();
+    });
+
+    document.querySelectorAll('#breakdownFilterTabs .breakdown-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        document.querySelectorAll('#breakdownFilterTabs .breakdown-chip').forEach(c => c.classList.remove('active'));
+        chip.classList.add('active');
+        State.breakdownFilter = chip.dataset.bFilter || 'ALL';
+        renderDashboardBreakdownTable();
+      });
+    });
+
+    document.getElementById('breakdownAgentSelect')?.addEventListener('change', (e) => {
+      State.breakdownAgent = e.target.value;
+      renderDashboardBreakdownTable();
+    });
+
+    document.getElementById('breakdownCopySummaryBtn')?.addEventListener('click', copyBreakdownSummaryText);
   }
 
   // Application Startup

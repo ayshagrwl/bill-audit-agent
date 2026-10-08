@@ -2082,8 +2082,152 @@ google.visualization.Query.setResponse({
 
   console.log('✅ Test 35 Passed! Live Payment Recorded / Pending Audit Badges & Receipt Number Engine verified 100%!\n');
 
-  console.log('🎉 ALL 35 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+  // ========================================================
+  // Test 36: Dashboard Number Card Interactive Compressed Breakdown Engine
+  // ========================================================
+  console.log('Test 36: Dashboard Number Card Interactive Compressed Breakdown Engine');
+
+  const mockBreakdownState = {
+    homeDateFilter: 'TODAY',
+    homeCustomDate: null,
+    breakdownCategory: 'OUT',
+    breakdownAgent: 'ALL',
+    breakdownFilter: 'ALL',
+    breakdownSearch: '',
+    dispatchBasket: [
+      { billNo: 'IN-BASKET-1', amount: 3500, agent: 'Rajesh', party: 'Quick Mart', outstanding: 3500 }
+    ],
+    bills: [
+      { billNo: 'IN-101', amount: 5000, agent: 'Rajesh', beat: 'MUKHTIYARGANJ', party: 'Satguru Store', dispatchDate: todayStr, status: 'RECEIVED', receipt: 'R401', outstanding: 0 },
+      { billNo: 'IN-102', amount: 4200, agent: 'Rajesh', beat: 'MUKHTIYARGANJ', party: 'Gupta General', dispatchDate: todayStr, status: 'WITH_AGENT', receipt: '', outstanding: 4200 },
+      { billNo: 'IN-103', amount: 6000, agent: 'Shivam', beat: 'RAJENDRA NAGAR', party: 'Kisan Traders', dispatchDate: todayStr, status: 'RECEIVED', receipt: 'R402', outstanding: 1000 },
+      { billNo: 'IN-104', amount: 2500, agent: 'Shivam', beat: 'RAJENDRA NAGAR', party: 'Apex Foods', dispatchDate: todayStr, status: 'WITH_AGENT', receipt: '', outstanding: 2500 },
+      { billNo: 'IN-OLD', amount: 1500, agent: 'Self', party: 'Counter Cash', dispatchDate: '2026-09-01', status: 'RECEIVED', receipt: 'PAID IN FULL', outstanding: 0 }
+    ]
+  };
+
+  function testGetBreakdownBaseBills(state, category, targetAgent = 'ALL') {
+    const filterMode = state.homeDateFilter || 'TODAY';
+    const customDate = state.homeCustomDate;
+    const dateFiltered = state.bills.filter(b => matchesDateFilter(b.dispatchDate, filterMode, customDate));
+
+    let list = [];
+    if (category === 'OUT') {
+      list = [...dateFiltered];
+      if (filterMode === 'TODAY' && state.dispatchBasket && state.dispatchBasket.length > 0) {
+        state.dispatchBasket.forEach(b => {
+          list.push({ ...b, isBasket: true, status: 'IN_BASKET' });
+        });
+      }
+    } else if (category === 'IN') {
+      list = dateFiltered.filter(b => b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND');
+    } else if (category === 'DIFF') {
+      list = dateFiltered.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT');
+    } else if (category === 'AGENT') {
+      list = [...dateFiltered];
+      if (filterMode === 'TODAY' && state.dispatchBasket && state.dispatchBasket.length > 0) {
+        state.dispatchBasket.forEach(b => {
+          list.push({ ...b, isBasket: true, status: 'IN_BASKET' });
+        });
+      }
+    }
+
+    if (targetAgent && targetAgent !== 'ALL') {
+      list = list.filter(b => (b.agent || '').toLowerCase() === targetAgent.toLowerCase());
+    }
+
+    return list;
+  }
+
+  // A. Dispatched Out Breakdown (Includes Basket items for Today)
+  const outList = testGetBreakdownBaseBills(mockBreakdownState, 'OUT', 'ALL');
+  assert.strictEqual(outList.length, 5, 'OUT should include 4 today bills + 1 basket bill');
+  const basketItem = outList.find(b => b.isBasket);
+  assert.ok(basketItem, 'Must contain basket item');
+  assert.strictEqual(basketItem.billNo, 'IN-BASKET-1');
+
+  // B. Received In Breakdown
+  const inList = testGetBreakdownBaseBills(mockBreakdownState, 'IN', 'ALL');
+  assert.strictEqual(inList.length, 2, 'IN should return 2 received bills for today');
+  assert.strictEqual(inList.map(b => b.billNo).sort().join(','), 'IN-101,IN-103');
+
+  // C. Difference Pending Breakdown
+  const diffList = testGetBreakdownBaseBills(mockBreakdownState, 'DIFF', 'ALL');
+  assert.strictEqual(diffList.length, 2, 'DIFF should return 2 pending bills for today');
+  assert.strictEqual(diffList.map(b => b.billNo).sort().join(','), 'IN-102,IN-104');
+
+  // D. Individual Agent Breakdown (Rajesh)
+  const rajeshList = testGetBreakdownBaseBills(mockBreakdownState, 'AGENT', 'Rajesh');
+  assert.strictEqual(rajeshList.length, 3, 'Rajesh should have 2 bills + 1 basket bill');
+  assert.ok(rajeshList.every(b => b.agent === 'Rajesh'));
+
+  // E. KPI Summary Computations across Dispatched bills
+  let kpiTotalAmt = 0;
+  let kpiPaidAmt = 0;
+  let kpiDueAmt = 0;
+  let kpiPaidCount = 0;
+  let kpiPendingCount = 0;
+  let kpiReceiptCount = 0;
+  const agentsSet = new Set();
+
+  outList.forEach(b => {
+    const amt = Number(b.amount) || 0;
+    kpiTotalAmt += amt;
+    if (b.agent) agentsSet.add(b.agent);
+
+    const outDue = (b.outstanding !== undefined) ? Number(b.outstanding) : (b.status === 'RECEIVED' ? 0 : amt);
+    const badges = renderBillPaymentBadgesHtml(b);
+    if (badges.hasActualReceipt) kpiReceiptCount++;
+
+    if (outDue > 0) {
+      kpiPendingCount++;
+      kpiDueAmt += outDue;
+      if (outDue < amt) kpiPaidAmt += (amt - outDue);
+    } else {
+      kpiPaidCount++;
+      kpiPaidAmt += amt;
+    }
+  });
+
+  assert.strictEqual(kpiTotalAmt, 21200, 'Total dispatched amount should be 5000+4200+6000+2500+3500 = 21,200');
+  assert.strictEqual(kpiPendingCount, 4, '4 bills have outstanding due (102: 4200, 103 partial: 1000, 104: 2500, Basket: 3500)');
+  assert.strictEqual(kpiDueAmt, 11200, 'Total pending due should be 4200+1000+2500+3500 = 11,200');
+  assert.strictEqual(kpiPaidAmt, 10000, 'Total collected/paid should be 5000 + 5000 (from 103 partial) = 10,000');
+  assert.strictEqual(kpiReceiptCount, 2, '2 bills have actual Column M receipts (R401, R402)');
+  assert.strictEqual(agentsSet.size, 2, '2 unique agents (Rajesh, Shivam)');
+
+  // F. Sub-Filter Chips Testing
+  const pendingFiltered = outList.filter(b => (b.outstanding || 0) > 0);
+  assert.strictEqual(pendingFiltered.length, 4, 'PENDING chip should return 4 bills');
+
+  const paidFiltered = outList.filter(b => (b.outstanding || 0) === 0);
+  assert.strictEqual(paidFiltered.length, 1, 'PAID chip should return 1 fully paid bill');
+  assert.strictEqual(paidFiltered[0].billNo, 'IN-101');
+
+  const receiptFiltered = outList.filter(b => renderBillPaymentBadgesHtml(b).hasActualReceipt);
+  assert.strictEqual(receiptFiltered.length, 2, 'RECEIPT chip should return 2 bills');
+
+  // G. Live Search Filter Testing
+  function searchBreakdown(list, q) {
+    const s = q.toLowerCase();
+    return list.filter(b => {
+      return (b.billNo || '').toLowerCase().includes(s) ||
+             (b.party || '').toLowerCase().includes(s) ||
+             (b.agent || '').toLowerCase().includes(s) ||
+             (b.receipt || '').toLowerCase().includes(s);
+    });
+  }
+
+  assert.strictEqual(searchBreakdown(outList, '102').length, 1, 'Searching 102 should return IN-102');
+  assert.strictEqual(searchBreakdown(outList, 'Satguru').length, 1, 'Searching party Satguru should return IN-101');
+  assert.strictEqual(searchBreakdown(outList, 'R402').length, 1, 'Searching receipt R402 should return IN-103');
+  assert.strictEqual(searchBreakdown(outList, 'Shivam').length, 2, 'Searching agent Shivam should return 2 bills');
+
+  console.log('✅ Test 36 Passed! Dashboard Number Card Interactive Compressed Breakdown Engine verified 100%!\n');
+
+  console.log('🎉 ALL 36 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
 })();
+
 
 
 
