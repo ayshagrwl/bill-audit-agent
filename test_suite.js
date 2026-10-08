@@ -1894,7 +1894,96 @@ google.visualization.Query.setResponse({
 
   console.log('✅ Test 33 Passed! Payment Details Fetch & Audit Completion Engine verified 100%!\n');
 
-  console.log('🎉 ALL 33 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+  // Test 34: Dashboard Multi-Day Custody Filter Engine (Today, Yesterday, All Time, Date Normalization)
+  console.log('Test 34: Dashboard Multi-Day Custody Filter Engine (Today, Yesterday, All Time)');
+
+  function normalizeDateString(d) {
+    if (!d) return '';
+    const str = String(d).trim();
+    if (!str) return '';
+    if (str.includes('T')) return str.split('T')[0];
+    if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(str)) {
+      const parts = str.split('-');
+      return `${parts[0]}-${String(parts[1]).padStart(2, '0')}-${String(parts[2]).padStart(2, '0')}`;
+    }
+    const dmy = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    if (dmy) {
+      return `${dmy[3]}-${String(dmy[2]).padStart(2, '0')}-${String(dmy[1]).padStart(2, '0')}`;
+    }
+    const parsed = new Date(str);
+    if (!isNaN(parsed.getTime())) {
+      return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`;
+    }
+    return str;
+  }
+
+  function matchesDateFilter(billDate, filterMode = 'TODAY', targetCustomDate = null) {
+    const normBill = normalizeDateString(billDate);
+    if (!normBill) return filterMode === 'ALL';
+    if (filterMode === 'TODAY') {
+      const d = new Date();
+      const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      return normBill === today;
+    }
+    if (filterMode === 'YESTERDAY') {
+      const d = new Date();
+      d.setDate(d.getDate() - 1);
+      const yest = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      return normBill === yest;
+    }
+    if (filterMode === 'CUSTOM' && targetCustomDate) {
+      return normBill === normalizeDateString(targetCustomDate);
+    }
+    if (filterMode === 'ALL') return true;
+    return normBill === normalizeDateString(filterMode);
+  }
+
+  // 1. Verify Date Normalization across Indian & International Formats
+  assert.strictEqual(normalizeDateString('2026-10-09'), '2026-10-09');
+  assert.strictEqual(normalizeDateString('2026-10-09T14:32:00.000Z'), '2026-10-09');
+  assert.strictEqual(normalizeDateString('09/10/2026'), '2026-10-09');
+  assert.strictEqual(normalizeDateString('9/10/2026'), '2026-10-09');
+  assert.strictEqual(normalizeDateString('09-10-2026'), '2026-10-09');
+
+  // 2. Multi-Day Dashboard Mock Bills
+  const dNow = new Date();
+  const todayStr = `${dNow.getFullYear()}-${String(dNow.getMonth() + 1).padStart(2, '0')}-${String(dNow.getDate()).padStart(2, '0')}`;
+  const dYest = new Date();
+  dYest.setDate(dYest.getDate() - 1);
+  const yestStr = `${dYest.getFullYear()}-${String(dYest.getMonth() + 1).padStart(2, '0')}-${String(dYest.getDate()).padStart(2, '0')}`;
+
+  const mockMultiDayBills = [
+    { billNo: 'IN-T1', amount: 5000, dispatchDate: todayStr, status: 'RECEIVED' },
+    { billNo: 'IN-T2', amount: 3000, dispatchDate: todayStr, status: 'WITH_AGENT' },
+    { billNo: 'IN-Y1', amount: 7000, dispatchDate: yestStr, status: 'RECEIVED' },
+    { billNo: 'IN-Y2', amount: 4000, dispatchDate: yestStr, status: 'WITH_AGENT' },
+    { billNo: 'IN-OLD1', amount: 2000, dispatchDate: '2026-09-01', status: 'WITH_AGENT' }
+  ];
+
+  // Test TODAY Filter
+  const todayFiltered = mockMultiDayBills.filter(b => matchesDateFilter(b.dispatchDate, 'TODAY'));
+  assert.strictEqual(todayFiltered.length, 2, 'Today should return 2 bills');
+  assert.strictEqual(todayFiltered[0].billNo, 'IN-T1');
+  assert.strictEqual(todayFiltered[1].billNo, 'IN-T2');
+
+  // Test YESTERDAY Filter
+  const yestFiltered = mockMultiDayBills.filter(b => matchesDateFilter(b.dispatchDate, 'YESTERDAY'));
+  assert.strictEqual(yestFiltered.length, 2, 'Yesterday should return 2 bills');
+  assert.strictEqual(yestFiltered[0].billNo, 'IN-Y1');
+  assert.strictEqual(yestFiltered[1].billNo, 'IN-Y2');
+
+  // Test ALL Filter
+  const allFiltered = mockMultiDayBills.filter(b => matchesDateFilter(b.dispatchDate, 'ALL'));
+  assert.strictEqual(allFiltered.length, 5, 'All Time should return 5 bills');
+
+  // Test CUSTOM Date Filter
+  const customFiltered = mockMultiDayBills.filter(b => matchesDateFilter(b.dispatchDate, 'CUSTOM', '2026-09-01'));
+  assert.strictEqual(customFiltered.length, 1, 'Custom date should return 1 bill');
+  assert.strictEqual(customFiltered[0].billNo, 'IN-OLD1');
+
+  console.log('✅ Test 34 Passed! Dashboard Multi-Day Custody Filter Engine verified 100%!\n');
+
+  console.log('🎉 ALL 34 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
 })();
 
 

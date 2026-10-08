@@ -191,10 +191,29 @@
           </button>
         </div>
 
-        <!-- SECTION: TODAY'S CUSTODY AT A GLANCE (BOLD HIGHLIGHTED METRICS) -->
+        <!-- SECTION: CUSTODY AT A GLANCE (BOLD HIGHLIGHTED METRICS) -->
         <div class="section-title-strip mt-4">
-          <span class="section-title-label"><i class="fa-solid fa-chart-simple"></i> Today's Custody Status</span>
-          <span class="section-title-hint">Live totals across all agents</span>
+          <span class="section-title-label" id="homeCustodySectionTitle"><i class="fa-solid fa-chart-simple"></i> Today's Custody Status</span>
+          <span class="section-title-hint" id="homeCustodySectionHint">Live totals across all agents</span>
+        </div>
+
+        <!-- DASHBOARD DATE FILTER BAR (Today, Yesterday, All Active Custody, Pick Date) -->
+        <div class="dashboard-date-filter-bar mt-2">
+          <div class="home-date-chips" id="homeDateFilters">
+            <button type="button" class="home-date-chip active" data-home-date="TODAY">
+              <i class="fa-solid fa-calendar-day"></i> Today
+            </button>
+            <button type="button" class="home-date-chip" data-home-date="YESTERDAY">
+              <i class="fa-solid fa-clock-rotate-left"></i> Yesterday
+            </button>
+            <button type="button" class="home-date-chip" data-home-date="ALL">
+              <i class="fa-solid fa-layer-group"></i> All Active Custody
+            </button>
+          </div>
+          <div class="date-custom-picker-wrap">
+            <label for="homeCustomDatePicker" class="custom-date-label"><i class="fa-regular fa-calendar"></i> Pick Date:</label>
+            <input type="date" id="homeCustomDatePicker" class="form-input form-input-compact" />
+          </div>
         </div>
 
         <div class="highlight-metrics-grid mt-2">

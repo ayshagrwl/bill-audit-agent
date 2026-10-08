@@ -96,6 +96,8 @@
     activeSettlementAgent: null,
     settlementBills: [],
     diffDateFilter: 'TODAY', // 'TODAY', 'YESTERDAY', or 'ALL'
+    homeDateFilter: 'TODAY', // 'TODAY', 'YESTERDAY', 'ALL', or 'CUSTOM'
+    homeCustomDate: null,
     activeTab: 'tab-home',
     lastScannedCode: null,
     lastScanTimestamp: 0,
@@ -200,6 +202,11 @@
       State.bills.forEach(b => {
         if (!b.agent || !validAgentNames.has(b.agent.toLowerCase().trim())) {
           b.agent = 'Rajesh';
+        }
+        if (b.dispatchDate) {
+          b.dispatchDate = normalizeDateString(b.dispatchDate);
+        } else if (b.lastActionDate) {
+          b.dispatchDate = normalizeDateString(b.lastActionDate);
         }
       });
 
@@ -351,6 +358,71 @@
     const d = new Date();
     d.setDate(d.getDate() - 1);
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  /**
+   * Normalizes any date format (ISO, YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY) to canonical YYYY-MM-DD
+   */
+  function normalizeDateString(d) {
+    if (!d) return '';
+    const str = String(d).trim();
+    if (!str) return '';
+
+    // If ISO timestamp like 2026-10-09T18:30:00.000Z
+    if (str.includes('T')) {
+      return str.split('T')[0];
+    }
+
+    // If format like YYYY-MM-DD or YYYY-M-D
+    if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(str)) {
+      const parts = str.split('-');
+      return `${parts[0]}-${String(parts[1]).padStart(2, '0')}-${String(parts[2]).padStart(2, '0')}`;
+    }
+
+    // If format like DD/MM/YYYY or DD-MM-YYYY
+    const dmy = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    if (dmy) {
+      return `${dmy[3]}-${String(dmy[2]).padStart(2, '0')}-${String(dmy[1]).padStart(2, '0')}`;
+    }
+
+    // Try parsing as standard Date
+    const parsed = new Date(str);
+    if (!isNaN(parsed.getTime())) {
+      return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`;
+    }
+
+    return str;
+  }
+
+  /**
+   * Checks whether a bill's date matches a given date filter mode (TODAY, YESTERDAY, ALL, CUSTOM)
+   */
+  function matchesDateFilter(billDate, filterMode = 'TODAY', targetCustomDate = null) {
+    const normBill = normalizeDateString(billDate);
+    if (!normBill) {
+      return filterMode === 'ALL';
+    }
+
+    if (filterMode === 'TODAY') {
+      const today = getTodayDateString();
+      return normBill === today;
+    }
+
+    if (filterMode === 'YESTERDAY') {
+      const yest = getYesterdayDateString();
+      return normBill === yest;
+    }
+
+    if (filterMode === 'CUSTOM' && targetCustomDate) {
+      const target = normalizeDateString(targetCustomDate);
+      return normBill === target;
+    }
+
+    if (filterMode === 'ALL') {
+      return true;
+    }
+
+    return normBill === normalizeDateString(filterMode);
   }
 
 
@@ -2394,16 +2466,12 @@
   // 8. TAB 3: REMAINING LEFT-OUT AUDIT ENGINE
   // ========================================================
 
-  function getAgentLeftOutStats(agentName, dateFilter = null, beatFilter = null) {
+  function getAgentLeftOutStats(agentName, dateFilter = null, beatFilter = null, customDate = null) {
     const activeDateFilter = dateFilter || State.diffDateFilter || 'TODAY';
     let agentBills = State.bills.filter(b => b.agent === agentName);
 
-    if (activeDateFilter === 'TODAY') {
-      const today = getTodayDateString();
-      agentBills = agentBills.filter(b => b.dispatchDate === today);
-    } else if (activeDateFilter === 'YESTERDAY') {
-      const yest = getYesterdayDateString();
-      agentBills = agentBills.filter(b => b.dispatchDate === yest);
+    if (activeDateFilter !== 'ALL') {
+      agentBills = agentBills.filter(b => matchesDateFilter(b.dispatchDate || b.lastActionDate, activeDateFilter, customDate));
     }
 
     if (beatFilter && beatFilter !== 'ALL') {
@@ -2492,12 +2560,8 @@
 
     // Calculate strip stats for selected date filter & beat filter
     let dateFilteredBills = State.bills;
-    if (activeDateFilter === 'TODAY') {
-      const today = getTodayDateString();
-      dateFilteredBills = State.bills.filter(b => b.dispatchDate === today);
-    } else if (activeDateFilter === 'YESTERDAY') {
-      const yest = getYesterdayDateString();
-      dateFilteredBills = State.bills.filter(b => b.dispatchDate === yest);
+    if (activeDateFilter !== 'ALL') {
+      dateFilteredBills = State.bills.filter(b => matchesDateFilter(b.dispatchDate || b.lastActionDate, activeDateFilter));
     }
 
     if (filterVal !== 'ALL') {
@@ -2800,7 +2864,7 @@ _BillAudit Pro_`;
             party: cb.party || 'Standard Customer',
             amount: Number(cb.amount) || 0,
             agent: cb.agent || 'Sales Agent',
-            dispatchDate: cb.dispatchDate ? String(cb.dispatchDate).slice(0, 10) : getTodayDateString(),
+            dispatchDate: cb.dispatchDate ? normalizeDateString(cb.dispatchDate) : (cb.lastActionDate ? normalizeDateString(cb.lastActionDate) : getTodayDateString()),
             status: cb.status || 'WITH_AGENT',
             collectedAmt: Number(cb.collectedAmt) || 0,
             outstanding: cb.outstanding !== undefined ? Number(cb.outstanding) : (Number(cb.amount) || 0),
@@ -2824,6 +2888,7 @@ _BillAudit Pro_`;
             b.refNo = formattedBill.refNo;
             b.remarks = formattedBill.remarks;
             b.lastActionDate = formattedBill.lastActionDate;
+            if (cb.dispatchDate) b.dispatchDate = normalizeDateString(cb.dispatchDate);
             updatedCount++;
           } else {
             State.bills.push(formattedBill);
@@ -4101,15 +4166,24 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
 
   // Updates the home tab quick stats strip & agent difference cards
   function updateHomeStats() {
-    const today = getTodayDateString();
-    const todayBills = State.bills.filter(b => b.dispatchDate === today);
-    const outCount = todayBills.length;
-    const inBills = todayBills.filter(b => b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND');
+    const filterMode = State.homeDateFilter || 'TODAY';
+    const customDate = State.homeCustomDate;
+
+    // Filter bills according to active date filter (TODAY, YESTERDAY, ALL, or CUSTOM)
+    const filteredBills = State.bills.filter(b => matchesDateFilter(b.dispatchDate || b.lastActionDate, filterMode, customDate));
+
+    // For TODAY: also include any bills actively scanned in the dispatch basket awaiting handover!
+    const basketBills = (filterMode === 'TODAY') ? State.dispatchBasket : [];
+    const basketCount = basketBills.length;
+    const basketAmt = basketBills.reduce((s, b) => s + (Number(b.amount) || 0), 0);
+
+    const outCount = filteredBills.length + basketCount;
+    const inBills = filteredBills.filter(b => b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND');
     const inCount = inBills.length;
-    const diffBills = todayBills.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT');
+    const diffBills = filteredBills.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT');
     const diffCount = diffBills.length;
 
-    const outAmt = todayBills.reduce((s, b) => s + (Number(b.amount) || 0), 0);
+    const outAmt = filteredBills.reduce((s, b) => s + (Number(b.amount) || 0), 0) + basketAmt;
     const inAmt = inBills.reduce((s, b) => s + (Number(b.collectedAmt !== undefined ? b.collectedAmt : b.amount) || 0), 0);
     const diffAmt = diffBills.reduce((s, b) => s + (Number(b.outstanding !== undefined ? b.outstanding : b.amount) || 0), 0);
 
@@ -4123,7 +4197,13 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     const elOutAmt = document.getElementById('homeStatOutAmt');
     const elInAmt = document.getElementById('homeStatInAmt');
     const elLeftAmt = document.getElementById('homeStatLeftAmt');
-    if (elOutAmt) elOutAmt.textContent = `${formatINR(outAmt)} in transit`;
+    if (elOutAmt) {
+      if (basketCount > 0) {
+        elOutAmt.textContent = `${formatINR(outAmt)} (${basketCount} in basket ready)`;
+      } else {
+        elOutAmt.textContent = `${formatINR(outAmt)} in transit`;
+      }
+    }
     if (elInAmt) elInAmt.textContent = `${formatINR(inAmt)} accounted`;
     if (elLeftAmt) elLeftAmt.textContent = `${formatINR(diffAmt)} still pending`;
 
@@ -4133,16 +4213,44 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       sideBadge.style.display = diffCount > 0 ? 'inline-flex' : 'none';
     }
 
-    // Format today's date badge
+    // Highlight active chip in home date filter bar
+    document.querySelectorAll('#homeDateFilters .home-date-chip').forEach(chip => {
+      const mode = chip.dataset.homeDate;
+      chip.classList.toggle('active', mode === filterMode);
+    });
+
+    // Custom date picker sync
+    const customPicker = document.getElementById('homeCustomDatePicker');
+    if (customPicker && filterMode === 'CUSTOM' && customDate) {
+      customPicker.value = customDate;
+    }
+
+    // Dynamic Title, Hint & Date Badge
+    const titleEl = document.getElementById('homeCustodySectionTitle');
+    const hintEl = document.getElementById('homeCustodySectionHint');
     const dateBadge = document.getElementById('homeDateBadge');
-    if (dateBadge) {
+
+    if (filterMode === 'TODAY') {
       const now = new Date();
-      dateBadge.textContent = now.toLocaleDateString('en-IN', {
-        weekday: 'short',
-        day: '2-digit',
-        month: 'short',
-        year: 'numeric'
-      });
+      const formatted = now.toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short' });
+      if (titleEl) titleEl.innerHTML = `<i class="fa-solid fa-chart-simple"></i> Today's Custody Status`;
+      if (hintEl) hintEl.textContent = `Live totals for Today (${formatted})`;
+      if (dateBadge) dateBadge.textContent = `Today · ${formatted}`;
+    } else if (filterMode === 'YESTERDAY') {
+      const yest = new Date();
+      yest.setDate(yest.getDate() - 1);
+      const formatted = yest.toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short' });
+      if (titleEl) titleEl.innerHTML = `<i class="fa-solid fa-clock-rotate-left"></i> Yesterday's Custody Status`;
+      if (hintEl) hintEl.textContent = `Custody totals for Yesterday (${formatted})`;
+      if (dateBadge) dateBadge.textContent = `Yesterday · ${formatted}`;
+    } else if (filterMode === 'ALL') {
+      if (titleEl) titleEl.innerHTML = `<i class="fa-solid fa-layer-group"></i> All Active Custody Status`;
+      if (hintEl) hintEl.textContent = `Cumulative totals across all recorded dates`;
+      if (dateBadge) dateBadge.textContent = `All Active Custody`;
+    } else if (filterMode === 'CUSTOM' && customDate) {
+      if (titleEl) titleEl.innerHTML = `<i class="fa-regular fa-calendar"></i> Custody Status for ${customDate}`;
+      if (hintEl) hintEl.textContent = `Historical custody totals for selected date`;
+      if (dateBadge) dateBadge.textContent = `Date: ${customDate}`;
     }
 
     // High-contrast alert card styling if difference > 0
@@ -4165,7 +4273,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     if (diffGrid) {
       diffGrid.innerHTML = '';
       State.agents.forEach(agent => {
-        const stats = getAgentLeftOutStats(agent.name);
+        const stats = getAgentLeftOutStats(agent.name, filterMode, null, customDate);
         const card = document.createElement('div');
         card.className = 'agent-diff-card';
         card.innerHTML = `
@@ -4512,6 +4620,26 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     document.getElementById('homeDiffCardPro')?.addEventListener('click', () => switchTab('tab-leftout'));
     document.getElementById('homeOutCardPro')?.addEventListener('click', () => switchTab('tab-history'));
     document.getElementById('homeInCardPro')?.addEventListener('click', () => switchTab('tab-history'));
+
+    // HOME TAB: date filter chips (Today, Yesterday, All Active Custody)
+    document.querySelectorAll('#homeDateFilters .home-date-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        State.homeDateFilter = chip.dataset.homeDate || 'TODAY';
+        State.homeCustomDate = null;
+        const picker = document.getElementById('homeCustomDatePicker');
+        if (picker) picker.value = '';
+        updateHomeStats();
+      });
+    });
+
+    // HOME TAB: custom date picker
+    document.getElementById('homeCustomDatePicker')?.addEventListener('change', (e) => {
+      if (e.target.value) {
+        State.homeDateFilter = 'CUSTOM';
+        State.homeCustomDate = e.target.value;
+        updateHomeStats();
+      }
+    });
 
     // AGENT & BEAT / WEEK PICKER MODAL
     document.querySelectorAll('.agent-pick-btn, .agent-select-card').forEach(btn => {
