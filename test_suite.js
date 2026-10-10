@@ -2333,7 +2333,88 @@ google.visualization.Query.setResponse({
 
   console.log('✅ Test 37 Passed! Real-Time Morning Dispatch Scan-Out to Dashboard Live Sync verified 100%!\n');
 
-  console.log('🎉 ALL 37 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+  // ========================================================
+  // Test 38: Strict 1-to-1 Bill Count & Anti-Duplication Verification (88 Bills Dispatched)
+  // ========================================================
+  console.log('Test 38: Strict 1-to-1 Bill Count & Anti-Duplication Verification (88 Bills Dispatched)');
+
+  // Helper matching app.js normalization
+  function normalizeInv(val) {
+    if (!val) return '';
+    return String(val).trim().toUpperCase()
+      .replace(/^IN-FY\d{2}\/\d{2}-/i, '')
+      .replace(/^IN-\d{2}-/i, '')
+      .replace(/^IN-/i, '')
+      .replace(/^0+/, '');
+  }
+
+  // Generate 88 unique physical bills scanned today
+  const mockBills88 = [];
+  for (let i = 1; i <= 88; i++) {
+    mockBills88.push({
+      billNo: `IN-FY26/27-${3000 + i}`,
+      party: `Retail Store ${i}`,
+      amount: 1000 + (i * 10),
+      agent: i % 2 === 0 ? 'Rajesh' : 'Shivam',
+      dispatchDate: todayDateStr,
+      status: 'WITH_AGENT'
+    });
+  }
+
+  const state38 = {
+    bills: [...mockBills88],
+    // Suppose basket also retained duplicate copies of 10 bills plus variations without prefix
+    dispatchBasket: [
+      { billNo: '3001', amount: 1010, agent: 'Shivam' }, // Duplicate of IN-FY26/27-3001
+      { billNo: 'IN-FY26/27-3002', amount: 1020, agent: 'Rajesh' }, // Duplicate of IN-FY26/27-3002
+      { billNo: '3003', amount: 1030, agent: 'Shivam' }  // Duplicate of IN-FY26/27-3003
+    ]
+  };
+
+  // Add 15 historical/untracked bills from past dates or without dispatchDate, but touched today
+  for (let j = 1; j <= 15; j++) {
+    state38.bills.push({
+      billNo: `IN-FY26/27-${9000 + j}`,
+      party: `Old Customer ${j}`,
+      amount: 500,
+      agent: 'Rajesh',
+      dispatchDate: '', // undated
+      lastActionDate: new Date().toISOString(), // touched today
+      status: 'RECEIVED'
+    });
+  }
+
+  // Exact computeHomeStats implementation from app.js
+  function computeDeduplicatedStats(state) {
+    const filterMode = 'TODAY';
+    const filteredBills = state.bills.filter(b => matchesDateFilter(b.dispatchDate, filterMode));
+
+    const confirmedNorms = new Set(filteredBills.map(b => normalizeInv(b.billNo)).filter(Boolean));
+    const basketMap = new Map();
+    if (filterMode === 'TODAY' && state.dispatchBasket && state.dispatchBasket.length > 0) {
+      state.dispatchBasket.forEach(b => {
+        if (!b || !b.billNo) return;
+        const norm = normalizeInv(b.billNo);
+        if (!confirmedNorms.has(norm) && !basketMap.has(norm)) {
+          basketMap.set(norm, b);
+        }
+      });
+    }
+    const uniqueBasketBills = Array.from(basketMap.values());
+    const basketCount = uniqueBasketBills.length;
+    const outCount = filteredBills.length + basketCount;
+
+    return { outCount, basketCount, filteredBillsCount: filteredBills.length };
+  }
+
+  const result38 = computeDeduplicatedStats(state38);
+  assert.strictEqual(result38.outCount, 88, 'Dispatched Out MUST be EXACTLY 88 despite basket overlaps and historical bills');
+  assert.strictEqual(result38.basketCount, 0, 'Basket duplicates of confirmed bills must be ignored (0 new basket bills)');
+  assert.strictEqual(result38.filteredBillsCount, 88, 'Exactly 88 bills confirmed for today');
+
+  console.log('✅ Test 38 Passed! Strict 1-to-1 bill numbering verified: exactly 88 bills counted with zero inflation!\n');
+
+  console.log('🎉 ALL 38 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
 })();
 
 

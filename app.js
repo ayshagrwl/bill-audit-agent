@@ -213,10 +213,35 @@
         }
         if (b.dispatchDate) {
           b.dispatchDate = normalizeDateString(b.dispatchDate);
-        } else if (b.lastActionDate) {
-          b.dispatchDate = normalizeDateString(b.lastActionDate);
         }
       });
+
+      // Strictly deduplicate State.bills by normalized invoice number
+      const billMap = new Map();
+      State.bills.forEach(b => {
+        if (!b || !b.billNo) return;
+        const norm = normalizeInvoiceNumber(b.billNo);
+        if (!billMap.has(norm)) {
+          billMap.set(norm, b);
+        } else {
+          const existing = billMap.get(norm);
+          if (b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'WITH_AGENT') {
+            billMap.set(norm, { ...existing, ...b });
+          }
+        }
+      });
+      State.bills = Array.from(billMap.values());
+
+      // Deduplicate State.dispatchBasket by normalized invoice number
+      const basketMap = new Map();
+      State.dispatchBasket.forEach(b => {
+        if (!b || !b.billNo) return;
+        const norm = normalizeInvoiceNumber(b.billNo);
+        if (!basketMap.has(norm)) {
+          basketMap.set(norm, b);
+        }
+      });
+      State.dispatchBasket = Array.from(basketMap.values());
 
       const storedMaster = localStorage.getItem(STORAGE_KEYS.MASTER_SHEET);
       if (storedMaster) {
@@ -1507,7 +1532,8 @@
     const receiptVal = parsed.receipt || parsed.refNo || '';
 
     // Check duplicate in current basket — update if already present
-    const existingBasketIdx = State.dispatchBasket.findIndex(b => b.billNo === parsed.billNo);
+    const normScan = normalizeInvoiceNumber(parsed.billNo);
+    const existingBasketIdx = State.dispatchBasket.findIndex(b => normalizeInvoiceNumber(b.billNo) === normScan);
     if (existingBasketIdx >= 0) {
       State.dispatchBasket[existingBasketIdx].agent = assignedAgent;
       if (assignedBeat) State.dispatchBasket[existingBasketIdx].beat = assignedBeat;
@@ -1532,7 +1558,7 @@
     }
 
     // Check active custody — allow re-dispatching with alert
-    const active = State.bills.find(b => b.billNo === parsed.billNo && b.status === 'WITH_AGENT');
+    const active = State.bills.find(b => normalizeInvoiceNumber(b.billNo) === normScan && b.status === 'WITH_AGENT');
     if (active) {
       SoundFX.playBeep('warning');
       showToast(`Re-assigning ${parsed.billNo} (previously with ${active.agent})`, 'warning', 2000);
@@ -1650,7 +1676,8 @@
     const newBills = [];
 
     State.dispatchBasket.forEach(b => {
-      let record = State.bills.find(item => item.billNo === b.billNo);
+      const normB = normalizeInvoiceNumber(b.billNo);
+      let record = State.bills.find(item => normalizeInvoiceNumber(item.billNo) === normB);
       if (!record) {
         record = {
           billNo: b.billNo,
@@ -1954,7 +1981,7 @@
         amount: billAmt,
         agent: targetAgent,
         beat: parsed.beat || '',
-        dispatchDate: getTodayDateString(),
+        dispatchDate: '',
         status: 'RECEIVED',
         collectedAmt: Math.max(0, billAmt - outstanding),
         outstanding: outstanding,
@@ -2092,8 +2119,9 @@
 
     // Check 1: Custody / Duplicate status
     let custodyNote = '';
-    const activeCustody = State.bills.find(b => b.billNo === billNo && b.status === 'WITH_AGENT');
-    const receivedToday = State.bills.find(b => b.billNo === billNo && b.status === 'RECEIVED');
+    const normB = normalizeInvoiceNumber(billNo);
+    const activeCustody = State.bills.find(b => normalizeInvoiceNumber(b.billNo) === normB && b.status === 'WITH_AGENT');
+    const receivedToday = State.bills.find(b => normalizeInvoiceNumber(b.billNo) === normB && b.status === 'RECEIVED');
 
     if (source === 'DISPATCH' && activeCustody) {
       custodyNote = `⚠️ Already out with ${activeCustody.agent}! Re-dispatching will update handover.`;
@@ -2202,7 +2230,8 @@
     if (parsed.outstanding !== undefined && parsed.outstanding !== null) {
       outstanding = parseFloat(parsed.outstanding);
     } else if (source === 'SETTLEMENT') {
-      const existing = State.bills.find(b => b.billNo === parsed.billNo);
+      const normP = normalizeInvoiceNumber(parsed.billNo);
+      const existing = State.bills.find(b => normalizeInvoiceNumber(b.billNo) === normP);
       if (existing) {
         outstanding = Math.max(0, existing.amount - (existing.collectedAmt || 0));
       }
@@ -2708,7 +2737,7 @@
     let agentBills = State.bills.filter(b => isSameAgent(b.agent, agentName));
 
     if (activeDateFilter !== 'ALL') {
-      agentBills = agentBills.filter(b => matchesDateFilter(b.dispatchDate || b.lastActionDate, activeDateFilter, customDate));
+      agentBills = agentBills.filter(b => matchesDateFilter(b.dispatchDate, activeDateFilter, customDate));
     }
 
     if (beatFilter && beatFilter !== 'ALL') {
@@ -2719,10 +2748,19 @@
       });
     }
 
-    // Include basket bills for this agent if date filter is TODAY!
+    // Include basket bills for this agent if date filter is TODAY (excluding already confirmed bills)
+    const confirmedNorms = new Set(agentBills.map(b => normalizeInvoiceNumber(b.billNo)).filter(Boolean));
     let agentBasket = [];
     if (activeDateFilter === 'TODAY' && State.dispatchBasket && State.dispatchBasket.length > 0) {
-      agentBasket = State.dispatchBasket.filter(b => isSameAgent(b.agent, agentName));
+      const basketMap = new Map();
+      State.dispatchBasket.forEach(b => {
+        if (!b || !b.billNo || !isSameAgent(b.agent, agentName)) return;
+        const norm = normalizeInvoiceNumber(b.billNo);
+        if (!confirmedNorms.has(norm) && !basketMap.has(norm)) {
+          basketMap.set(norm, b);
+        }
+      });
+      agentBasket = Array.from(basketMap.values());
       if (beatFilter && beatFilter !== 'ALL') {
         const filterLower = beatFilter.toLowerCase().trim();
         agentBasket = agentBasket.filter(b => {
@@ -2815,7 +2853,7 @@
     // Calculate strip stats for selected date filter & beat filter
     let dateFilteredBills = State.bills;
     if (activeDateFilter !== 'ALL') {
-      dateFilteredBills = State.bills.filter(b => matchesDateFilter(b.dispatchDate || b.lastActionDate, activeDateFilter));
+      dateFilteredBills = State.bills.filter(b => matchesDateFilter(b.dispatchDate, activeDateFilter));
     }
 
     if (filterVal !== 'ALL') {
@@ -3133,7 +3171,7 @@ _BillAudit Pro_`;
             party: cb.party || 'Standard Customer',
             amount: Number(cb.amount) || 0,
             agent: cb.agent || 'Sales Agent',
-            dispatchDate: cb.dispatchDate ? normalizeDateString(cb.dispatchDate) : (cb.lastActionDate ? normalizeDateString(cb.lastActionDate) : getTodayDateString()),
+            dispatchDate: cb.dispatchDate ? normalizeDateString(cb.dispatchDate) : '',
             status: cb.status || 'WITH_AGENT',
             collectedAmt: Number(cb.collectedAmt) || 0,
             outstanding: cb.outstanding !== undefined ? Number(cb.outstanding) : (Number(cb.amount) || 0),
@@ -4439,12 +4477,23 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     const customDate = State.homeCustomDate;
 
     // Filter bills according to active date filter (TODAY, YESTERDAY, ALL, or CUSTOM)
-    const filteredBills = State.bills.filter(b => matchesDateFilter(b.dispatchDate || b.lastActionDate, filterMode, customDate));
+    const filteredBills = State.bills.filter(b => matchesDateFilter(b.dispatchDate, filterMode, customDate));
 
-    // For TODAY: also include any bills actively scanned in the dispatch basket awaiting handover!
-    const basketBills = (filterMode === 'TODAY') ? State.dispatchBasket : [];
-    const basketCount = basketBills.length;
-    const basketAmt = basketBills.reduce((s, b) => s + (Number(b.amount) || 0), 0);
+    // Deduplicate basket items against confirmed bills and against itself to guarantee exact counts
+    const confirmedBillNorms = new Set(filteredBills.map(b => normalizeInvoiceNumber(b.billNo)).filter(Boolean));
+    const basketMap = new Map();
+    if (filterMode === 'TODAY' && State.dispatchBasket && State.dispatchBasket.length > 0) {
+      State.dispatchBasket.forEach(b => {
+        if (!b || !b.billNo) return;
+        const norm = normalizeInvoiceNumber(b.billNo);
+        if (!confirmedBillNorms.has(norm) && !basketMap.has(norm)) {
+          basketMap.set(norm, b);
+        }
+      });
+    }
+    const uniqueBasketBills = Array.from(basketMap.values());
+    const basketCount = uniqueBasketBills.length;
+    const basketAmt = uniqueBasketBills.reduce((s, b) => s + (Number(b.amount) || 0), 0);
 
     const outCount = filteredBills.length + basketCount;
     const inBills = filteredBills.filter(b => b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND');
@@ -4601,44 +4650,37 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     const category = State.breakdownCategory || 'OUT';
     const targetAgent = State.breakdownAgent || 'ALL';
 
-    const dateFiltered = State.bills.filter(b => matchesDateFilter(b.dispatchDate || b.lastActionDate, filterMode, customDate));
+    const dateFiltered = State.bills.filter(b => matchesDateFilter(b.dispatchDate, filterMode, customDate));
 
-    let list = [];
-    if (category === 'OUT') {
-      list = [...dateFiltered];
-      if (filterMode === 'TODAY' && State.dispatchBasket && State.dispatchBasket.length > 0) {
-        State.dispatchBasket.forEach(b => {
-          list.push({
+    // Deduplicate basket items against dateFiltered to avoid double counting
+    const confirmedNorms = new Set(dateFiltered.map(b => normalizeInvoiceNumber(b.billNo)).filter(Boolean));
+    const uniqueBasket = [];
+    const bMap = new Map();
+    if (filterMode === 'TODAY' && State.dispatchBasket && State.dispatchBasket.length > 0) {
+      State.dispatchBasket.forEach(b => {
+        if (!b || !b.billNo) return;
+        const norm = normalizeInvoiceNumber(b.billNo);
+        if (!confirmedNorms.has(norm) && !bMap.has(norm)) {
+          bMap.set(norm, b);
+          uniqueBasket.push({
             ...b,
             isBasket: true,
             status: 'IN_BASKET'
           });
-        });
-      }
+        }
+      });
+    }
+
+    let list = [];
+    if (category === 'OUT') {
+      list = [...dateFiltered, ...uniqueBasket];
     } else if (category === 'IN') {
       list = dateFiltered.filter(b => b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND');
     } else if (category === 'DIFF') {
       list = dateFiltered.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT');
-      if (filterMode === 'TODAY' && State.dispatchBasket && State.dispatchBasket.length > 0) {
-        State.dispatchBasket.forEach(b => {
-          list.push({
-            ...b,
-            isBasket: true,
-            status: 'IN_BASKET'
-          });
-        });
-      }
+      list = [...list, ...uniqueBasket];
     } else if (category === 'AGENT') {
-      list = [...dateFiltered];
-      if (filterMode === 'TODAY' && State.dispatchBasket && State.dispatchBasket.length > 0) {
-        State.dispatchBasket.forEach(b => {
-          list.push({
-            ...b,
-            isBasket: true,
-            status: 'IN_BASKET'
-          });
-        });
-      }
+      list = [...dateFiltered, ...uniqueBasket];
     }
 
     if (targetAgent && targetAgent !== 'ALL') {
@@ -5719,14 +5761,14 @@ _BillAudit Pro_`;
       const parsed = State.pendingScannedBill;
       closeBillConfirmModal();
       if (!parsed) return;
-      let bill = State.bills.find(b => b.billNo === parsed.billNo);
+      let bill = State.bills.find(b => normalizeInvoiceNumber(b.billNo) === normalizeInvoiceNumber(parsed.billNo));
       if (!bill) {
         bill = {
           billNo: parsed.billNo,
           party: parsed.party || 'Standard Account',
           amount: parsed.amount || 0,
           agent: parsed.agent || State.activeSettlementAgent || 'Sales Agent',
-          dispatchDate: getTodayDateString(),
+          dispatchDate: '',
           status: 'WITH_AGENT',
           collectedAmt: 0,
           paymentMode: '',
