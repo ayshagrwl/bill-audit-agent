@@ -301,7 +301,7 @@ function syncCustodyBills(ss, bills, timestamp, defaultStatus, defaultDispatchDa
     const party = String(b.party || '').trim();
     const amount = Number(b.amount) || 0;
     const agent = String(b.agent || '').trim();
-    const dispatchDate = String(b.dispatchDate || defaultDispatchDate || getTodayDateString()).trim();
+    const dispatchDate = String(b.dispatchDate || defaultDispatchDate || (b.lastActionDate ? b.lastActionDate.slice(0, 10) : '')).trim();
     const status = String(b.status || defaultStatus || 'WITH_AGENT').trim();
     const collected = Number(b.collectedAmt) || 0;
     const remainingDue = b.outstanding !== undefined ? Number(b.outstanding) : Math.max(0, amount - collected);

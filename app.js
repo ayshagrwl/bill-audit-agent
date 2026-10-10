@@ -207,12 +207,20 @@
         'rajesh chaurasiya', 'shivam dwivedi',
         'rajesh chaurasiya(om marketing)'
       ]);
+      const todayStr = getTodayDateString();
       State.bills.forEach(b => {
         if (!b.agent || !validAgentNames.has(b.agent.toLowerCase().trim())) {
           b.agent = 'Rajesh';
         }
         if (b.dispatchDate) {
           b.dispatchDate = normalizeDateString(b.dispatchDate);
+        }
+        // Auto-heal: If historical bill was stamped with today's dispatchDate, restore its true action date
+        if (b.dispatchDate === todayStr && b.lastActionDate) {
+          const actionDay = normalizeDateString(b.lastActionDate);
+          if (actionDay && actionDay !== todayStr) {
+            b.dispatchDate = actionDay;
+          }
         }
       });
 
@@ -403,11 +411,7 @@
     if (!str) return '';
 
     // If ISO timestamp like 2026-10-09T18:30:00.000Z
-    if (str.includes('T')) {
-      const parsed = new Date(str);
-      if (!isNaN(parsed.getTime())) {
-        return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`;
-      }
+    if (/^\d{4}-\d{2}-\d{2}T/.test(str)) {
       return str.split('T')[0];
     }
 
@@ -3166,12 +3170,21 @@ _BillAudit Pro_`;
           const norm = normalizeInvoiceNumber(cb.billNo);
           const existingIdx = existingMap.get(norm);
 
+          let dDate = cb.dispatchDate ? normalizeDateString(cb.dispatchDate) : '';
+          const todayStr = getTodayDateString();
+          if (dDate === todayStr && cb.lastActionDate) {
+            const actionDay = normalizeDateString(cb.lastActionDate);
+            if (actionDay && actionDay !== todayStr) {
+              dDate = actionDay;
+            }
+          }
+
           const formattedBill = {
             billNo: cb.billNo,
             party: cb.party || 'Standard Customer',
             amount: Number(cb.amount) || 0,
             agent: cb.agent || 'Sales Agent',
-            dispatchDate: cb.dispatchDate ? normalizeDateString(cb.dispatchDate) : '',
+            dispatchDate: dDate,
             status: cb.status || 'WITH_AGENT',
             collectedAmt: Number(cb.collectedAmt) || 0,
             outstanding: cb.outstanding !== undefined ? Number(cb.outstanding) : (Number(cb.amount) || 0),
@@ -3195,7 +3208,7 @@ _BillAudit Pro_`;
             b.refNo = formattedBill.refNo;
             b.remarks = formattedBill.remarks;
             b.lastActionDate = formattedBill.lastActionDate;
-            if (cb.dispatchDate) b.dispatchDate = normalizeDateString(cb.dispatchDate);
+            if (dDate) b.dispatchDate = dDate;
             updatedCount++;
           } else {
             State.bills.push(formattedBill);

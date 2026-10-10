@@ -1900,8 +1900,7 @@ google.visualization.Query.setResponse({
   function normalizeDateString(d) {
     if (!d) return '';
     const str = String(d).trim();
-    if (!str) return '';
-    if (str.includes('T')) return str.split('T')[0];
+    if (/^\d{4}-\d{2}-\d{2}T/.test(str)) return str.split('T')[0];
     if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(str)) {
       const parts = str.split('-');
       return `${parts[0]}-${String(parts[1]).padStart(2, '0')}-${String(parts[2]).padStart(2, '0')}`;
@@ -2414,7 +2413,77 @@ google.visualization.Query.setResponse({
 
   console.log('✅ Test 38 Passed! Strict 1-to-1 bill numbering verified: exactly 88 bills counted with zero inflation!\n');
 
-  console.log('🎉 ALL 38 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+  // ========================================================
+  // Test 39: Historical Date Auto-Heal (Separating 427 Bills into 88 Today, 64 Yesterday)
+  // ========================================================
+  console.log('Test 39: Historical Date Auto-Heal (Separating 427 Bills into 88 Today, 64 Yesterday)');
+
+  const mockPayload427 = [];
+  // 88 bills scanned out today to Shivam
+  for (let i = 1; i <= 88; i++) {
+    mockPayload427.push({
+      billNo: `IN-FY26/27-${4000 + i}`,
+      party: `Party Today ${i}`,
+      amount: 3600,
+      agent: 'Shivam',
+      dispatchDate: 'Sat Oct 10 2026 00:00:00 GMT+0530',
+      status: 'WITH_AGENT',
+      lastActionDate: '2026-10-10T11:02:44.402Z'
+    });
+  }
+  // 64 bills from yesterday with Rajesh
+  for (let j = 1; j <= 64; j++) {
+    mockPayload427.push({
+      billNo: `IN-FY26/27-${3000 + j}`,
+      party: `Party Yest ${j}`,
+      amount: 5150,
+      agent: 'Rajesh',
+      dispatchDate: 'Sat Oct 10 2026 00:00:00 GMT+0530', // falsely stamped by sheet
+      status: 'WITH_AGENT',
+      lastActionDate: '2026-10-09T12:37:51.854Z' // true action yesterday
+    });
+  }
+  // 275 bills from older days (Oct 6, Oct 7, etc.)
+  for (let k = 1; k <= 275; k++) {
+    mockPayload427.push({
+      billNo: `IN-FY26/27-${2000 + k}`,
+      party: `Party Older ${k}`,
+      amount: 2500,
+      agent: 'Rajesh',
+      dispatchDate: 'Sat Oct 10 2026 00:00:00 GMT+0530',
+      status: k % 2 === 0 ? 'PAID_FULL' : 'RECEIVED',
+      lastActionDate: '2026-10-06T19:28:03.000Z'
+    });
+  }
+
+  assert.strictEqual(mockPayload427.length, 427, 'Total input is exactly 427 bills');
+
+  // Run auto-heal as in loadLocalState & syncBillsFromTrackingSheet
+  const todayStr39 = todayDateStr;
+  const dYest39 = new Date();
+  dYest39.setDate(dYest39.getDate() - 1);
+  const yestStr39 = `${dYest39.getFullYear()}-${String(dYest39.getMonth() + 1).padStart(2, '0')}-${String(dYest39.getDate()).padStart(2, '0')}`;
+
+  const healedBills = mockPayload427.map(cb => {
+    let dDate = normalizeDateString(cb.dispatchDate);
+    if (dDate === todayStr39 && cb.lastActionDate) {
+      const actionDay = normalizeDateString(cb.lastActionDate);
+      if (actionDay && actionDay !== todayStr39) {
+        dDate = actionDay;
+      }
+    }
+    return { ...cb, dispatchDate: dDate };
+  });
+
+  const todayCount = healedBills.filter(b => matchesDateFilter(b.dispatchDate, 'TODAY')).length;
+  const yestCount = healedBills.filter(b => matchesDateFilter(b.dispatchDate, 'YESTERDAY')).length;
+
+  assert.strictEqual(todayCount, 88, 'Today MUST count exactly 88 bills after auto-heal!');
+  assert.strictEqual(yestCount, 64, 'Yesterday MUST count exactly 64 bills after auto-heal!');
+
+  console.log('✅ Test 39 Passed! 427 bills auto-healed with 100% precision: 88 Today, 64 Yesterday!\n');
+
+  console.log('🎉 ALL 39 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
 })();
 
 
