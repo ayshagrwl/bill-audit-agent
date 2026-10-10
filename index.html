@@ -216,6 +216,26 @@
           </div>
         </div>
 
+        <!-- ACTIVE BASKET PENDING HANDOVER BANNER -->
+        <div id="homeBasketPendingBanner" class="home-basket-banner mt-2" style="display: none;">
+          <div class="home-basket-banner-content">
+            <div class="basket-banner-icon"><i class="fa-solid fa-basket-shopping"></i></div>
+            <div class="basket-banner-text">
+              <strong><span id="bannerBasketCount">0</span> Bill(s) Scanned in Handover Basket</strong>
+              <span class="text-muted font-mono" id="bannerBasketAmt">(₹0.00)</span>
+              <span class="basket-banner-hint">&bull; Awaiting handover confirmation to lock into agent custody</span>
+            </div>
+          </div>
+          <div class="home-basket-banner-actions">
+            <button type="button" class="btn btn-success btn-sm font-bold" id="bannerConfirmHandoverBtn">
+              <i class="fa-solid fa-check-double"></i> Confirm Handover Now
+            </button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="bannerViewBasketBtn">
+              View Basket &rarr;
+            </button>
+          </div>
+        </div>
+
         <div class="highlight-metrics-grid mt-2">
           <!-- METRIC 1: DISPATCHED -->
           <div class="metric-card-pro card-pro-out" id="homeOutCardPro">

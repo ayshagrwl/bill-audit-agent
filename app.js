@@ -19,7 +19,8 @@
     OFFLINE_QUEUE: 'billAudit_offlineQueue',
     AUDIT_LOGS: 'billAudit_auditLogs',
     MASTER_SHEET: 'billAudit_masterSheet',
-    SHEET_MAPPINGS: 'billAudit_sheetMappings'
+    SHEET_MAPPINGS: 'billAudit_sheetMappings',
+    BASKET: 'billAudit_basket'
   };
 
   const DEFAULT_AGENTS = [
@@ -193,6 +194,9 @@
       const storedBills = localStorage.getItem(STORAGE_KEYS.BILLS);
       State.bills = storedBills ? JSON.parse(storedBills) : [];
 
+      const storedBasket = localStorage.getItem(STORAGE_KEYS.BASKET);
+      State.dispatchBasket = storedBasket ? JSON.parse(storedBasket) : [];
+
       // Strictly enforce the 3 designated agents only: Rajesh Chaurasiya, Shivam Dwivedi, Self
       State.agents = [...DEFAULT_AGENTS];
       localStorage.setItem(STORAGE_KEYS.AGENTS, JSON.stringify(State.agents));
@@ -286,6 +290,7 @@
     try {
       if (!key || key === 'bills') localStorage.setItem(STORAGE_KEYS.BILLS, JSON.stringify(State.bills));
       if (!key || key === 'agents') localStorage.setItem(STORAGE_KEYS.AGENTS, JSON.stringify(State.agents));
+      if (!key || key === 'basket') localStorage.setItem(STORAGE_KEYS.BASKET, JSON.stringify(State.dispatchBasket));
       if (!key || key === 'master') {
         // Super-fast compact serialization (saves in 2ms instead of freezing UI)
         try {
@@ -374,6 +379,10 @@
 
     // If ISO timestamp like 2026-10-09T18:30:00.000Z
     if (str.includes('T')) {
+      const parsed = new Date(str);
+      if (!isNaN(parsed.getTime())) {
+        return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`;
+      }
       return str.split('T')[0];
     }
 
@@ -1516,7 +1525,9 @@
       if (parsed.fromMaster !== undefined) State.dispatchBasket[existingBasketIdx].fromMaster = parsed.fromMaster;
       SoundFX.playBeep('success');
       showToast(`Updated ${parsed.billNo} in dispatch list`, 'info', 1500);
+      saveState('basket');
       renderDispatchBasket();
+      updateHomeStats();
       return;
     }
 
@@ -1527,6 +1538,7 @@
       showToast(`Re-assigning ${parsed.billNo} (previously with ${active.agent})`, 'warning', 2000);
     }
 
+    const todayStr = getTodayDateString();
     State.dispatchBasket.unshift({
       billNo: parsed.billNo,
       party: parsed.party || 'Standard Account',
@@ -1536,6 +1548,8 @@
       beatName: assignedBeatName,
       day: assignedDay,
       week: assignedWeek,
+      dispatchDate: todayStr,
+      lastActionDate: new Date().toISOString(),
       receipt: receiptVal,
       refNo: receiptVal,
       outstanding: parsed.outstanding !== undefined ? parsed.outstanding : (parsed.amount || 0),
@@ -1549,7 +1563,9 @@
     SoundFX.vibrate(50);
     showToast(`Added ${parsed.billNo} (${assignedAgent})`, 'success', 1500);
 
+    saveState('basket');
     renderDispatchBasket();
+    updateHomeStats();
   }
 
   function renderDispatchBasket() {
@@ -1691,17 +1707,24 @@
     // Cloud Sync Queue for Tracking Sheet
     queueSyncAction('BATCH_DISPATCH', { dispatchDate: date, timestamp, bills: newBills });
 
+    const count = State.dispatchBasket.length;
+    State.lastHandoverBatch = {
+      agent: State.activeAgent ? State.activeAgent.name : (State.dispatchBasket[0]?.agent || 'Sales Agent'),
+      date,
+      count,
+      bills: [...State.dispatchBasket]
+    };
+    State.dispatchBasket = [];
     saveState();
+    saveState('basket');
     updateGlobalStats();
     renderLeftOutTab();
-
-    const count = State.dispatchBasket.length;
-    State.dispatchBasket = [];
     renderDispatchBasket();
+    updateHomeStats();
 
     SoundFX.playBeep('success');
     ConfettiFX.celebrate();
-    showToast(`Confirmed ${count} bills handed OUT!`, 'success', 3000);
+    showToast(`✓ Confirmed ${count} bills handed OUT to ${State.lastHandoverBatch.agent}!`, 'success', 3000);
   }
 
 
@@ -2682,7 +2705,7 @@
 
   function getAgentLeftOutStats(agentName, dateFilter = null, beatFilter = null, customDate = null) {
     const activeDateFilter = dateFilter || State.diffDateFilter || 'TODAY';
-    let agentBills = State.bills.filter(b => b.agent === agentName);
+    let agentBills = State.bills.filter(b => isSameAgent(b.agent, agentName));
 
     if (activeDateFilter !== 'ALL') {
       agentBills = agentBills.filter(b => matchesDateFilter(b.dispatchDate || b.lastActionDate, activeDateFilter, customDate));
@@ -2696,18 +2719,35 @@
       });
     }
 
-    const leftOutBills = agentBills.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT');
+    // Include basket bills for this agent if date filter is TODAY!
+    let agentBasket = [];
+    if (activeDateFilter === 'TODAY' && State.dispatchBasket && State.dispatchBasket.length > 0) {
+      agentBasket = State.dispatchBasket.filter(b => isSameAgent(b.agent, agentName));
+      if (beatFilter && beatFilter !== 'ALL') {
+        const filterLower = beatFilter.toLowerCase().trim();
+        agentBasket = agentBasket.filter(b => {
+          const beatStr = String(b.beat || b.beatName || '').toLowerCase();
+          return beatStr.includes(filterLower);
+        });
+      }
+    }
+
+    const leftOutBills = [
+      ...agentBills.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT'),
+      ...agentBasket.map(b => ({ ...b, isBasket: true, status: 'IN_BASKET' }))
+    ];
     const checkedInBills = agentBills.filter(b => b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND');
 
     let totalAmt = 0, checkedInAmt = 0, leftOutAmt = 0;
 
     agentBills.forEach(b => totalAmt += (Number(b.amount) || 0));
+    agentBasket.forEach(b => totalAmt += (Number(b.amount) || 0));
     checkedInBills.forEach(b => checkedInAmt += (Number(b.collectedAmt) || Number(b.amount) || 0));
-    leftOutBills.forEach(b => leftOutAmt += (Number(b.amount) || 0));
+    leftOutBills.forEach(b => leftOutAmt += (Number(b.outstanding !== undefined ? b.outstanding : b.amount) || 0));
 
     return {
       agent: agentName,
-      totalCount: agentBills.length,
+      totalCount: agentBills.length + agentBasket.length,
       totalAmt,
       checkedInCount: checkedInBills.length,
       checkedInAmt,
@@ -4410,11 +4450,25 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     const inBills = filteredBills.filter(b => b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND');
     const inCount = inBills.length;
     const diffBills = filteredBills.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT');
-    const diffCount = diffBills.length;
+    const diffCount = diffBills.length + basketCount;
 
     const outAmt = filteredBills.reduce((s, b) => s + (Number(b.amount) || 0), 0) + basketAmt;
     const inAmt = inBills.reduce((s, b) => s + (Number(b.collectedAmt !== undefined ? b.collectedAmt : b.amount) || 0), 0);
-    const diffAmt = diffBills.reduce((s, b) => s + (Number(b.outstanding !== undefined ? b.outstanding : b.amount) || 0), 0);
+    const diffAmt = diffBills.reduce((s, b) => s + (Number(b.outstanding !== undefined ? b.outstanding : b.amount) || 0), 0) + basketAmt;
+
+    // Active Handover Basket banner on Home tab
+    const banner = document.getElementById('homeBasketPendingBanner');
+    const bannerCnt = document.getElementById('bannerBasketCount');
+    const bannerAmt = document.getElementById('bannerBasketAmt');
+    if (banner) {
+      if (basketCount > 0 && filterMode === 'TODAY') {
+        banner.style.display = 'flex';
+        if (bannerCnt) bannerCnt.textContent = basketCount;
+        if (bannerAmt) bannerAmt.textContent = `(${formatINR(basketAmt)})`;
+      } else {
+        banner.style.display = 'none';
+      }
+    }
 
     const elOut = document.getElementById('homeStatOut');
     const elIn = document.getElementById('homeStatIn');
@@ -4434,7 +4488,13 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       }
     }
     if (elInAmt) elInAmt.textContent = `${formatINR(inAmt)} accounted`;
-    if (elLeftAmt) elLeftAmt.textContent = `${formatINR(diffAmt)} still pending`;
+    if (elLeftAmt) {
+      if (basketCount > 0 && diffBills.length === 0) {
+        elLeftAmt.textContent = `${formatINR(diffAmt)} in basket ready`;
+      } else {
+        elLeftAmt.textContent = `${formatINR(diffAmt)} still pending`;
+      }
+    }
 
     const sideBadge = document.getElementById('sidebarDiffBadge');
     if (sideBadge) {
@@ -4559,6 +4619,15 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       list = dateFiltered.filter(b => b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND');
     } else if (category === 'DIFF') {
       list = dateFiltered.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT');
+      if (filterMode === 'TODAY' && State.dispatchBasket && State.dispatchBasket.length > 0) {
+        State.dispatchBasket.forEach(b => {
+          list.push({
+            ...b,
+            isBasket: true,
+            status: 'IN_BASKET'
+          });
+        });
+      }
     } else if (category === 'AGENT') {
       list = [...dateFiltered];
       if (filterMode === 'TODAY' && State.dispatchBasket && State.dispatchBasket.length > 0) {
@@ -4573,7 +4642,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     }
 
     if (targetAgent && targetAgent !== 'ALL') {
-      list = list.filter(b => (b.agent || '').toLowerCase() === targetAgent.toLowerCase());
+      list = list.filter(b => isSameAgent(b.agent, targetAgent));
     }
 
     return list;
@@ -5216,6 +5285,11 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
         sel.value = agentName;
       }
 
+      const dDate = document.getElementById('dispatchDate');
+      if (dDate) {
+        dDate.value = getTodayDateString();
+      }
+
       await switchTab('tab-dispatch');
       focusActiveScannerInput();
 
@@ -5308,6 +5382,10 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     document.getElementById('homeOutCardPro')?.addEventListener('click', () => openDashboardBreakdown('OUT'));
     document.getElementById('homeInCardPro')?.addEventListener('click', () => openDashboardBreakdown('IN'));
     document.getElementById('homeDiffCardPro')?.addEventListener('click', () => openDashboardBreakdown('DIFF'));
+
+    // HOME TAB: basket pending handover banner actions
+    document.getElementById('bannerConfirmHandoverBtn')?.addEventListener('click', confirmDispatchHandover);
+    document.getElementById('bannerViewBasketBtn')?.addEventListener('click', () => switchTab('tab-dispatch'));
 
     // HOME TAB: date filter chips (Today, Yesterday, All Active Custody)
     document.querySelectorAll('#homeDateFilters .home-date-chip').forEach(chip => {
@@ -5803,7 +5881,8 @@ _BillAudit Pro_`;
     // Initialize Hardware USB & Bluetooth Barcode / QR Scanner Listener
     HardwareScanner.init();
 
-    // Update home tab stats on load
+    // Update home tab stats and basket on load
+    renderDispatchBasket();
     updateHomeStats();
 
     initSystemClock();

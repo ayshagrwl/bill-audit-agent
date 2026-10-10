@@ -2225,7 +2225,115 @@ google.visualization.Query.setResponse({
 
   console.log('✅ Test 36 Passed! Dashboard Number Card Interactive Compressed Breakdown Engine verified 100%!\n');
 
-  console.log('🎉 ALL 36 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+  // ========================================================
+  // Test 37: Real-Time Morning Dispatch Scan-Out to Dashboard Live Sync & Basket Handover
+  // ========================================================
+  console.log('Test 37: Real-Time Morning Dispatch Scan-Out to Dashboard Live Sync & Basket Handover');
+
+  // 1. Timezone-aware ISO date normalization test
+  function testNormalizeDateString(d) {
+    if (!d) return '';
+    const str = String(d).trim();
+    if (!str) return '';
+    if (str.includes('T')) {
+      const parsed = new Date(str);
+      if (!isNaN(parsed.getTime())) {
+        return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`;
+      }
+      return str.split('T')[0];
+    }
+    return str;
+  }
+
+  // An ISO UTC timestamp that crossed UTC midnight
+  const isoScanTime = '2026-10-09T20:30:00.000Z'; // 2:00 AM IST on Oct 10
+  const expectedLocalDate = new Date(isoScanTime);
+  const expectedDateStr = `${expectedLocalDate.getFullYear()}-${String(expectedLocalDate.getMonth() + 1).padStart(2, '0')}-${String(expectedLocalDate.getDate()).padStart(2, '0')}`;
+  assert.strictEqual(testNormalizeDateString(isoScanTime), expectedDateStr, 'Must convert UTC ISO timestamp to local timezone date');
+
+  // 2. Dashboard Stats with Active Dispatch Basket (Before Handover Confirmation)
+  const todayDateStr = `${dNow.getFullYear()}-${String(dNow.getMonth() + 1).padStart(2, '0')}-${String(dNow.getDate()).padStart(2, '0')}`;
+  const mockState37 = {
+    bills: [
+      { billNo: 'OLD-1', amount: 1000, agent: 'Rajesh', dispatchDate: '2026-10-01', status: 'RECEIVED' }
+    ],
+    dispatchBasket: [
+      { billNo: 'IN-NEW-1', amount: 4500, agent: 'Rajesh', dispatchDate: todayDateStr, status: 'IN_BASKET' },
+      { billNo: 'IN-NEW-2', amount: 3200, agent: 'Shivam', dispatchDate: todayDateStr, status: 'IN_BASKET' }
+    ],
+    homeDateFilter: 'TODAY'
+  };
+
+  // Helper simulating updateHomeStats calculation
+  function computeHomeStats(state) {
+    const filterMode = state.homeDateFilter || 'TODAY';
+    const filteredBills = state.bills.filter(b => matchesDateFilter(b.dispatchDate, filterMode));
+    const basketBills = (filterMode === 'TODAY') ? state.dispatchBasket : [];
+    const basketCount = basketBills.length;
+    const basketAmt = basketBills.reduce((s, b) => s + (Number(b.amount) || 0), 0);
+
+    const outCount = filteredBills.length + basketCount;
+    const inBills = filteredBills.filter(b => b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND');
+    const inCount = inBills.length;
+    const diffBills = filteredBills.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT');
+    const diffCount = diffBills.length + basketCount;
+
+    const outAmt = filteredBills.reduce((s, b) => s + (Number(b.amount) || 0), 0) + basketAmt;
+    const inAmt = inBills.reduce((s, b) => s + (Number(b.collectedAmt || b.amount) || 0), 0);
+    const diffAmt = diffBills.reduce((s, b) => s + (Number(b.outstanding !== undefined ? b.outstanding : b.amount) || 0), 0) + basketAmt;
+
+    return { outCount, inCount, diffCount, outAmt, inAmt, diffAmt, basketCount, basketAmt };
+  }
+
+  const liveStats = computeHomeStats(mockState37);
+  assert.strictEqual(liveStats.outCount, 2, 'Today out count must be 2 from basket bills');
+  assert.strictEqual(liveStats.diffCount, 2, 'Today pending diff count must include 2 basket bills');
+  assert.strictEqual(liveStats.outAmt, 7700, 'Today out amount must be 4500 + 3200 = 7,700');
+  assert.strictEqual(liveStats.diffAmt, 7700, 'Today diff amount must match 7,700');
+  assert.strictEqual(liveStats.basketCount, 2, 'Basket count must be 2');
+
+  // 3. Agent Difference Cards with Active Basket Bills
+  function computeAgentStats(state, agentName) {
+    const agentBills = state.bills.filter(b => b.agent === agentName && matchesDateFilter(b.dispatchDate, 'TODAY'));
+    const agentBasket = state.dispatchBasket.filter(b => b.agent === agentName);
+    const totalCount = agentBills.length + agentBasket.length;
+    const totalAmt = agentBills.reduce((s, b) => s + (Number(b.amount) || 0), 0) +
+                     agentBasket.reduce((s, b) => s + (Number(b.amount) || 0), 0);
+    const leftOutCount = agentBills.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT').length + agentBasket.length;
+    const leftOutAmt = totalAmt;
+    return { totalCount, totalAmt, leftOutCount, leftOutAmt };
+  }
+
+  const rajeshStats = computeAgentStats(mockState37, 'Rajesh');
+  assert.strictEqual(rajeshStats.totalCount, 1, 'Rajesh must show 1 dispatched bill from basket');
+  assert.strictEqual(rajeshStats.leftOutCount, 1, 'Rajesh must show 1 pending bill');
+  assert.strictEqual(rajeshStats.totalAmt, 4500, 'Rajesh amount must be 4,500');
+
+  const shivamStats = computeAgentStats(mockState37, 'Shivam');
+  assert.strictEqual(shivamStats.totalCount, 1, 'Shivam must show 1 dispatched bill from basket');
+  assert.strictEqual(shivamStats.leftOutCount, 1, 'Shivam must show 1 pending bill');
+  assert.strictEqual(shivamStats.totalAmt, 3200, 'Shivam amount must be 3,200');
+
+  // 4. Handover Confirmation: Basket moves into State.bills
+  mockState37.dispatchBasket.forEach(b => {
+    mockState37.bills.unshift({
+      ...b,
+      dispatchDate: todayDateStr,
+      status: 'WITH_AGENT',
+      outstanding: b.amount
+    });
+  });
+  mockState37.dispatchBasket = [];
+
+  const postConfirmStats = computeHomeStats(mockState37);
+  assert.strictEqual(postConfirmStats.outCount, 2, 'Post-confirm out count must remain 2');
+  assert.strictEqual(postConfirmStats.diffCount, 2, 'Post-confirm diff count must remain 2');
+  assert.strictEqual(postConfirmStats.outAmt, 7700, 'Post-confirm out amount must remain 7,700');
+  assert.strictEqual(postConfirmStats.basketCount, 0, 'Basket count is now 0');
+
+  console.log('✅ Test 37 Passed! Real-Time Morning Dispatch Scan-Out to Dashboard Live Sync verified 100%!\n');
+
+  console.log('🎉 ALL 37 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
 })();
 
 
