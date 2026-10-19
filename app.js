@@ -96,9 +96,13 @@
     dispatchBasket: [],
     activeSettlementAgent: null,
     settlementBills: [],
-    diffDateFilter: 'TODAY', // 'TODAY', 'YESTERDAY', or 'ALL'
-    homeDateFilter: 'TODAY', // 'TODAY', 'YESTERDAY', 'ALL', or 'CUSTOM'
+    diffDateFilter: 'ALL', // 'ALL', 'TODAY', 'YESTERDAY', or 'OVERDUE'
+    leftOutSearch: '',
+    homeDateFilter: 'ALL', // 'ALL', 'TODAY', 'YESTERDAY', 'OVERDUE', or 'CUSTOM'
     homeCustomDate: null,
+    homeDecisionTab: 'UNRETURNED', // 'UNRETURNED', 'OVERDUE', 'PARTIAL', 'MISSED_SHEET'
+    homeDecisionAgent: 'ALL',
+    homeDecisionSearch: '',
     activeTab: 'tab-home',
     lastScannedCode: null,
     lastScanTimestamp: 0,
@@ -116,9 +120,16 @@
     activeScanMode: null,    // 'DISPATCH' or 'SETTLEMENT' — set by home card tap
     breakdownCategory: null, // 'OUT', 'IN', 'DIFF', or 'AGENT'
     breakdownAgent: 'ALL',   // 'ALL' or specific agent name
+    breakdownBeat: 'ALL',    // 'ALL' or specific beat name
     breakdownFilter: 'ALL',  // 'ALL', 'PENDING', 'PAID', 'RECEIPT'
     breakdownSearch: '',     // search query
     isBreakdownModalOpen: false,
+    dispatchBeatFilter: 'BEAT',  // 'BEAT' (current beat only) or 'ALL'
+    settlementBeatFilter: 'ALL', // Default 'ALL' so unreturned bills across beats are immediately visible
+    beatAnalysisAgent: 'ALL',    // 'ALL', 'Rajesh', 'Shivam', 'Self'
+    beatAnalysisDateFilter: 'ALL', // 'ALL', 'TODAY', 'YESTERDAY', 'OVERDUE'
+    beatAnalysisSearch: '',
+    isBeatAnalysisModalOpen: false,
   };
 
   // Web Audio Synthesizer for Fast Scan Feedback
@@ -186,6 +197,63 @@
     if (a.includes('shivam') && b.includes('shivam')) return true;
     if (a.includes('rajesh') && b.includes('rajesh')) return true;
     if (a.includes('self') && b.includes('self')) return true;
+    return false;
+  }
+
+  function cleanBeatString(str) {
+    if (!str) return { clean: '', routeNum: null };
+    let s = String(str).trim();
+    // Strip day/week suffixes like (Mon, Week 1), (Mon), (Week 2), etc.
+    s = s.replace(/\s*\((Mon|Tue|Wed|Thu|Fri|Sat)[^)]*\)/gi, '');
+    s = s.replace(/\s*\(Week\s*\d+[^)]*\)/gi, '');
+
+    // Check for route number in parentheses e.g. (1), (2), [1], [2]
+    let routeNum = null;
+    const parenRoute = s.match(/[\(\[]\s*(\d+)\s*[\)\]]/);
+    if (parenRoute) {
+      routeNum = parseInt(parenRoute[1], 10);
+      s = s.replace(/[\(\[]\s*\d+\s*[\)\]]/g, '');
+    }
+
+    // Also check for trailing dash route number e.g. -1, -2, - 1, - 2
+    const dashRoute = s.match(/[-–—]\s*(\d+)\s*$/);
+    if (dashRoute) {
+      routeNum = parseInt(dashRoute[1], 10);
+      s = s.replace(/[-–—]\s*\d+\s*$/, '');
+    }
+
+    // Strip all non-alphanumeric chars for base matching
+    const clean = s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    return { clean, routeNum };
+  }
+
+  function isSameBeat(beatA, beatB) {
+    if (!beatA || !beatB) return false;
+    if (beatA === beatB) return true;
+
+    const a = cleanBeatString(beatA);
+    const b = cleanBeatString(beatB);
+    if (!a.clean || !b.clean) return false;
+
+    // Check route number consistency
+    // If both have route numbers, they must match exactly
+    if (a.routeNum !== null && b.routeNum !== null) {
+      if (a.routeNum !== b.routeNum) return false;
+    } else if (a.routeNum !== null && a.routeNum > 1) {
+      // a is Route 2+, but b has no route number -> cannot match Route 1 / unnumbered
+      return false;
+    } else if (b.routeNum !== null && b.routeNum > 1) {
+      // b is Route 2+, but a has no route number -> cannot match Route 1 / unnumbered
+      return false;
+    }
+
+    if (a.clean === b.clean) return true;
+
+    // Handle substring / abbreviation matches with safety
+    const minLen = Math.min(a.clean.length, b.clean.length);
+    if (minLen >= 4 && (a.clean.includes(b.clean) || b.clean.includes(a.clean))) {
+      return true;
+    }
     return false;
   }
 
@@ -281,6 +349,9 @@
         State.masterSheetBills = [];
       }
       rebuildMasterSheetMap();
+      if (State.masterSheetBills.length > 0 && State.bills.length > 0) {
+        reconcileCustodyWithMasterSheet();
+      }
 
       const storedMappings = localStorage.getItem(STORAGE_KEYS.SHEET_MAPPINGS);
       if (storedMappings) {
@@ -410,8 +481,12 @@
     const str = String(d).trim();
     if (!str) return '';
 
-    // If ISO timestamp like 2026-10-09T18:30:00.000Z
+    // If ISO timestamp like 2026-10-09T18:30:00.000Z - convert to local timezone date
     if (/^\d{4}-\d{2}-\d{2}T/.test(str)) {
+      const parsed = new Date(str);
+      if (!isNaN(parsed.getTime())) {
+        return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`;
+      }
       return str.split('T')[0];
     }
 
@@ -437,12 +512,125 @@
   }
 
   /**
-   * Checks whether a bill's date matches a given date filter mode (TODAY, YESTERDAY, ALL, CUSTOM)
+   * Computes how many days a bill has been in the field since its dispatchDate (or lastActionDate).
    */
-  function matchesDateFilter(billDate, filterMode = 'TODAY', targetCustomDate = null) {
+  function getBillAgingDays(billOrDate) {
+    const rawDate = (billOrDate && typeof billOrDate === 'object')
+      ? (billOrDate.dispatchDate || billOrDate.lastActionDate || '')
+      : billOrDate;
+    const norm = normalizeDateString(rawDate);
+    if (!norm || !/^\d{4}-\d{2}-\d{2}$/.test(norm)) return 0;
+    const [y, m, d] = norm.split('-').map(Number);
+    const billTime = new Date(y, m - 1, d).getTime();
+    const now = new Date();
+    const todayTime = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    if (isNaN(billTime)) return 0;
+    return Math.max(0, Math.floor((todayTime - billTime) / 86400000));
+  }
+
+  /**
+   * Canonical check for whether a bill is currently unreturned in agent custody (in field).
+   */
+  function isBillUnreturnedInField(b) {
+    if (!b) return false;
+    const st = String(b.status || '').toUpperCase();
+    return st === 'WITH_AGENT' || st === 'MISSING_ALERT' || st === 'LEFT_OUT_ALERT' || st === 'IN_BASKET';
+  }
+
+  /**
+   * Canonical check for whether a bill has any pending/missing difference (either unreturned in field or partial due).
+   */
+  function isBillMissingOrPending(b) {
+    if (!b) return false;
+    if (isBillUnreturnedInField(b)) return true;
+    const st = String(b.status || '').toUpperCase();
+    if (st === 'PAID_PARTIAL') {
+      return getBillPendingAmount(b) > 0;
+    }
+    return false;
+  }
+
+  /**
+   * Returns the pending/uncollected balance on a bill.
+   */
+  function getBillPendingAmount(b) {
+    if (!b) return 0;
+    const amt = Number(b.amount) || 0;
+    const st = String(b.status || '').toUpperCase();
+    if (st === 'RECEIVED' || st === 'PAID_FULL' || st === 'RETURNED_IN_HAND') return 0;
+    if (b.outstanding !== undefined && b.outstanding !== null && b.outstanding !== '' && !isNaN(b.outstanding)) {
+      return Math.max(0, Number(b.outstanding));
+    }
+    if (b.collectedAmt !== undefined && b.collectedAmt !== null && !isNaN(b.collectedAmt) && Number(b.collectedAmt) > 0) {
+      return Math.max(0, amt - Number(b.collectedAmt));
+    }
+    return amt;
+  }
+
+  /**
+   * Returns the collected/accounted amount on a bill.
+   */
+  function getBillCollectedAmount(b) {
+    if (!b) return 0;
+    const amt = Number(b.amount) || 0;
+    const st = String(b.status || '').toUpperCase();
+    if (b.collectedAmt !== undefined && b.collectedAmt !== null && !isNaN(b.collectedAmt) && Number(b.collectedAmt) > 0) {
+      return Number(b.collectedAmt);
+    }
+    if (st === 'RECEIVED' || st === 'PAID_FULL' || st === 'RETURNED_IN_HAND') {
+      return amt;
+    }
+    if (b.outstanding !== undefined && b.outstanding !== null && !isNaN(b.outstanding) && Number(b.outstanding) < amt) {
+      return Math.max(0, amt - Number(b.outstanding));
+    }
+    return 0;
+  }
+
+  /**
+   * Infers a bill's Beat Route from Master Sheet or from Agent + Dispatch Date day-of-week schedule.
+   */
+  function inferBillBeat(b) {
+    if (!b) return '';
+    const existingBeat = String(b.beat || b.beatName || '').trim();
+    if (existingBeat) return existingBeat;
+
+    const mm = b.billNo ? findMasterBill(b.billNo) : null;
+    if (mm && mm.beat && String(mm.beat).trim()) {
+      return String(mm.beat).trim();
+    }
+
+    const agentName = String(b.agent || (mm && mm.agent) || '').trim();
+    const rawDate = normalizeDateString(b.dispatchDate || b.lastActionDate || '');
+    if (agentName && rawDate && /^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+      const [y, m, d] = rawDate.split('-').map(Number);
+      const dt = new Date(y, m - 1, d);
+      const dayCodes = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      const dayCode = dayCodes[dt.getDay()];
+      const plan = MASTER_BEAT_PLAN[agentName] ||
+        (agentName.toLowerCase().includes('shivam') ? MASTER_BEAT_PLAN.Shivam :
+         (agentName.toLowerCase().includes('self') ? MASTER_BEAT_PLAN.Self : MASTER_BEAT_PLAN.Rajesh));
+      if (plan && plan[dayCode] && plan[dayCode].beat) {
+        return plan[dayCode].beat;
+      }
+    }
+    return '';
+  }
+
+  /**
+   * Checks whether a bill's date matches a given date filter mode (TODAY, YESTERDAY, OVERDUE, ALL, CUSTOM)
+   */
+  function matchesDateFilter(billDate, filterMode = 'ALL', targetCustomDate = null) {
+    if (filterMode === 'ALL') {
+      return true;
+    }
+
     const normBill = normalizeDateString(billDate);
+    if (filterMode === 'OVERDUE') {
+      return getBillAgingDays(normBill) > 3;
+    }
+
     if (!normBill) {
-      return filterMode === 'ALL';
+      return false;
     }
 
     if (filterMode === 'TODAY') {
@@ -458,10 +646,6 @@
     if (filterMode === 'CUSTOM' && targetCustomDate) {
       const target = normalizeDateString(targetCustomDate);
       return normBill === target;
-    }
-
-    if (filterMode === 'ALL') {
-      return true;
     }
 
     return normBill === normalizeDateString(filterMode);
@@ -615,6 +799,32 @@
     }
 
     return null;
+  }
+
+  /**
+   * Universal Payment Check: Determines if a bill is fully paid / settled.
+   * Checks outstanding <= 0, status PAID/PAID_FULL, receipt remarks, or collected >= amount.
+   */
+  function isBillPaidInFull(b) {
+    if (!b) return false;
+    const status = String(b.status || '').toUpperCase();
+    if (status === 'PAID' || status === 'PAID_FULL' || status === 'RECEIVED' || status === 'RETURNED_IN_HAND') {
+      return true;
+    }
+    const receipt = String(b.receipt || b.refNo || '').trim();
+    if (/^PAID/i.test(receipt)) {
+      return true;
+    }
+    const outstanding = (b.outstanding !== undefined && b.outstanding !== null && b.outstanding !== '') ? Number(b.outstanding) : null;
+    const amount = Number(b.amount) || 0;
+    const collected = Number(b.collectedAmt) || 0;
+    if (amount > 0 && collected >= amount) {
+      return true;
+    }
+    if (outstanding !== null && outstanding <= 0 && (amount > 0 || receipt)) {
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -1155,8 +1365,8 @@
 
   function renderHomeCharts(outCount, inCount, diffCount, outAmt, inAmt, diffAmt) {
     const total = outCount || 0;
-    const receivedPct = total > 0 ? (inCount / total) : 0;
-    const pendingPct = total > 0 ? (diffCount / total) : 0;
+    const receivedPct = total > 0 ? Math.min(1, inCount / total) : 0;
+    const pendingPct = total > 0 ? Math.min(1, diffCount / total) : 0;
 
     const circumference = 389.56;
     const receivedLength = receivedPct * circumference;
@@ -1165,8 +1375,13 @@
     const segReceived = document.getElementById('donutSegReceived');
     const segPending = document.getElementById('donutSegPending');
     const centerTotal = document.getElementById('donutCenterTotal');
+    const overallRecBadge = document.getElementById('decisionOverallRecoveryBadge');
 
     if (centerTotal) centerTotal.textContent = total;
+    if (overallRecBadge) {
+      const valPct = outAmt > 0 ? Math.min(100, Math.round((inAmt / outAmt) * 100)) : (total > 0 ? Math.round(receivedPct * 100) : 0);
+      overallRecBadge.textContent = `${valPct}% Value Accounted`;
+    }
 
     if (segReceived) {
       segReceived.style.strokeDasharray = `${receivedLength} ${circumference}`;
@@ -1182,30 +1397,35 @@
     const legPend = document.getElementById('chartLegendPending');
     const legTot = document.getElementById('chartLegendTotal');
 
-    if (legRec) legRec.textContent = `${inCount} (${Math.round(receivedPct * 100)}%)`;
-    if (legPend) legPend.textContent = `${diffCount} (${Math.round(pendingPct * 100)}%)`;
-    if (legTot) legTot.textContent = `${total} (${formatINR(outAmt)})`;
+    if (legRec) legRec.textContent = `${inCount} (${Math.round(receivedPct * 100)}%) • ${formatINR(inAmt)}`;
+    if (legPend) legPend.textContent = `${diffCount} (${Math.round(pendingPct * 100)}%) • ${formatINR(diffAmt)}`;
+    if (legTot) legTot.textContent = `${total} bills (${formatINR(outAmt)})`;
 
     const container = document.getElementById('agentBarsContainer');
     if (container) {
       container.innerHTML = '';
+      const filterMode = State.homeDateFilter || 'ALL';
+      const customDate = State.homeCustomDate;
       State.agents.forEach(agent => {
-        const stats = getAgentLeftOutStats(agent.name);
+        const stats = getAgentLeftOutStats(agent.name, filterMode, null, customDate);
         const agTotal = stats.totalCount || 0;
         const agRec = stats.checkedInCount || 0;
         const agPct = agTotal > 0 ? Math.round((agRec / agTotal) * 100) : 0;
 
         const row = document.createElement('div');
         row.className = 'agent-bar-row';
+        row.style.cursor = 'pointer';
+        row.title = `Click to inspect ${agent.name}'s bills`;
         row.innerHTML = `
           <div class="agent-bar-info">
             <span><i class="fa-solid fa-user-tie"></i> ${agent.name}</span>
-            <span class="font-mono">${agRec}/${agTotal} (${agPct}%)</span>
+            <span class="font-mono">${agRec}/${agTotal} cleared (${agPct}%) &bull; <strong class="${stats.leftOutCount > 0 ? 'text-danger' : 'text-success'}">${stats.leftOutCount} pending (${formatINR(stats.leftOutAmt)})</strong></span>
           </div>
           <div class="agent-bar-track">
             <div class="agent-bar-fill" style="width: ${agPct}%;"></div>
           </div>
         `;
+        row.addEventListener('click', () => openDashboardBreakdown('AGENT', agent.name));
         container.appendChild(row);
       });
     }
@@ -1512,7 +1732,10 @@
     focusActiveScannerInput();
   }
 
-  function addBillToDispatchBasket(parsed) {
+  function addBillToDispatchBasket(parsed, options = {}) {
+    const silent = Boolean(options && options.silent);
+    const skipRender = Boolean(options && options.skipRender);
+
     // Agent is strictly locked in from the Morning Dispatch selection (State.activeAgent)
     let assignedAgent = State.activeAgent ? State.activeAgent.name : '';
     const assignedBeat = State.activeBeat || parsed.beat || '';
@@ -1535,6 +1758,70 @@
 
     const receiptVal = parsed.receipt || parsed.refNo || '';
 
+    // Safety Guard: Check if bill is already PAID in Master Sheet
+    const isPaidOnSheet = isBillPaidInFull(parsed);
+    if (isPaidOnSheet) {
+      if (!silent) {
+        SoundFX.playBeep('error');
+        SoundFX.vibrate(200);
+      }
+      const allowOverride = confirm(
+        `⛔ ALREADY PAID BILL!\n\n` +
+        `Invoice: ${parsed.billNo}\n` +
+        `Customer: ${parsed.party || 'Customer'}\n` +
+        `Amount: ₹${parsed.amount || 0}\n` +
+        `Receipt / Status: ${parsed.receipt || 'Paid in Full'}\n\n` +
+        `This bill is already recorded as PAID in the Master Sheet. It does NOT need to be collected by ${assignedAgent}.\n\n` +
+        `Do you still want to dispatch this (e.g. for goods delivery)?\n` +
+        `Click CANCEL to skip, or OK to dispatch anyway.`
+      );
+      if (!allowOverride) {
+        if (!silent) showToast(`Skipped ${parsed.billNo} — bill already paid in sheet`, 'warning', 3000);
+        return;
+      }
+    }
+
+    // Beat Mismatch Guard: Alert if bill is assigned to a different beat in Master Sheet
+    if (State.activeBeat && parsed.beat && !isSameBeat(parsed.beat, State.activeBeat)) {
+      if (!silent) {
+        SoundFX.playBeep('warning');
+        SoundFX.vibrate(150);
+      }
+      const allowOverride = confirm(
+        `⚠️ BEAT MISMATCH DETECTED!\n\n` +
+        `Invoice: ${parsed.billNo}\n` +
+        `Customer: ${parsed.party || 'Customer'}\n` +
+        `Master Sheet Beat: ${parsed.beat}\n` +
+        `Master Sheet Agent: ${parsed.agent || 'Not specified'}\n\n` +
+        `Current Morning Dispatch Session is for:\n` +
+        `📍 Beat: ${State.activeBeat}\n` +
+        `👤 Agent: ${assignedAgent}\n\n` +
+        `Do you want to dispatch this bill under ${State.activeBeat} anyway?\n` +
+        `Click CANCEL to skip, or OK to add to this beat.`
+      );
+      if (!allowOverride) {
+        if (!silent) showToast(`Skipped ${parsed.billNo} — assigned to ${parsed.beat}`, 'warning', 3000);
+        return;
+      }
+    } else if (State.activeAgent && parsed.agent && !isSameAgent(parsed.agent, State.activeAgent.name)) {
+      if (!silent) {
+        SoundFX.playBeep('warning');
+        SoundFX.vibrate(150);
+      }
+      const allowAgentOverride = confirm(
+        `⚠️ AGENT MISMATCH DETECTED!\n\n` +
+        `Invoice: ${parsed.billNo}\n` +
+        `Master Sheet Agent: ${parsed.agent}\n` +
+        `Active Session Agent: ${State.activeAgent.name}\n\n` +
+        `Do you want to reassign this bill to ${State.activeAgent.name} and dispatch?\n` +
+        `Click CANCEL to skip, or OK to dispatch.`
+      );
+      if (!allowAgentOverride) {
+        if (!silent) showToast(`Skipped ${parsed.billNo} — belongs to ${parsed.agent}`, 'warning', 3000);
+        return;
+      }
+    }
+
     // Check duplicate in current basket — update if already present
     const normScan = normalizeInvoiceNumber(parsed.billNo);
     const existingBasketIdx = State.dispatchBasket.findIndex(b => normalizeInvoiceNumber(b.billNo) === normScan);
@@ -1553,17 +1840,21 @@
       if (parsed.outstanding !== undefined) State.dispatchBasket[existingBasketIdx].outstanding = parsed.outstanding;
       if (parsed.isFetching !== undefined) State.dispatchBasket[existingBasketIdx].isFetching = parsed.isFetching;
       if (parsed.fromMaster !== undefined) State.dispatchBasket[existingBasketIdx].fromMaster = parsed.fromMaster;
-      SoundFX.playBeep('success');
-      showToast(`Updated ${parsed.billNo} in dispatch list`, 'info', 1500);
-      saveState('basket');
-      renderDispatchBasket();
-      updateHomeStats();
+      if (!silent) {
+        SoundFX.playBeep('success');
+        showToast(`Updated ${parsed.billNo} in dispatch list`, 'info', 1500);
+      }
+      if (!skipRender) {
+        saveState('basket');
+        renderDispatchBasket();
+        updateHomeStats();
+      }
       return;
     }
 
     // Check active custody — allow re-dispatching with alert
     const active = State.bills.find(b => normalizeInvoiceNumber(b.billNo) === normScan && b.status === 'WITH_AGENT');
-    if (active) {
+    if (active && !silent) {
       SoundFX.playBeep('warning');
       showToast(`Re-assigning ${parsed.billNo} (previously with ${active.agent})`, 'warning', 2000);
     }
@@ -1589,13 +1880,17 @@
       raw: parsed.raw
     });
 
-    SoundFX.playBeep('success');
-    SoundFX.vibrate(50);
-    showToast(`Added ${parsed.billNo} (${assignedAgent})`, 'success', 1500);
+    if (!silent) {
+      SoundFX.playBeep('success');
+      SoundFX.vibrate(50);
+      showToast(`Added ${parsed.billNo} (${assignedAgent})`, 'success', 1500);
+    }
 
-    saveState('basket');
-    renderDispatchBasket();
-    updateHomeStats();
+    if (!skipRender) {
+      saveState('basket');
+      renderDispatchBasket();
+      updateHomeStats();
+    }
   }
 
   function renderDispatchBasket() {
@@ -1605,14 +1900,45 @@
     const confirmBtn = document.getElementById('confirmDispatchBtn');
     const waBtn = document.getElementById('whatsappHandoverBtn');
     const printBtn = document.getElementById('printHandoverSlipBtn');
+    const filterStrip = document.getElementById('dispatchBasketFilterStrip');
+    const beatNameEl = document.getElementById('dispatchBasketBeatName');
+    const btnBeatOnly = document.getElementById('dispatchFilterBeatOnlyBtn');
+    const btnAllBeats = document.getElementById('dispatchFilterAllBeatsBtn');
 
     if (!list) return;
 
-    if (State.dispatchBasket.length === 0) {
+    // Determine items to display based on beat filter
+    const activeBeat = State.activeBeat;
+    const isFilterBeat = State.dispatchBeatFilter === 'BEAT' && Boolean(activeBeat);
+
+    if (filterStrip) {
+      if (activeBeat && State.dispatchBasket.length > 0) {
+        filterStrip.style.display = 'flex';
+        if (beatNameEl) beatNameEl.textContent = activeBeat;
+        if (btnBeatOnly) btnBeatOnly.classList.toggle('active', isFilterBeat);
+        if (btnAllBeats) btnAllBeats.classList.toggle('active', !isFilterBeat);
+      } else {
+        filterStrip.style.display = 'none';
+      }
+    }
+
+    let displayItems = State.dispatchBasket;
+    if (isFilterBeat) {
+      displayItems = State.dispatchBasket.filter(item => {
+        const matchAgent = State.activeAgent ? isSameAgent(item.agent, State.activeAgent.name) : true;
+        const matchBeat = isSameBeat(item.beat || item.beatName, activeBeat);
+        return matchAgent && matchBeat;
+      });
+    }
+
+    if (displayItems.length === 0) {
+      const msg = isFilterBeat
+        ? `No bills added for ${escapeHtml(activeBeat)} yet.<br><small>Scan labels with your 2D gun or pick from sheet queue below.</small>`
+        : `No bills added to handover basket yet.<br><small>Click "Start Camera" above or type Invoice Number.</small>`;
       list.innerHTML = `
         <div class="empty-placeholder">
           <i class="fa-solid fa-qrcode"></i>
-          <p>No bills added to handover basket yet.<br><small>Click "Start Camera" above or type Invoice Number.</small></p>
+          <p>${msg}</p>
         </div>
       `;
       countBadge.textContent = '0';
@@ -1620,15 +1946,19 @@
       confirmBtn.disabled = true;
       if (waBtn) waBtn.disabled = true;
       if (printBtn) printBtn.disabled = true;
+      renderDispatchSheetBeatQueue();
       return;
     }
 
     let total = 0;
     list.innerHTML = '';
 
-    State.dispatchBasket.forEach((item, index) => {
+    displayItems.forEach((item, index) => {
       total += Number(item.amount) || 0;
       const { receiptBadge, paymentBadge, outstanding, amount } = renderBillPaymentBadgesHtml(item);
+
+      // Find original index in State.dispatchBasket for deletion
+      const origIdx = State.dispatchBasket.indexOf(item);
 
       const row = document.createElement('div');
       row.className = 'bill-card-row';
@@ -1648,7 +1978,7 @@
         <div class="bill-info-meta">
           <span class="b-amount font-mono text-success">${formatINR(amount)}</span>
           ${outstanding > 0 ? `<span class="b-due-label font-mono text-danger">Pending: ${formatINR(outstanding)}</span>` : (amount > 0 ? `<span class="b-due-label font-mono text-success">Cleared: ₹0 Due</span>` : '')}
-          <button class="del-btn" data-del-index="${index}" title="Remove">
+          <button class="del-btn" data-del-index="${origIdx >= 0 ? origIdx : index}" title="Remove">
             <i class="fa-solid fa-trash-can"></i>
           </button>
         </div>
@@ -1656,7 +1986,7 @@
       list.appendChild(row);
     });
 
-    countBadge.textContent = State.dispatchBasket.length;
+    countBadge.textContent = displayItems.length;
     totalLabel.textContent = formatINR(total);
     confirmBtn.disabled = false;
     if (waBtn) waBtn.disabled = false;
@@ -1665,8 +1995,115 @@
     list.querySelectorAll('[data-del-index]').forEach(btn => {
       btn.addEventListener('click', () => {
         const idx = parseInt(btn.dataset.delIndex, 10);
-        State.dispatchBasket.splice(idx, 1);
+        if (idx >= 0 && idx < State.dispatchBasket.length) {
+          State.dispatchBasket.splice(idx, 1);
+          renderDispatchBasket();
+          renderDispatchSheetBeatQueue();
+        }
+      });
+    });
+
+    renderDispatchSheetBeatQueue();
+  }
+
+  function renderDispatchSheetBeatQueue() {
+    const card = document.getElementById('dispatchBeatQueueCard');
+    const titleEl = document.getElementById('dispatchQueueTitle');
+    const countEl = document.getElementById('dispatchQueueCount');
+    const listEl = document.getElementById('dispatchBeatQueueList');
+    const addAllBtn = document.getElementById('dispatchAddAllQueueBtn');
+
+    if (!card || !listEl) return;
+
+    const activeBeat = State.activeBeat;
+    const activeAgent = State.activeAgent ? State.activeAgent.name : '';
+
+    if (!activeBeat || !State.masterSheetBills || State.masterSheetBills.length === 0) {
+      card.style.display = 'none';
+      return;
+    }
+
+    // Bills already in basket or already in custody
+    const inBasketNorms = new Set(State.dispatchBasket.map(b => normalizeInvoiceNumber(b.billNo)));
+    const today = getTodayDateString();
+    const inCustodyNorms = new Set(
+      State.bills
+        .filter(b => b.dispatchDate === today || b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT')
+        .map(b => normalizeInvoiceNumber(b.billNo))
+    );
+
+    const queueBills = [];
+    State.masterSheetBills.forEach(b => {
+      if (!b || !b.billNo) return;
+      if (activeAgent && b.agent && !isSameAgent(b.agent, activeAgent)) return;
+      if (!isSameBeat(b.beat, activeBeat)) return;
+
+      // Exclude already paid
+      if (isBillPaidInFull(b)) return;
+
+      const norm = normalizeInvoiceNumber(b.billNo);
+      if (inBasketNorms.has(norm) || inCustodyNorms.has(norm)) return;
+
+      queueBills.push(b);
+    });
+
+    card.style.display = 'block';
+    if (titleEl) titleEl.textContent = `${activeBeat} — Sheet Pending`;
+    if (countEl) countEl.textContent = queueBills.length;
+
+    if (addAllBtn) {
+      addAllBtn.style.display = queueBills.length > 0 ? 'inline-block' : 'none';
+      addAllBtn.innerHTML = `<i class="fa-solid fa-plus-double"></i> Add All (${queueBills.length})`;
+      addAllBtn.onclick = () => {
+        queueBills.forEach(b => {
+          let parsed = { ...b, raw: b.billNo };
+          parsed = enrichWithMaster(parsed);
+          addBillToDispatchBasket(parsed, { silent: true, skipRender: true });
+        });
+        saveState('basket');
         renderDispatchBasket();
+        updateHomeStats();
+        SoundFX.playBeep('success');
+        showToast(`Added ${queueBills.length} pending bills for ${activeBeat}`, 'success', 2500);
+      };
+    }
+
+    if (queueBills.length === 0) {
+      listEl.innerHTML = `
+        <div style="font-size:0.78rem; color:#64748b; padding:8px; text-align:center;">
+          <i class="fa-solid fa-check-circle text-success"></i> All sheet invoices for this beat are in basket or already dispatched.
+        </div>
+      `;
+      return;
+    }
+
+    listEl.innerHTML = '';
+    queueBills.slice(0, 30).forEach(b => {
+      const item = document.createElement('div');
+      item.className = 'beat-queue-item';
+      item.innerHTML = `
+        <div class="beat-queue-item-info">
+          <div><strong class="font-mono">${escapeHtml(b.billNo)}</strong> &bull; <span class="text-success font-bold font-mono">${formatINR(b.amount)}</span></div>
+          <small class="text-muted" style="font-size:0.74rem;">${escapeHtml(b.party)}</small>
+        </div>
+        <div class="beat-queue-item-actions">
+          <button type="button" class="btn btn-xs btn-primary font-bold" data-add-queue-bill="${escapeHtml(b.billNo)}">
+            <i class="fa-solid fa-plus"></i> Add
+          </button>
+        </div>
+      `;
+      listEl.appendChild(item);
+    });
+
+    listEl.querySelectorAll('[data-add-queue-bill]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const bNo = btn.dataset.addQueueBill;
+        const b = queueBills.find(x => x.billNo === bNo);
+        if (b) {
+          let parsed = { ...b, raw: b.billNo };
+          parsed = enrichWithMaster(parsed);
+          addBillToDispatchBasket(parsed);
+        }
       });
     });
   }
@@ -1679,7 +2116,26 @@
     const timestamp = new Date().toISOString();
     const newBills = [];
 
-    State.dispatchBasket.forEach(b => {
+    const activeBeat = State.activeBeat;
+    const isFilterBeat = State.dispatchBeatFilter === 'BEAT' && Boolean(activeBeat);
+
+    // Items to dispatch: if beat filter is active, only dispatch items matching active agent & beat
+    const itemsToDispatch = isFilterBeat
+      ? State.dispatchBasket.filter(item => {
+          const matchAgent = State.activeAgent ? isSameAgent(item.agent, State.activeAgent.name) : true;
+          const matchBeat = isSameBeat(item.beat || item.beatName, activeBeat);
+          return matchAgent && matchBeat;
+        })
+      : [...State.dispatchBasket];
+
+    if (itemsToDispatch.length === 0) {
+      showToast('No bills in basket for the selected beat to confirm', 'warning', 2500);
+      return;
+    }
+
+    const dispatchNorms = new Set(itemsToDispatch.map(b => normalizeInvoiceNumber(b.billNo)));
+
+    itemsToDispatch.forEach(b => {
       const normB = normalizeInvoiceNumber(b.billNo);
       let record = State.bills.find(item => normalizeInvoiceNumber(item.billNo) === normB);
       if (!record) {
@@ -1738,14 +2194,17 @@
     // Cloud Sync Queue for Tracking Sheet
     queueSyncAction('BATCH_DISPATCH', { dispatchDate: date, timestamp, bills: newBills });
 
-    const count = State.dispatchBasket.length;
+    const count = itemsToDispatch.length;
     State.lastHandoverBatch = {
-      agent: State.activeAgent ? State.activeAgent.name : (State.dispatchBasket[0]?.agent || 'Sales Agent'),
+      agent: State.activeAgent ? State.activeAgent.name : (itemsToDispatch[0]?.agent || 'Sales Agent'),
       date,
       count,
-      bills: [...State.dispatchBasket]
+      bills: [...itemsToDispatch]
     };
-    State.dispatchBasket = [];
+
+    // Remove only the dispatched items from basket
+    State.dispatchBasket = State.dispatchBasket.filter(b => !dispatchNorms.has(normalizeInvoiceNumber(b.billNo)));
+
     saveState();
     saveState('basket');
     updateGlobalStats();
@@ -1772,6 +2231,10 @@
     const list = document.getElementById('settlementListContainer');
     const countBadge = document.getElementById('agentBillsCount');
     const alertBanner = document.getElementById('missingBillAlertBanner');
+    const filterStrip = document.getElementById('settlementBeatFilterStrip');
+    const beatNameEl = document.getElementById('settlementBasketBeatName');
+    const btnBeatOnly = document.getElementById('settlementFilterBeatOnlyBtn');
+    const btnAllBeats = document.getElementById('settlementFilterAllBeatsBtn');
 
     if (!agent) {
       if (list) {
@@ -1785,10 +2248,43 @@
       if (countBadge) countBadge.textContent = '0';
       updateSettlementSummary([]);
       if (alertBanner) alertBanner.style.display = 'none';
+      if (filterStrip) filterStrip.style.display = 'none';
       return;
     }
 
-    const bills = State.bills.filter(b => b.agent === agent);
+    const allAgentBills = State.bills.filter(b => isSameAgent(b.agent, agent));
+    allAgentBills.forEach(b => {
+      if (!b.beat && !b.beatName) {
+        const inferred = inferBillBeat(b);
+        if (inferred) b.beat = inferred;
+      }
+    });
+    const activeBeat = State.activeBeat;
+    let isFilterBeat = State.settlementBeatFilter === 'BEAT' && Boolean(activeBeat);
+
+    let bills = allAgentBills;
+    if (isFilterBeat) {
+      const beatMatched = allAgentBills.filter(b => isSameBeat(b.beat || b.beatName || inferBillBeat(b), activeBeat));
+      if (beatMatched.length > 0) {
+        bills = beatMatched;
+      } else {
+        // Auto-fallback to ALL beats if selected beat has 0 custody bills so agent's unreturned bills are never hidden
+        isFilterBeat = false;
+        bills = allAgentBills;
+      }
+    }
+
+    if (filterStrip) {
+      if (activeBeat && allAgentBills.length > 0) {
+        filterStrip.style.display = 'flex';
+        if (beatNameEl) beatNameEl.textContent = isFilterBeat ? activeBeat : `${activeBeat} (Showing All Beats)`;
+        if (btnBeatOnly) btnBeatOnly.classList.toggle('active', isFilterBeat);
+        if (btnAllBeats) btnAllBeats.classList.toggle('active', !isFilterBeat);
+      } else {
+        filterStrip.style.display = 'none';
+      }
+    }
+
     State.settlementBills = bills;
 
     renderSettlementList(bills);
@@ -2173,11 +2669,17 @@
       subHtml = `Amount is ₹0.00`;
     }
 
-    // If agent mismatch, override class to mismatch
+    // If agent mismatch, handle differently for paid vs pending bills
     if (isMismatch) {
-      statusClass = 'bd-fraud-mismatch';
-      headHtml = `<i class="fa-solid fa-user-xmark"></i> ⚠️ AGENT MISMATCH &bull; ` + (outstanding > 0 ? (receipt ? 'PARTIAL DUE' : 'PENDING DUE') : 'PAID');
-      subHtml = `Assigned in Sheet to <strong>${sheetAgent}</strong> (Scanning for <strong>${activeAgent}</strong>).<br>${subHtml}`;
+      if (outstanding <= 0 || (receipt && outstanding === 0)) {
+        statusClass = 'bd-fraud-paid';
+        headHtml = `<i class="fa-solid fa-circle-check"></i> ✅ ALREADY PAID (Sheet Agent: ${sheetAgent})`;
+        subHtml = `Receipt: ${receipt || 'Paid in Full'} &bull; Due: ₹0.00 &bull; <span style="color:#b91c1c;font-weight:700;">No agent collection needed!</span>`;
+      } else {
+        statusClass = 'bd-fraud-mismatch';
+        headHtml = `<i class="fa-solid fa-user-xmark"></i> ⚠️ AGENT MISMATCH &bull; ` + (receipt ? 'PARTIAL DUE' : 'PENDING DUE');
+        subHtml = `Assigned in Sheet to <strong>${sheetAgent}</strong> (Scanning for <strong>${activeAgent}</strong>).<br>${subHtml}`;
+      }
     }
 
     if (custodyNote) {
@@ -2737,7 +3239,7 @@
   // ========================================================
 
   function getAgentLeftOutStats(agentName, dateFilter = null, beatFilter = null, customDate = null) {
-    const activeDateFilter = dateFilter || State.diffDateFilter || 'TODAY';
+    const activeDateFilter = dateFilter || State.diffDateFilter || 'ALL';
     let agentBills = State.bills.filter(b => isSameAgent(b.agent, agentName));
 
     if (activeDateFilter !== 'ALL') {
@@ -2745,17 +3247,13 @@
     }
 
     if (beatFilter && beatFilter !== 'ALL') {
-      const filterLower = beatFilter.toLowerCase().trim();
-      agentBills = agentBills.filter(b => {
-        const beatStr = String(b.beat || b.beatName || '').toLowerCase();
-        return beatStr.includes(filterLower);
-      });
+      agentBills = agentBills.filter(b => isSameBeat(b.beat || b.beatName || inferBillBeat(b), beatFilter));
     }
 
-    // Include basket bills for this agent if date filter is TODAY (excluding already confirmed bills)
+    // Include basket bills for this agent if date filter is TODAY or ALL (excluding already confirmed bills)
     const confirmedNorms = new Set(agentBills.map(b => normalizeInvoiceNumber(b.billNo)).filter(Boolean));
     let agentBasket = [];
-    if (activeDateFilter === 'TODAY' && State.dispatchBasket && State.dispatchBasket.length > 0) {
+    if ((activeDateFilter === 'TODAY' || activeDateFilter === 'ALL') && State.dispatchBasket && State.dispatchBasket.length > 0) {
       const basketMap = new Map();
       State.dispatchBasket.forEach(b => {
         if (!b || !b.billNo || !isSameAgent(b.agent, agentName)) return;
@@ -2766,16 +3264,12 @@
       });
       agentBasket = Array.from(basketMap.values());
       if (beatFilter && beatFilter !== 'ALL') {
-        const filterLower = beatFilter.toLowerCase().trim();
-        agentBasket = agentBasket.filter(b => {
-          const beatStr = String(b.beat || b.beatName || '').toLowerCase();
-          return beatStr.includes(filterLower);
-        });
+        agentBasket = agentBasket.filter(b => isSameBeat(b.beat || b.beatName || inferBillBeat(b), beatFilter));
       }
     }
 
     const leftOutBills = [
-      ...agentBills.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT'),
+      ...agentBills.filter(b => isBillMissingOrPending(b)),
       ...agentBasket.map(b => ({ ...b, isBasket: true, status: 'IN_BASKET' }))
     ];
     const checkedInBills = agentBills.filter(b => b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND');
@@ -2784,8 +3278,8 @@
 
     agentBills.forEach(b => totalAmt += (Number(b.amount) || 0));
     agentBasket.forEach(b => totalAmt += (Number(b.amount) || 0));
-    checkedInBills.forEach(b => checkedInAmt += (Number(b.collectedAmt) || Number(b.amount) || 0));
-    leftOutBills.forEach(b => leftOutAmt += (Number(b.outstanding !== undefined ? b.outstanding : b.amount) || 0));
+    checkedInBills.forEach(b => checkedInAmt += getBillCollectedAmount(b));
+    leftOutBills.forEach(b => leftOutAmt += getBillPendingAmount(b));
 
     return {
       agent: agentName,
@@ -2804,15 +3298,17 @@
     const tbody = document.getElementById('leftOutTbody');
     const filterSelect = document.getElementById('leftOutAgentFilter');
     const beatSelect = document.getElementById('leftOutBeatFilter');
+    const searchInp = document.getElementById('leftOutSearchInput');
     if (!grid || !tbody) return;
 
     const filterVal = filterSelect ? filterSelect.value : 'ALL';
     const beatVal = beatSelect ? beatSelect.value : 'ALL';
-    const activeDateFilter = State.diffDateFilter || 'TODAY';
+    const searchQuery = (searchInp ? searchInp.value : (State.leftOutSearch || '')).trim().toLowerCase();
+    const activeDateFilter = State.diffDateFilter || 'ALL';
 
     // Highlight active date chip
-    document.querySelectorAll('.diff-chip').forEach(c => {
-      c.classList.toggle('active', (c.dataset.diffDate || 'TODAY') === activeDateFilter);
+    document.querySelectorAll('#diffDateFilters .diff-chip').forEach(c => {
+      c.classList.toggle('active', (c.dataset.diffDate || 'ALL') === activeDateFilter);
     });
 
     // Populate Agent filter options with the 3 designated agents
@@ -2822,7 +3318,7 @@
       State.agents.forEach(a => {
         const opt = document.createElement('option');
         opt.value = a.name;
-        opt.textContent = a.name;
+        opt.textContent = a.fullName || a.name;
         if (a.name === currentVal) opt.selected = true;
         filterSelect.appendChild(opt);
       });
@@ -2839,8 +3335,8 @@
         });
       });
       (State.bills || []).forEach(b => {
-        if (b.beatName) knownBeats.add(b.beatName);
-        else if (b.beat) knownBeats.add(b.beat);
+        const bt = b.beatName || b.beat || inferBillBeat(b);
+        if (bt) knownBeats.add(bt);
       });
       Array.from(knownBeats).sort().forEach(bName => {
         const opt = document.createElement('option');
@@ -2854,31 +3350,27 @@
     grid.innerHTML = '';
     tbody.innerHTML = '';
 
-    // Calculate strip stats for selected date filter & beat filter
+    // Calculate strip stats for selected date filter, agent & beat filter
     let dateFilteredBills = State.bills;
     if (activeDateFilter !== 'ALL') {
       dateFilteredBills = State.bills.filter(b => matchesDateFilter(b.dispatchDate, activeDateFilter));
     }
 
     if (filterVal !== 'ALL') {
-      dateFilteredBills = dateFilteredBills.filter(b => b.agent === filterVal);
+      dateFilteredBills = dateFilteredBills.filter(b => isSameAgent(b.agent, filterVal));
     }
     if (beatVal !== 'ALL') {
-      const bLower = beatVal.toLowerCase().trim();
-      dateFilteredBills = dateFilteredBills.filter(b => {
-        const beatStr = String(b.beat || b.beatName || '').toLowerCase();
-        return beatStr.includes(bLower);
-      });
+      dateFilteredBills = dateFilteredBills.filter(b => isSameBeat(b.beat || b.beatName || inferBillBeat(b), beatVal));
     }
 
     let stripDispatchedCount = dateFilteredBills.length;
     let stripDispatchedAmt = dateFilteredBills.reduce((s, b) => s + (Number(b.amount) || 0), 0);
     let receivedBills = dateFilteredBills.filter(b => b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND');
     let stripReceivedCount = receivedBills.length;
-    let stripReceivedAmt = receivedBills.reduce((s, b) => s + (Number(b.collectedAmt) || Number(b.amount) || 0), 0);
-    let diffBills = dateFilteredBills.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT');
+    let stripReceivedAmt = receivedBills.reduce((s, b) => s + getBillCollectedAmount(b), 0);
+    let diffBills = dateFilteredBills.filter(b => isBillMissingOrPending(b));
     let stripDiffCount = diffBills.length;
-    let stripDiffAmt = diffBills.reduce((s, b) => s + (Number(b.amount) || 0), 0);
+    let stripDiffAmt = diffBills.reduce((s, b) => s + getBillPendingAmount(b), 0);
 
     const elOutAmt = document.getElementById('statInCustodyAmt');
     const elOutCnt = document.getElementById('statInCustody');
@@ -2894,11 +3386,24 @@
     if (elDiffAmt) elDiffAmt.textContent = formatINR(stripDiffAmt);
     if (elDiffCnt) elDiffCnt.textContent = `${stripDiffCount} bills`;
 
-    const allLeftOutBills = [];
+    // Auto-Reconciliation Live Banner
+    const autoReconciledCount = (dateFilteredBills || []).filter(b => b.status === 'PAID_FULL' && b.remarks && b.remarks.includes('Auto-Healed')).length;
+    const bannerEl = document.getElementById('diffAutoReconcileBanner');
+    const bannerTextEl = document.getElementById('diffAutoReconcileText');
+    if (bannerEl && bannerTextEl) {
+      bannerEl.style.display = 'flex';
+      if (autoReconciledCount > 0) {
+        bannerTextEl.innerHTML = `<strong>Auto-Reconciliation Active:</strong> <span class="text-success font-bold">${autoReconciledCount} paid bills</span> automatically reconciled from Sheet and cleared from difference!`;
+      } else {
+        bannerTextEl.innerHTML = `<strong>Auto-Reconciliation Active:</strong> Live sync with Master Sheet verified (${stripDiffCount} pending / missing bills in view).`;
+      }
+    }
+
+    let allLeftOutBills = [];
 
     State.agents.forEach(agent => {
       const stats = getAgentLeftOutStats(agent.name, activeDateFilter, beatVal);
-      if (filterVal !== 'ALL' && filterVal !== agent.name) return;
+      if (filterVal !== 'ALL' && !isSameAgent(filterVal, agent.name)) return;
 
       if (stats.leftOutBills.length > 0) {
         allLeftOutBills.push(...stats.leftOutBills);
@@ -2910,7 +3415,7 @@
       card.innerHTML = `
         <div class="leftout-agent-head">
           <span class="leftout-agent-name"><i class="fa-solid fa-user"></i> ${agent.name}</span>
-          <span class="leftout-count-tag ${stats.leftOutCount > 0 ? 'bg-danger text-white' : ''}">${stats.leftOutCount} Difference</span>
+          <span class="leftout-count-tag ${stats.leftOutCount > 0 ? 'bg-danger text-white' : ''}">${stats.leftOutCount} Missing / Due</span>
         </div>
         <div class="leftout-amount-row">
           <small class="text-muted">Out: ${stats.totalCount} | In: ${stats.checkedInCount}</small>
@@ -2928,26 +3433,60 @@
       grid.appendChild(card);
     });
 
+    if (searchQuery) {
+      allLeftOutBills = allLeftOutBills.filter(b => {
+        const bNo = String(b.billNo || '').toLowerCase();
+        const party = String(b.party || '').toLowerCase();
+        const beat = String(b.beat || b.beatName || inferBillBeat(b) || '').toLowerCase();
+        const rec = String(b.receipt || b.refNo || '').toLowerCase();
+        return bNo.includes(searchQuery) || party.includes(searchQuery) || beat.includes(searchQuery) || rec.includes(searchQuery);
+      });
+    }
+
+    // Sort missing bills by Aging (oldest first), then by Pending Due amount (highest first)
+    allLeftOutBills.sort((a, b) => {
+      const ageDiff = getBillAgingDays(b) - getBillAgingDays(a);
+      if (ageDiff !== 0) return ageDiff;
+      return getBillPendingAmount(b) - getBillPendingAmount(a);
+    });
+
     // Populate Left Out Table
     if (allLeftOutBills.length === 0) {
-      tbody.innerHTML = `<tr class="empty-row"><td colspan="8">🎉 Zero difference for ${activeDateFilter.toLowerCase()}! All dispatched bills are accounted for.</td></tr>`;
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="9">🎉 Zero missing/pending bills for this filter! All dispatched bills are accounted for.</td></tr>`;
     } else {
       allLeftOutBills.forEach(b => {
         const tr = document.createElement('tr');
-        const beatTag = b.beat ? `<div style="font-size:0.75rem; color:#64748b; margin-top:2px;"><i class="fa-solid fa-location-dot"></i> ${escapeHtml(b.beat)}</div>` : '';
+        const resolvedBeat = b.beat || b.beatName || inferBillBeat(b) || '';
+        const beatTag = resolvedBeat ? `<div style="font-size:0.75rem; color:#64748b; margin-top:2px;"><i class="fa-solid fa-location-dot"></i> ${escapeHtml(resolvedBeat)}</div>` : '';
         const { receiptBadge, paymentBadge } = renderBillPaymentBadgesHtml(b);
+        const pendingDue = getBillPendingAmount(b);
+        const ageDays = getBillAgingDays(b);
+        let ageBadgeHtml = `<span class="aging-pill aging-fresh">Today (0d)</span>`;
+        if (ageDays > 7) {
+          ageBadgeHtml = `<span class="aging-pill aging-critical"><i class="fa-solid fa-fire"></i> ${ageDays}d overdue</span>`;
+        } else if (ageDays > 3) {
+          ageBadgeHtml = `<span class="aging-pill aging-warn"><i class="fa-solid fa-clock"></i> ${ageDays}d in field</span>`;
+        } else if (ageDays >= 1) {
+          ageBadgeHtml = `<span class="aging-pill aging-fresh">${ageDays}d ago</span>`;
+        }
         tr.innerHTML = `
           <td><strong class="font-mono text-danger">${escapeHtml(b.billNo)}</strong></td>
           <td><strong>${escapeHtml(b.agent)}</strong>${beatTag}</td>
           <td>${escapeHtml(b.party)}</td>
-          <td class="font-mono font-bold">${formatINR(b.amount)}</td>
-          <td>${b.dispatchDate || '-'}</td>
+          <td class="font-mono">${formatINR(b.amount)}</td>
+          <td class="font-mono font-bold text-danger">${formatINR(pendingDue)}</td>
+          <td><div>${b.dispatchDate || '-'}</div><div style="margin-top:2px;">${ageBadgeHtml}</div></td>
           <td>${receiptBadge}</td>
           <td>${paymentBadge}</td>
           <td>
-            <button class="btn btn-success btn-sm" data-table-checkin="${escapeHtml(b.billNo)}">
-              <i class="fa-solid fa-check"></i> Receive
-            </button>
+            <div style="display:flex; gap:4px;">
+              <button class="btn btn-success btn-sm" data-table-checkin="${escapeHtml(b.billNo)}" title="Mark Received / Paid">
+                <i class="fa-solid fa-check"></i> Receive
+              </button>
+              <button class="btn btn-outline btn-sm" data-table-paymodal="${escapeHtml(b.billNo)}" title="Record Partial / Custom Payment">
+                ₹
+              </button>
+            </div>
           </td>
         `;
         tbody.appendChild(tr);
@@ -2971,14 +3510,15 @@
         const b = State.bills.find(item => item.billNo === btn.dataset.tableCheckin);
         if (b) {
           b.status = 'RECEIVED';
+          b.collectedAmt = Number(b.amount) || 0;
+          b.outstanding = 0;
           b.remarks = 'Directly received from Difference list';
           b.lastActionDate = new Date().toISOString();
-          if (!b.receipt || b.outstanding === undefined) {
+          if (!b.receipt) {
             const mm = findMasterBill(b.billNo);
             if (mm) {
               b.receipt = mm.receipt || b.receipt;
               b.refNo = mm.receipt || b.refNo;
-              b.outstanding = mm.outstanding !== undefined ? mm.outstanding : b.outstanding;
               if (mm.party && mm.party !== 'Customer') b.party = mm.party;
               if (mm.amount) b.amount = mm.amount;
             } else {
@@ -2996,6 +3536,13 @@
       });
     });
 
+    tbody.querySelectorAll('[data-table-paymodal]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const b = State.bills.find(item => item.billNo === btn.dataset.tablePaymodal);
+        if (b) openPaymentModal(b);
+      });
+    });
+
     // Alert tab badge
     const alertTabBtn = document.querySelector('[data-tab="tab-leftout"]');
     if (alertTabBtn) {
@@ -3003,13 +3550,71 @@
     }
 
     // Render Missed Bills Report
-    renderMissedBillsReport(filterVal);
+    renderMissedBillsReport(filterVal, beatVal, searchQuery);
   }
 
   /**
-   * Missed Bills Report: Identifies bills assigned in Master Sheet that were NOT dispatched today
+   * Helper to get all Undispatched Sheet Due Bills (bills in Master Sheet with pending balance
+   * that are NOT in active custody or already paid).
    */
-  function renderMissedBillsReport(selectedAgent = 'ALL') {
+  function getUndispatchedSheetDueBills(selectedAgent = 'ALL', selectedBeat = 'ALL', searchQuery = '') {
+    if (!State.masterSheetBills || State.masterSheetBills.length === 0) {
+      return { missed: [], paidExcludedCount: 0 };
+    }
+
+    const custodyNorms = new Set(
+      (State.bills || []).map(b => normalizeInvoiceNumber(b.billNo)).filter(Boolean)
+    );
+    const basketNorms = new Set(
+      (State.dispatchBasket || []).map(b => normalizeInvoiceNumber(b.billNo)).filter(Boolean)
+    );
+
+    const missed = [];
+    let paidExcludedCount = 0;
+    const q = (searchQuery || '').trim().toLowerCase();
+
+    State.masterSheetBills.forEach(b => {
+      if (!b || !b.billNo) return;
+      const bAgent = String(b.agent || '').trim();
+      if (!bAgent) return;
+
+      if (selectedAgent !== 'ALL' && !isSameAgent(bAgent, selectedAgent)) {
+        return;
+      }
+      if (selectedBeat !== 'ALL' && !isSameBeat(b.beat, selectedBeat)) {
+        return;
+      }
+
+      const outstanding = (b.outstanding !== undefined && b.outstanding !== null && b.outstanding !== '') ? Number(b.outstanding) : null;
+      const isPaid = isBillPaidInFull(b) || (outstanding !== null && outstanding <= 0 && (Number(b.amount) > 0 || b.receipt));
+      if (isPaid) {
+        paidExcludedCount++;
+        return;
+      }
+
+      const norm = normalizeInvoiceNumber(b.billNo);
+      if (custodyNorms.has(norm) || basketNorms.has(norm)) {
+        return;
+      }
+
+      if (q) {
+        const billNoStr = String(b.billNo || '').toLowerCase();
+        const partyStr = String(b.party || '').toLowerCase();
+        const beatStr = String(b.beat || '').toLowerCase();
+        if (!billNoStr.includes(q) && !partyStr.includes(q) && !beatStr.includes(q)) return;
+      }
+
+      missed.push(b);
+    });
+
+    return { missed, paidExcludedCount };
+  }
+
+  /**
+   * Missed Bills Report: Identifies DUE bills assigned in Master Sheet that are not in custody.
+   * Strictly EXCLUDES all bills that are Paid in Full or Settled.
+   */
+  function renderMissedBillsReport(selectedAgent = 'ALL', selectedBeat = 'ALL', searchQuery = '') {
     const box = document.getElementById('missedBillsBox');
     const countEl = document.getElementById('missedBillsCount');
     const listEl = document.getElementById('missedBillsList');
@@ -3020,42 +3625,26 @@
       return;
     }
 
-    const today = getTodayDateString();
-    const todayDispatchedNos = new Set(
-      State.bills
-        .filter(b => b.dispatchDate === today)
-        .map(b => normalizeInvoiceNumber(b.billNo))
-    );
-
-    const missed = [];
-    State.masterSheetBills.forEach(b => {
-      if (!b || !b.billNo) return;
-      const bAgent = String(b.agent || '').trim();
-      if (!bAgent) return;
-
-      if (selectedAgent !== 'ALL' && bAgent.toLowerCase() !== selectedAgent.toLowerCase()) {
-        return;
-      }
-
-      const norm = normalizeInvoiceNumber(b.billNo);
-      if (!todayDispatchedNos.has(norm)) {
-        missed.push(b);
-      }
-    });
+    const { missed, paidExcludedCount } = getUndispatchedSheetDueBills(selectedAgent, selectedBeat, searchQuery);
 
     countEl.textContent = missed.length;
     box.style.display = missed.length > 0 ? 'block' : 'none';
 
+    // Update subtitle to clearly show that paid bills are excluded
+    const subEl = box.querySelector('.missed-sub');
+    if (subEl) {
+      const totalMissedDue = missed.reduce((s, b) => s + (Number(b.outstanding) || Number(b.amount) || 0), 0);
+      subEl.innerHTML = `Assigned in Master Sheet with pending balance (${formatINR(totalMissedDue)}), not yet dispatched &bull; <strong style="color:var(--success);">${paidExcludedCount} paid bills excluded</strong>`;
+    }
+
     listEl.innerHTML = '';
-    missed.slice(0, 40).forEach(b => {
+    missed.slice(0, 60).forEach(b => {
       const item = document.createElement('div');
       item.className = 'missed-bill-item';
-      const outstanding = Number(b.outstanding) || 0;
+      const outstanding = Number(b.outstanding) || Number(b.amount) || 0;
       const receipt = String(b.receipt || '').trim();
       let statusBadge = '';
-      if (outstanding <= 0) {
-        statusBadge = `<span class="badge-paid">✅ Paid</span>`;
-      } else if (receipt) {
+      if (receipt) {
         statusBadge = `<span class="badge-partial">⚠️ Partial (${formatINR(outstanding)})</span>`;
       } else {
         statusBadge = `<span class="badge-pending">🔴 Due (${formatINR(outstanding)})</span>`;
@@ -3064,14 +3653,14 @@
       item.innerHTML = `
         <div class="missed-bill-info">
           <div class="missed-bill-top">
-            <strong class="font-mono text-danger">${b.billNo}</strong>
+            <strong class="font-mono text-danger">${escapeHtml(b.billNo)}</strong>
             ${statusBadge}
-            <span class="badge-receipt"><i class="fa-solid fa-user"></i> ${b.agent || 'Agent'}</span>
+            <span class="badge-receipt"><i class="fa-solid fa-user"></i> ${escapeHtml(b.agent || 'Agent')}${b.beat ? ` • ${escapeHtml(b.beat)}` : ''}</span>
           </div>
-          <span class="missed-bill-party">${b.party || 'Customer'} &bull; ${formatINR(b.amount)}</span>
+          <span class="missed-bill-party">${escapeHtml(b.party || 'Customer')} &bull; Bill: ${formatINR(b.amount)}</span>
         </div>
         <div class="missed-bill-action">
-          <button class="btn btn-outline-danger btn-sm" data-dispatch-missed="${b.billNo}">
+          <button class="btn btn-outline-danger btn-sm" data-dispatch-missed="${escapeHtml(b.billNo)}">
             <i class="fa-solid fa-plus"></i> Dispatch
           </button>
         </div>
@@ -3092,21 +3681,23 @@
 
   function sendLeftOutWhatsApp(agentName) {
     if (!agentName) return;
-    const stats = getAgentLeftOutStats(agentName);
-    const agentObj = State.agents.find(a => a.name === agentName);
+    const stats = getAgentLeftOutStats(agentName, State.diffDateFilter || 'ALL');
+    const agentObj = State.agents.find(a => isSameAgent(a.name, agentName));
     const phone = agentObj ? agentObj.phone : '';
 
     if (stats.leftOutBills.length === 0) {
-      showToast(`No left out bills for ${agentName}`, 'info');
+      showToast(`No missing/pending bills for ${agentName}`, 'info');
       return;
     }
 
-    const billLines = stats.leftOutBills.map((b, i) => 
-      `${i + 1}. *${b.billNo}*: ${b.party} (${formatINR(b.amount)})${b.refNo ? ` [Receipt: ${b.refNo}]` : ''}`
-    ).join('\n');
+    const billLines = stats.leftOutBills.map((b, i) => {
+      const due = getBillPendingAmount(b);
+      const age = getBillAgingDays(b);
+      return `${i + 1}. *${b.billNo}*: ${b.party} (Due: ${formatINR(due)}, ${age}d in field)${b.refNo ? ` [Receipt: ${b.refNo}]` : ''}`;
+    }).join('\n');
 
     const msg = 
-`*⚠️ PENDING / LEFT OUT BILLS REPORT*
+`*⚠️ PENDING / MISSING BILLS AUDIT REPORT*
 *Agent:* ${agentName}
 *Date:* ${getTodayDateString()}
 -------------------------
@@ -3114,10 +3705,10 @@
 ✅ *Checked IN / Paid:* ${stats.checkedInCount} bills (${formatINR(stats.checkedInAmt)})
 ⚠️ *REMAINING WITH YOU:* ${stats.leftOutCount} bills (${formatINR(stats.leftOutAmt)})
 
-*List of Bills to Account For:*
+*List of Missing / Pending Bills to Account For:*
 ${billLines}
 -------------------------
-Please reconcile payments or return signed copies tomorrow.
+Please reconcile payments or return signed copies immediately.
 _BillAudit Pro_`;
 
     const url = phone ? `https://wa.me/91${phone}?text=${encodeURI(msg)}` : `https://wa.me/?text=${encodeURI(msg)}`;
@@ -3130,8 +3721,7 @@ _BillAudit Pro_`;
     if (agent !== 'ALL') {
       sendLeftOutWhatsApp(agent);
     } else {
-      // Send for first agent with left out bills or show alert
-      const agentsWithLeftOut = State.agents.filter(a => getAgentLeftOutStats(a.name).leftOutCount > 0);
+      const agentsWithLeftOut = State.agents.filter(a => getAgentLeftOutStats(a.name, 'ALL').leftOutCount > 0);
       if (agentsWithLeftOut.length === 0) {
         showToast('All agents have 0 left-out bills!', 'success');
         return;
@@ -3143,6 +3733,142 @@ _BillAudit Pro_`;
   // ========================================================
   // 8B. AUDIT & PAYMENT RECONCILIATION ENGINE
   // ========================================================
+
+  /**
+   * Auto-Reconciles Live Custody (State.bills) with Master Sheet (State.masterSheetBills)
+   * Also backfills missing beat, party, amount, agent, receipt, and outstanding fields
+   * on all custody bills so Beat Analysis, Evening Return, and Missing Bills Dashboard have complete data.
+   */
+  function reconcileCustodyWithMasterSheet() {
+    if (!State.bills || State.bills.length === 0) return { healedCount: 0, partialCount: 0 };
+
+    let healedCount = 0;
+    let partialCount = 0;
+    const nowIST = new Date().toISOString();
+
+    State.bills.forEach(b => {
+      if (!b || !b.billNo) return;
+
+      const mm = (State.masterSheetBills && State.masterSheetBills.length > 0) ? findMasterBill(b.billNo) : null;
+
+      // Always backfill missing metadata (Beat, Party, Amount, Canonical Agent) on every bill
+      if (mm) {
+        if ((!b.party || b.party === 'Standard Customer' || b.party === 'Customer') && mm.party) {
+          b.party = mm.party;
+        }
+        if ((!b.amount || Number(b.amount) === 0) && Number(mm.amount) > 0) {
+          b.amount = Number(mm.amount);
+        }
+        if (!b.beat && !b.beatName && mm.beat) {
+          b.beat = mm.beat;
+        }
+        if ((!b.agent || b.agent === 'Sales Agent') && mm.agent) {
+          b.agent = mm.agent;
+        }
+        if (!b.receipt && mm.receipt) {
+          b.receipt = mm.receipt;
+        }
+      }
+
+      // Normalize agent name to canonical Rajesh / Shivam / Self
+      if (b.agent) {
+        if (isSameAgent(b.agent, 'Shivam')) b.agent = 'Shivam';
+        else if (isSameAgent(b.agent, 'Rajesh')) b.agent = 'Rajesh';
+        else if (isSameAgent(b.agent, 'Self')) b.agent = 'Self';
+      }
+
+      // If beat is still empty, infer from Agent + Dispatch Date day-of-week schedule
+      if (!b.beat && !b.beatName) {
+        const inferredBeat = inferBillBeat(b);
+        if (inferredBeat) b.beat = inferredBeat;
+      }
+
+      if (!mm) return;
+
+      const isPending = (b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT' || b.status === 'LEFT_OUT_ALERT');
+      if (!isPending) return;
+
+      const amt = Number(b.amount) || Number(mm.amount) || 0;
+      const masterOut = (mm.outstanding !== undefined && mm.outstanding !== null && mm.outstanding !== '') ? Number(mm.outstanding) : null;
+      const masterStat = String(mm.status || '').toUpperCase();
+      const masterReceipt = String(mm.receipt || mm.refNo || '').trim();
+      const isPaidRemark = /^PAID/i.test(masterReceipt);
+
+      const isFullPaid = (masterStat === 'PAID') ||
+                         (masterOut !== null && masterOut <= 0 && (amt > 0 || masterReceipt || isPaidRemark)) ||
+                         isPaidRemark;
+
+      const isPartial = !isFullPaid && (
+        masterStat === 'PARTIAL' ||
+        (masterOut !== null && masterOut > 0 && masterOut < amt) ||
+        (masterReceipt && masterOut !== null && masterOut > 0)
+      );
+
+      if (isFullPaid) {
+        b.status = 'PAID_FULL';
+        b.collectedAmt = amt;
+        b.outstanding = 0;
+        b.paymentMode = masterReceipt || 'Sheet Verified';
+        b.refNo = masterReceipt || 'PAID IN SHEET';
+        b.returnReason = '';
+        b.remarks = `Auto-Healed: Verified Paid on Master Sheet (${masterReceipt || 'Paid'})`;
+        b.lastActionDate = nowIST;
+
+        queueSyncAction('SETTLEMENT_PAYMENT', {
+          billNo: b.billNo,
+          agent: b.agent,
+          party: b.party,
+          amount: amt,
+          totalAmount: amt,
+          collectedAmt: amt,
+          remainingDue: 0,
+          paymentMode: b.paymentMode,
+          refNo: b.refNo,
+          status: 'PAID_FULL',
+          remarks: b.remarks,
+          timestamp: nowIST
+        });
+
+        healedCount++;
+      } else if (isPartial) {
+        b.status = 'PAID_PARTIAL';
+        const coll = Math.max(0, amt - masterOut);
+        b.collectedAmt = coll;
+        b.outstanding = masterOut;
+        if (masterReceipt) {
+          b.paymentMode = masterReceipt;
+          b.refNo = masterReceipt;
+        }
+        b.remarks = `Auto-Healed: Partial on Master Sheet (Paid: ₹${coll}, Due: ₹${masterOut})`;
+        b.lastActionDate = nowIST;
+
+        queueSyncAction('SETTLEMENT_PAYMENT', {
+          billNo: b.billNo,
+          agent: b.agent,
+          party: b.party,
+          amount: amt,
+          totalAmount: amt,
+          collectedAmt: coll,
+          remainingDue: masterOut,
+          paymentMode: b.paymentMode || 'Partial',
+          refNo: b.refNo || '',
+          status: 'PAID_PARTIAL',
+          remarks: b.remarks,
+          timestamp: nowIST
+        });
+
+        partialCount++;
+      } else if (masterOut !== null && masterOut > 0) {
+        b.outstanding = masterOut;
+      }
+    });
+
+    if (healedCount > 0 || partialCount > 0) {
+      console.log(`[Auto-Reconciliation] Healed ${healedCount} paid bills and ${partialCount} partial bills from Master Sheet!`);
+    }
+
+    return { healedCount, partialCount };
+  }
 
   /**
    * Synchronize active custody bills directly from Tracking Sheet (Live_Custody tab)
@@ -3179,33 +3905,46 @@ _BillAudit Pro_`;
             }
           }
 
+          const mm = findMasterBill(cb.billNo);
+          let rawAgent = cb.agent || (mm && mm.agent) || 'Rajesh';
+          if (isSameAgent(rawAgent, 'Shivam')) rawAgent = 'Shivam';
+          else if (isSameAgent(rawAgent, 'Self')) rawAgent = 'Self';
+          else rawAgent = 'Rajesh';
+
           const formattedBill = {
             billNo: cb.billNo,
-            party: cb.party || 'Standard Customer',
-            amount: Number(cb.amount) || 0,
-            agent: cb.agent || 'Sales Agent',
+            party: (cb.party && cb.party !== 'Standard Customer') ? cb.party : ((mm && mm.party) || cb.party || 'Standard Customer'),
+            amount: Number(cb.amount) || (mm ? Number(mm.amount) : 0) || 0,
+            agent: rawAgent,
+            beat: cb.beat || (mm && mm.beat) || '',
             dispatchDate: dDate,
             status: cb.status || 'WITH_AGENT',
             collectedAmt: Number(cb.collectedAmt) || 0,
             outstanding: cb.outstanding !== undefined ? Number(cb.outstanding) : (Number(cb.amount) || 0),
             paymentMode: cb.paymentMode || '',
-            refNo: cb.refNo || '',
+            refNo: cb.refNo || (mm && mm.receipt) || '',
+            receipt: (mm && mm.receipt) || cb.refNo || '',
             returnReason: cb.returnReason || '',
             remarks: cb.remarks || '',
             lastActionDate: cb.lastActionDate || new Date().toISOString(),
             history: []
           };
+          if (!formattedBill.beat) {
+            formattedBill.beat = inferBillBeat(formattedBill);
+          }
 
           if (existingIdx !== undefined) {
             const b = State.bills[existingIdx];
-            b.party = formattedBill.party;
+            b.party = formattedBill.party || b.party;
             b.amount = formattedBill.amount || b.amount;
-            b.agent = formattedBill.agent;
+            b.agent = formattedBill.agent || b.agent;
+            b.beat = formattedBill.beat || b.beat;
             b.status = formattedBill.status;
             b.collectedAmt = formattedBill.collectedAmt;
             b.outstanding = formattedBill.outstanding;
             b.paymentMode = formattedBill.paymentMode;
-            b.refNo = formattedBill.refNo;
+            b.refNo = formattedBill.refNo || b.refNo;
+            b.receipt = formattedBill.receipt || b.receipt;
             b.remarks = formattedBill.remarks;
             b.lastActionDate = formattedBill.lastActionDate;
             if (dDate) b.dispatchDate = dDate;
@@ -3217,6 +3956,7 @@ _BillAudit Pro_`;
           }
         });
 
+        const reconcileRes = reconcileCustodyWithMasterSheet();
         saveState('bills');
         updateGlobalStats();
         renderLeftOutTab();
@@ -3224,7 +3964,11 @@ _BillAudit Pro_`;
 
         if (showFeedback) {
           SoundFX.playBeep('success');
-          showToast(`Synced ${custodyBills.length} custody bills from Tracking Sheet!`, 'success');
+          let toastMsg = `Synced ${custodyBills.length} custody bills from Tracking Sheet!`;
+          if (reconcileRes.healedCount > 0) {
+            toastMsg += ` (${reconcileRes.healedCount} paid bills auto-cleared)`;
+          }
+          showToast(toastMsg, 'success');
         }
       }
     } catch (err) {
@@ -3631,7 +4375,7 @@ _BillAudit Pro_`;
 
       // Agent filter
       const bAgent = String(b.agent || '').trim();
-      if (agentFilter !== 'ALL' && bAgent.toLowerCase() !== agentFilter.toLowerCase()) {
+      if (agentFilter !== 'ALL' && !isSameAgent(bAgent, agentFilter)) {
         continue;
       }
 
@@ -3643,24 +4387,23 @@ _BillAudit Pro_`;
 
       // Beat filter
       if (beatFilter !== 'ALL') {
-        const beatFilterLower = beatFilter.toLowerCase().trim();
-        const bBeat = String(b.beat || '').toLowerCase();
-        const custodyBeat = custodyRecord ? String(custodyRecord.beat || custodyRecord.beatName || '').toLowerCase() : '';
-        if (!bBeat.includes(beatFilterLower) && !custodyBeat.includes(beatFilterLower)) {
+        const matchBeat = isSameBeat(b.beat, beatFilter) ||
+          (custodyRecord && isSameBeat(custodyRecord.beat || custodyRecord.beatName || inferBillBeat(custodyRecord), beatFilter));
+        if (!matchBeat) {
           continue;
         }
       }
 
       if (statusFilter === 'PAID') {
-        if (outstanding > 0) continue;
+        if (outstanding > 0 && !isBillPaidInFull(b)) continue;
       } else if (statusFilter === 'PARTIAL') {
-        if (outstanding <= 0 || !receipt) continue;
+        if (outstanding <= 0 || !receipt || isBillPaidInFull(b)) continue;
       } else if (statusFilter === 'PENDING') {
-        if (outstanding <= 0 || receipt) continue;
+        if (outstanding <= 0 || receipt || isBillPaidInFull(b)) continue;
       } else if (statusFilter === 'DISPATCHED') {
-        if (!custodyRecord || custodyRecord.status !== 'WITH_AGENT') continue;
+        if (!custodyRecord || !isBillUnreturnedInField(custodyRecord)) continue;
       } else if (statusFilter === 'RECEIVED') {
-        if (!custodyRecord || custodyRecord.status !== 'RECEIVED') continue;
+        if (!custodyRecord || !(custodyRecord.status === 'RECEIVED' || custodyRecord.status === 'PAID_FULL' || custodyRecord.status === 'PAID_PARTIAL' || custodyRecord.status === 'RETURNED_IN_HAND')) continue;
       }
 
       results.push({ bill: b, custody: custodyRecord, outstanding, receipt });
@@ -4073,18 +4816,31 @@ _BillAudit Pro_`;
     updateMasterSheetUI('syncing');
 
     let incomingBills = [];
+    const candidateSheetIds = Array.from(new Set([
+      sheetId,
+      '1aNzEsD0v92fVZtklSj79ZxDtXCkySQxw63HVlydg88g',
+      '1BL4AhHPGPubuIh2_H29jRqR48DjclRsA1OAzTDoqsOY',
+      '11J3WSXNFfu5aARNMBX3HQazajsfzBjj7wX9MWyVVBRk'
+    ].filter(Boolean)));
 
-    // 1. Direct BigTable Visualization API (3 seconds for 15,000 bills)
-    try {
-      const tq = encodeURIComponent('select D, E, F, L, M, N, O, P, I, J where D is not null');
-      const gvizUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&tq=${tq}&gid=${gid}&t=${Date.now()}`;
-      const resp = await fetch(gvizUrl);
-      if (resp.ok) {
-        const txt = await resp.text();
-        incomingBills = parseGvizResponse(txt);
+    // 1. Direct BigTable Visualization API across candidate Master Sheet IDs
+    const tq = encodeURIComponent('select D, E, F, L, M, N, O, P, I, J where D is not null');
+    for (const candId of candidateSheetIds) {
+      if (incomingBills && incomingBills.length > 0) break;
+      try {
+        const gvizUrl = `https://docs.google.com/spreadsheets/d/${candId}/gviz/tq?tqx=out:json&tq=${tq}&gid=${gid}&t=${Date.now()}`;
+        const resp = await fetch(gvizUrl);
+        if (resp.ok) {
+          const txt = await resp.text();
+          const parsed = parseGvizResponse(txt);
+          if (parsed && parsed.length > 0) {
+            incomingBills = parsed;
+            break;
+          }
+        }
+      } catch (gvizErr) {
+        console.warn(`[SheetSync] GViz query failed for ${candId}:`, gvizErr);
       }
-    } catch (gvizErr) {
-      console.warn('[SheetSync] Direct GViz query failed, falling back to Apps Script:', gvizErr);
     }
 
     // 2. Fallback to Apps Script if GViz query did not return rows
@@ -4117,15 +4873,25 @@ _BillAudit Pro_`;
       rebuildMasterSheetMap();
       saveState('master');
       saveState('agents');
+
+      // Auto-reconcile live custody with latest master sheet payment info
+      const reconcileRes = reconcileCustodyWithMasterSheet();
+      saveState('bills');
+
       updateGlobalStats();
       renderAgentSelects();
       renderLeftOutTab();
       renderMasterLedger();
+      updateHomeStats();
       updateMasterSheetUI();
 
       if (showFeedback) {
         SoundFX.playBeep('success');
-        showToast(`⚡ Synced ${incomingBills.length.toLocaleString()} bills directly from MARCH-SEPT tab!`, 'success', 3000);
+        let msg = `⚡ Synced ${incomingBills.length.toLocaleString()} bills from MARCH-SEPT tab!`;
+        if (reconcileRes.healedCount > 0) {
+          msg += ` (${reconcileRes.healedCount} paid bills auto-cleared from Difference)`;
+        }
+        showToast(msg, 'success', 3500);
       }
       return true;
     } else {
@@ -4406,29 +5172,28 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
 
     State.bills.forEach(b => {
       const amt = Number(b.amount) || 0;
-      const colAmt = Number(b.collectedAmt) || 0;
+      const colAmt = getBillCollectedAmount(b);
+      const pendAmt = getBillPendingAmount(b);
 
-      if (b.status === 'WITH_AGENT') {
-        inCustodyCount++;
-        inCustodyAmt += amt;
-        missingCount++;
-        missingAmt += amt;
-      } else if (b.status === 'RECEIVED') {
-        collectedCount++;
-        collectedAmt += amt;
-      } else if (b.status === 'PAID_FULL') {
+      inCustodyCount++;
+      inCustodyAmt += amt;
+
+      if (b.status === 'RECEIVED' || b.status === 'PAID_FULL') {
         collectedCount++;
         collectedAmt += colAmt;
       } else if (b.status === 'PAID_PARTIAL') {
         collectedCount++;
         collectedAmt += colAmt;
-        returnedAmt += (amt - colAmt);
+        if (pendAmt > 0) {
+          missingCount++;
+          missingAmt += pendAmt;
+        }
       } else if (b.status === 'RETURNED_IN_HAND') {
         returnedCount++;
         returnedAmt += amt;
-      } else if (b.status === 'MISSING_ALERT') {
+      } else if (isBillUnreturnedInField(b)) {
         missingCount++;
-        missingAmt += amt;
+        missingAmt += pendAmt;
       }
     });
 
@@ -4484,18 +5249,18 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     }
   }
 
-  // Updates the home tab quick stats strip & agent difference cards
+  // Updates the home tab quick stats strip, agent difference cards & Decision Analysis Center
   function updateHomeStats() {
-    const filterMode = State.homeDateFilter || 'TODAY';
+    const filterMode = State.homeDateFilter || 'ALL';
     const customDate = State.homeCustomDate;
 
-    // Filter bills according to active date filter (TODAY, YESTERDAY, ALL, or CUSTOM)
+    // Filter bills according to active date filter (ALL, TODAY, YESTERDAY, OVERDUE, or CUSTOM)
     const filteredBills = State.bills.filter(b => matchesDateFilter(b.dispatchDate, filterMode, customDate));
 
     // Deduplicate basket items against confirmed bills and against itself to guarantee exact counts
     const confirmedBillNorms = new Set(filteredBills.map(b => normalizeInvoiceNumber(b.billNo)).filter(Boolean));
     const basketMap = new Map();
-    if (filterMode === 'TODAY' && State.dispatchBasket && State.dispatchBasket.length > 0) {
+    if ((filterMode === 'TODAY' || filterMode === 'ALL') && State.dispatchBasket && State.dispatchBasket.length > 0) {
       State.dispatchBasket.forEach(b => {
         if (!b || !b.billNo) return;
         const norm = normalizeInvoiceNumber(b.billNo);
@@ -4511,19 +5276,19 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     const outCount = filteredBills.length + basketCount;
     const inBills = filteredBills.filter(b => b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND');
     const inCount = inBills.length;
-    const diffBills = filteredBills.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT');
+    const diffBills = filteredBills.filter(b => isBillMissingOrPending(b));
     const diffCount = diffBills.length + basketCount;
 
     const outAmt = filteredBills.reduce((s, b) => s + (Number(b.amount) || 0), 0) + basketAmt;
-    const inAmt = inBills.reduce((s, b) => s + (Number(b.collectedAmt !== undefined ? b.collectedAmt : b.amount) || 0), 0);
-    const diffAmt = diffBills.reduce((s, b) => s + (Number(b.outstanding !== undefined ? b.outstanding : b.amount) || 0), 0) + basketAmt;
+    const inAmt = inBills.reduce((s, b) => s + getBillCollectedAmount(b), 0);
+    const diffAmt = diffBills.reduce((s, b) => s + getBillPendingAmount(b), 0) + basketAmt;
 
     // Active Handover Basket banner on Home tab
     const banner = document.getElementById('homeBasketPendingBanner');
     const bannerCnt = document.getElementById('bannerBasketCount');
     const bannerAmt = document.getElementById('bannerBasketAmt');
     if (banner) {
-      if (basketCount > 0 && filterMode === 'TODAY') {
+      if (basketCount > 0) {
         banner.style.display = 'flex';
         if (bannerCnt) bannerCnt.textContent = basketCount;
         if (bannerAmt) bannerAmt.textContent = `(${formatINR(basketAmt)})`;
@@ -4546,7 +5311,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       if (basketCount > 0) {
         elOutAmt.textContent = `${formatINR(outAmt)} (${basketCount} in basket ready)`;
       } else {
-        elOutAmt.textContent = `${formatINR(outAmt)} in transit`;
+        elOutAmt.textContent = `${formatINR(outAmt)} dispatched`;
       }
     }
     if (elInAmt) elInAmt.textContent = `${formatINR(inAmt)} accounted`;
@@ -4558,10 +5323,12 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       }
     }
 
+    // Global missing count for sidebar badge
+    const totalMissingCount = State.bills.filter(b => isBillMissingOrPending(b)).length + basketCount;
     const sideBadge = document.getElementById('sidebarDiffBadge');
     if (sideBadge) {
-      sideBadge.textContent = diffCount;
-      sideBadge.style.display = diffCount > 0 ? 'inline-flex' : 'none';
+      sideBadge.textContent = totalMissingCount;
+      sideBadge.style.display = totalMissingCount > 0 ? 'inline-flex' : 'none';
     }
 
     // Highlight active chip in home date filter bar
@@ -4594,6 +5361,10 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       if (titleEl) titleEl.innerHTML = `<i class="fa-solid fa-clock-rotate-left"></i> Yesterday's Custody Status`;
       if (hintEl) hintEl.textContent = `Custody totals for Yesterday (${formatted})`;
       if (dateBadge) dateBadge.textContent = `Yesterday · ${formatted}`;
+    } else if (filterMode === 'OVERDUE') {
+      if (titleEl) titleEl.innerHTML = `<i class="fa-solid fa-fire-flame-curved text-danger"></i> Overdue Custody Status (&gt;3 Days)`;
+      if (hintEl) hintEl.textContent = `Bills dispatched more than 3 days ago`;
+      if (dateBadge) dateBadge.textContent = `Overdue (&gt;3d)`;
     } else if (filterMode === 'ALL') {
       if (titleEl) titleEl.innerHTML = `<i class="fa-solid fa-layer-group"></i> All Active Custody Status`;
       if (hintEl) hintEl.textContent = `Cumulative totals across all recorded dates`;
@@ -4610,7 +5381,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     if (diffCard) {
       if (diffCount > 0) {
         diffCard.classList.add('has-alert');
-        if (diffFooter) diffFooter.innerHTML = `<span class="text-danger font-bold">⚠️ ${diffCount} bills unreturned</span> — Click to Audit`;
+        if (diffFooter) diffFooter.innerHTML = `<span class="text-danger font-bold">⚠️ ${diffCount} bills missing / pending</span> — Click to Audit`;
       } else {
         diffCard.classList.remove('has-alert');
         if (diffFooter) diffFooter.innerHTML = `<span class="text-success font-bold">✓ Zero differences</span> — All accounted`;
@@ -4634,23 +5405,322 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
           <div class="agent-diff-header">
             <span><i class="fa-solid fa-user-tie"></i> ${agent.name}</span>
             <span class="count-pill ${stats.leftOutCount > 0 ? 'bg-danger text-white' : ''}" style="font-size:0.75rem;">
-              ${stats.leftOutCount} Pending
+              ${stats.leftOutCount} Missing / Due
             </span>
           </div>
           <div class="agent-diff-metric">
             <span class="agent-diff-val ${stats.leftOutCount > 0 ? 'has-diff text-danger' : 'text-success'}">
               ${formatINR(stats.leftOutAmt)}
             </span>
-            <span class="agent-diff-sub">Dispatched: ${stats.totalCount} | Received: ${stats.checkedInCount}</span>
+            <span class="agent-diff-sub">Dispatched: ${stats.totalCount} | Accounted: ${stats.checkedInCount}</span>
           </div>
-          <div class="card-click-hint">
-            <i class="fa-solid fa-arrow-up-right-from-square"></i> Click to view ${agent.name}'s list
+          <div class="card-click-hint" style="display: flex; justify-content: space-between; align-items: center;">
+            <span><i class="fa-solid fa-list"></i> Bills List</span>
+            <button type="button" class="btn btn-xs btn-outline-primary agent-beat-analysis-btn" data-beat-agent="${agent.name}" style="padding: 2px 8px; font-weight: 700;">
+              <i class="fa-solid fa-chart-pie"></i> Beat Analysis
+            </button>
           </div>
         `;
+        const baBtn = card.querySelector('.agent-beat-analysis-btn');
+        baBtn?.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openBeatAnalysisModal(agent.name);
+        });
         card.addEventListener('click', () => openDashboardBreakdown('AGENT', agent.name));
         diffGrid.appendChild(card);
       });
     }
+
+    renderDecisionAnalysisCenter();
+  }
+
+  // ========================================================
+  // EXECUTIVE DECISION & MISSING BILLS INTELLIGENCE CENTER
+  // ========================================================
+
+  function renderDecisionAnalysisCenter() {
+    const allBills = State.bills || [];
+    const basketItems = (State.dispatchBasket || []).map(b => ({ ...b, isBasket: true, status: 'IN_BASKET' }));
+    const combinedCustody = [...allBills, ...basketItems];
+
+    // 1. Unreturned in field (WITH_AGENT, MISSING_ALERT, LEFT_OUT_ALERT, IN_BASKET)
+    const unreturnedBills = combinedCustody.filter(b => isBillUnreturnedInField(b));
+    const unreturnedAmt = unreturnedBills.reduce((s, b) => s + getBillPendingAmount(b), 0);
+
+    // 2. Overdue (> 3 days in field and still unreturned or partial due)
+    const overdueBills = combinedCustody.filter(b => isBillMissingOrPending(b) && getBillAgingDays(b) > 3);
+    const overdueAmt = overdueBills.reduce((s, b) => s + getBillPendingAmount(b), 0);
+
+    // 3. Partial Balance Due (PAID_PARTIAL or has partial collection with remaining due > 0)
+    const partialBills = combinedCustody.filter(b => {
+      const pend = getBillPendingAmount(b);
+      const coll = getBillCollectedAmount(b);
+      return pend > 0 && (b.status === 'PAID_PARTIAL' || coll > 0);
+    });
+    const partialAmt = partialBills.reduce((s, b) => s + getBillPendingAmount(b), 0);
+
+    // 4. Undispatched Sheet Dues (Missed in Master Sheet)
+    const { missed: missedSheetBills } = getUndispatchedSheetDueBills('ALL', 'ALL', '');
+    const missedSheetAmt = missedSheetBills.reduce((s, b) => s + (Number(b.outstanding) || Number(b.amount) || 0), 0);
+
+    // Update 4 Decision KPI Cards
+    const elUnretCnt = document.getElementById('decKpiUnreturnedCount');
+    const elUnretAmt = document.getElementById('decKpiUnreturnedAmt');
+    const elOverCnt = document.getElementById('decKpiOverdueCount');
+    const elOverAmt = document.getElementById('decKpiOverdueAmt');
+    const elPartCnt = document.getElementById('decKpiPartialCount');
+    const elPartAmt = document.getElementById('decKpiPartialAmt');
+    const elMissCnt = document.getElementById('decKpiMissedCount');
+    const elMissAmt = document.getElementById('decKpiMissedAmt');
+
+    if (elUnretCnt) elUnretCnt.textContent = unreturnedBills.length;
+    if (elUnretAmt) elUnretAmt.textContent = formatINR(unreturnedAmt);
+    if (elOverCnt) elOverCnt.textContent = overdueBills.length;
+    if (elOverAmt) elOverAmt.textContent = formatINR(overdueAmt);
+    if (elPartCnt) elPartCnt.textContent = partialBills.length;
+    if (elPartAmt) elPartAmt.textContent = formatINR(partialAmt);
+    if (elMissCnt) elMissCnt.textContent = missedSheetBills.length;
+    if (elMissAmt) elMissAmt.textContent = formatINR(missedSheetAmt);
+
+    // Update Tab Counts
+    const tUnret = document.getElementById('decTabCntUnreturned');
+    const tOver = document.getElementById('decTabCntOverdue');
+    const tPart = document.getElementById('decTabCntPartial');
+    const tMiss = document.getElementById('decTabCntMissed');
+    if (tUnret) tUnret.textContent = unreturnedBills.length;
+    if (tOver) tOver.textContent = overdueBills.length;
+    if (tPart) tPart.textContent = partialBills.length;
+    if (tMiss) tMiss.textContent = missedSheetBills.length;
+
+    const totalActionItems = unreturnedBills.length + partialBills.length;
+    const actionBadge = document.getElementById('decisionTotalActionBadge');
+    if (actionBadge) {
+      actionBadge.textContent = `${totalActionItems} Actionable Custody Bills • ${formatINR(unreturnedAmt + partialAmt)} Pending`;
+    }
+
+    // Highlight active KPI card and Tab
+    const activeTab = State.homeDecisionTab || 'UNRETURNED';
+    document.querySelectorAll('.decision-kpi-card').forEach(c => {
+      c.classList.toggle('active', c.dataset.decisionTab === activeTab);
+    });
+    document.querySelectorAll('#homeDecisionTabs .decision-tab-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.decTab === activeTab);
+    });
+
+    // Compute Aging Buckets across all missing/pending custody bills
+    const allMissingCustody = combinedCustody.filter(b => isBillMissingOrPending(b));
+    const buckets = [
+      { id: 'FRESH', label: '0–1 Day (Fresh)', min: 0, max: 1, count: 0, amt: 0, color: '#10b981' },
+      { id: 'ACTIVE', label: '2–3 Days (In Field)', min: 2, max: 3, count: 0, amt: 0, color: '#3b82f6' },
+      { id: 'WARN', label: '4–7 Days (Overdue)', min: 4, max: 7, count: 0, amt: 0, color: '#f59e0b' },
+      { id: 'CRIT', label: '8+ Days (Critical)', min: 8, max: 99999, count: 0, amt: 0, color: '#ef4444' }
+    ];
+
+    let totalAgeDays = 0;
+    allMissingCustody.forEach(b => {
+      const age = getBillAgingDays(b);
+      const due = getBillPendingAmount(b);
+      totalAgeDays += age;
+      const bucket = buckets.find(bk => age >= bk.min && age <= bk.max) || buckets[3];
+      bucket.count++;
+      bucket.amt += due;
+    });
+
+    const avgAgeBadge = document.getElementById('decisionAvgAgingBadge');
+    if (avgAgeBadge) {
+      const avg = allMissingCustody.length > 0 ? (totalAgeDays / allMissingCustody.length).toFixed(1) : '0';
+      avgAgeBadge.textContent = `Avg Field Age: ${avg}d`;
+    }
+
+    const agingContainer = document.getElementById('agingBucketsContainer');
+    if (agingContainer) {
+      agingContainer.innerHTML = buckets.map(bk => `
+        <div class="aging-bucket-box" data-aging-min="${bk.min}" title="Click to filter bills in this aging range">
+          <div class="aging-bucket-title">${bk.label}</div>
+          <div class="aging-bucket-count font-mono" style="color:${bk.color};">${bk.count} <small style="font-size:0.68rem;font-weight:600;">bills</small></div>
+          <div class="aging-bucket-amt font-mono">${formatINR(bk.amt)}</div>
+        </div>
+      `).join('');
+      agingContainer.querySelectorAll('.aging-bucket-box').forEach(box => {
+        box.addEventListener('click', () => {
+          const min = Number(box.dataset.agingMin) || 0;
+          State.homeDecisionTab = min >= 4 ? 'OVERDUE' : 'UNRETURNED';
+          renderDecisionAnalysisCenter();
+        });
+      });
+    }
+
+    // Compute Top Bottleneck Beats (Highest Pending / Missing Value)
+    const beatRiskMap = new Map();
+    allMissingCustody.forEach(b => {
+      const beatName = b.beat || b.beatName || inferBillBeat(b) || 'Unassigned Route';
+      const agentName = b.agent || 'Rajesh';
+      const key = `${agentName}___${beatName}`;
+      if (!beatRiskMap.has(key)) {
+        beatRiskMap.set(key, { agent: agentName, beat: beatName, count: 0, amt: 0 });
+      }
+      const entry = beatRiskMap.get(key);
+      entry.count++;
+      entry.amt += getBillPendingAmount(b);
+    });
+
+    const topBeats = Array.from(beatRiskMap.values()).sort((a, b) => b.amt - a.amt).slice(0, 3);
+    const topBeatsContainer = document.getElementById('topRiskBeatsContainer');
+    if (topBeatsContainer) {
+      if (topBeats.length === 0) {
+        topBeatsContainer.innerHTML = `<div class="text-muted" style="font-size:0.8rem; padding:8px 0;">✓ No stuck route balances — all beats cleared!</div>`;
+      } else {
+        topBeatsContainer.innerHTML = topBeats.map((tb, idx) => `
+          <div class="bottleneck-beat-row" data-risk-agent="${escapeHtml(tb.agent)}" data-risk-beat="${escapeHtml(tb.beat)}">
+            <div>
+              <strong>#${idx + 1} ${escapeHtml(tb.beat)}</strong>
+              <span class="text-muted" style="font-size:0.75rem; margin-left:6px;"><i class="fa-solid fa-user-tie"></i> ${escapeHtml(tb.agent)}</span>
+            </div>
+            <div class="font-mono">
+              <span class="text-danger font-bold">${formatINR(tb.amt)}</span>
+              <small class="text-muted">(${tb.count} bills)</small>
+            </div>
+          </div>
+        `).join('');
+        topBeatsContainer.querySelectorAll('.bottleneck-beat-row').forEach(row => {
+          row.addEventListener('click', () => {
+            openDashboardBreakdown('AGENT', row.dataset.riskAgent, row.dataset.riskBeat);
+          });
+        });
+      }
+    }
+
+    // Render the Interactive Decision Action Table
+    const tbody = document.getElementById('homeDecisionTbody');
+    if (!tbody) return;
+
+    const agentFilter = State.homeDecisionAgent || 'ALL';
+    const searchQ = (State.homeDecisionSearch || '').trim().toLowerCase();
+
+    let sourceRows = [];
+    if (activeTab === 'UNRETURNED') {
+      sourceRows = unreturnedBills.map(b => ({ type: 'CUSTODY', bill: b }));
+    } else if (activeTab === 'OVERDUE') {
+      sourceRows = overdueBills.map(b => ({ type: 'CUSTODY', bill: b }));
+    } else if (activeTab === 'PARTIAL') {
+      sourceRows = partialBills.map(b => ({ type: 'CUSTODY', bill: b }));
+    } else if (activeTab === 'MISSED_SHEET') {
+      sourceRows = missedSheetBills.map(b => ({ type: 'SHEET', bill: b }));
+    }
+
+    if (agentFilter !== 'ALL') {
+      sourceRows = sourceRows.filter(r => isSameAgent(r.bill.agent, agentFilter));
+    }
+
+    if (searchQ) {
+      sourceRows = sourceRows.filter(r => {
+        const b = r.bill;
+        const bNo = String(b.billNo || '').toLowerCase();
+        const party = String(b.party || '').toLowerCase();
+        const beat = String(b.beat || b.beatName || inferBillBeat(b) || '').toLowerCase();
+        const rec = String(b.receipt || b.refNo || '').toLowerCase();
+        return bNo.includes(searchQ) || party.includes(searchQ) || beat.includes(searchQ) || rec.includes(searchQ);
+      });
+    }
+
+    // Sort by oldest aging first, then highest pending amount
+    sourceRows.sort((a, b) => {
+      if (a.type === 'CUSTODY' && b.type === 'CUSTODY') {
+        const ageDiff = getBillAgingDays(b.bill) - getBillAgingDays(a.bill);
+        if (ageDiff !== 0) return ageDiff;
+        return getBillPendingAmount(b.bill) - getBillPendingAmount(a.bill);
+      }
+      return (Number(b.bill.outstanding) || Number(b.bill.amount) || 0) - (Number(a.bill.outstanding) || Number(a.bill.amount) || 0);
+    });
+
+    if (sourceRows.length === 0) {
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="8" style="text-align:center; padding: 24px;">🎉 No bills in this category matching your filter!</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = '';
+    sourceRows.slice(0, 80).forEach(({ type, bill: b }) => {
+      const tr = document.createElement('tr');
+      const resolvedBeat = b.beat || b.beatName || inferBillBeat(b) || '';
+      const beatHtml = resolvedBeat ? `<div style="font-size:0.73rem; color:#64748b;"><i class="fa-solid fa-location-dot"></i> ${escapeHtml(resolvedBeat)}</div>` : '';
+      const { receiptBadge, paymentBadge } = renderBillPaymentBadgesHtml(b);
+
+      if (type === 'CUSTODY') {
+        const pendingDue = getBillPendingAmount(b);
+        const ageDays = getBillAgingDays(b);
+        let ageBadge = `<span class="aging-pill aging-fresh">Today (0d)</span>`;
+        if (ageDays > 7) {
+          ageBadge = `<span class="aging-pill aging-critical"><i class="fa-solid fa-fire"></i> ${ageDays}d overdue</span>`;
+        } else if (ageDays > 3) {
+          ageBadge = `<span class="aging-pill aging-warn"><i class="fa-solid fa-clock"></i> ${ageDays}d in field</span>`;
+        } else if (ageDays >= 1) {
+          ageBadge = `<span class="aging-pill aging-fresh">${ageDays}d ago</span>`;
+        }
+
+        tr.innerHTML = `
+          <td><strong class="font-mono text-danger">${escapeHtml(b.billNo)}</strong></td>
+          <td>${escapeHtml(b.party || 'Customer')}</td>
+          <td><strong>${escapeHtml(b.agent || 'Agent')}</strong>${beatHtml}</td>
+          <td><div>${escapeHtml(b.dispatchDate || '-')}</div><div style="margin-top:2px;">${ageBadge}</div></td>
+          <td class="font-mono" style="text-align:right;">${formatINR(b.amount)}</td>
+          <td class="font-mono font-bold text-danger" style="text-align:right;">${formatINR(pendingDue)}</td>
+          <td>${paymentBadge} <div style="margin-top:2px;">${receiptBadge}</div></td>
+          <td style="text-align:center;">
+            <div style="display:inline-flex; gap:4px;">
+              <button type="button" class="btn btn-success btn-xs font-bold" data-dec-receive="${escapeHtml(b.billNo)}" title="Mark Received / Settled">
+                <i class="fa-solid fa-check"></i> Receive
+              </button>
+              <button type="button" class="btn btn-outline-primary btn-xs" data-dec-pay="${escapeHtml(b.billNo)}" title="Record Partial / Full Payment">
+                ₹ Pay
+              </button>
+            </div>
+          </td>
+        `;
+      } else {
+        const due = Number(b.outstanding) || Number(b.amount) || 0;
+        tr.innerHTML = `
+          <td><strong class="font-mono" style="color:#7c3aed;">${escapeHtml(b.billNo)}</strong></td>
+          <td>${escapeHtml(b.party || 'Customer')}</td>
+          <td><strong>${escapeHtml(b.agent || 'Agent')}</strong>${beatHtml}</td>
+          <td><span class="aging-pill aging-warn">In Office (Not Sent)</span></td>
+          <td class="font-mono" style="text-align:right;">${formatINR(b.amount)}</td>
+          <td class="font-mono font-bold text-danger" style="text-align:right;">${formatINR(due)}</td>
+          <td>${paymentBadge} <div style="margin-top:2px;">${receiptBadge}</div></td>
+          <td style="text-align:center;">
+            <button type="button" class="btn btn-primary btn-xs font-bold" data-dec-dispatch="${escapeHtml(b.billNo)}" title="Add to Morning Dispatch Basket">
+              <i class="fa-solid fa-plus"></i> Dispatch
+            </button>
+          </td>
+        `;
+      }
+      tbody.appendChild(tr);
+    });
+
+    tbody.querySelectorAll('[data-dec-receive]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        receiveBillDirectly(btn.dataset.decReceive);
+        renderDecisionAnalysisCenter();
+      });
+    });
+
+    tbody.querySelectorAll('[data-dec-pay]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const b = State.bills.find(x => normalizeInvoiceNumber(x.billNo) === normalizeInvoiceNumber(btn.dataset.decPay));
+        if (b) openPaymentModal(b);
+      });
+    });
+
+    tbody.querySelectorAll('[data-dec-dispatch]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const mm = findMasterBill(btn.dataset.decDispatch);
+        if (mm) {
+          let parsed = { ...mm, raw: mm.billNo };
+          parsed = enrichWithMaster(parsed);
+          addBillToDispatchBasket(parsed);
+          renderDecisionAnalysisCenter();
+        }
+      });
+    });
   }
 
   // ========================================================
@@ -4658,7 +5728,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
   // ========================================================
 
   function getBreakdownBaseBills() {
-    const filterMode = State.homeDateFilter || 'TODAY';
+    const filterMode = State.homeDateFilter || 'ALL';
     const customDate = State.homeCustomDate;
     const category = State.breakdownCategory || 'OUT';
     const targetAgent = State.breakdownAgent || 'ALL';
@@ -4669,7 +5739,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     const confirmedNorms = new Set(dateFiltered.map(b => normalizeInvoiceNumber(b.billNo)).filter(Boolean));
     const uniqueBasket = [];
     const bMap = new Map();
-    if (filterMode === 'TODAY' && State.dispatchBasket && State.dispatchBasket.length > 0) {
+    if ((filterMode === 'TODAY' || filterMode === 'ALL') && State.dispatchBasket && State.dispatchBasket.length > 0) {
       State.dispatchBasket.forEach(b => {
         if (!b || !b.billNo) return;
         const norm = normalizeInvoiceNumber(b.billNo);
@@ -4690,7 +5760,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     } else if (category === 'IN') {
       list = dateFiltered.filter(b => b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL' || b.status === 'RETURNED_IN_HAND');
     } else if (category === 'DIFF') {
-      list = dateFiltered.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT');
+      list = dateFiltered.filter(b => isBillMissingOrPending(b));
       list = [...list, ...uniqueBasket];
     } else if (category === 'AGENT') {
       list = [...dateFiltered, ...uniqueBasket];
@@ -4698,6 +5768,11 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
 
     if (targetAgent && targetAgent !== 'ALL') {
       list = list.filter(b => isSameAgent(b.agent, targetAgent));
+    }
+
+    const targetBeat = State.breakdownBeat || 'ALL';
+    if (targetBeat && targetBeat !== 'ALL') {
+      list = list.filter(b => isSameBeat(b.beat || b.beatName || inferBillBeat(b), targetBeat));
     }
 
     return list;
@@ -4930,9 +6005,10 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     });
   }
 
-  function openDashboardBreakdown(category, targetAgent = 'ALL') {
+  function openDashboardBreakdown(category, targetAgent = 'ALL', targetBeat = 'ALL') {
     State.breakdownCategory = category;
     State.breakdownAgent = targetAgent;
+    State.breakdownBeat = targetBeat || 'ALL';
     State.breakdownFilter = 'ALL';
     State.breakdownSearch = '';
     State.isBreakdownModalOpen = true;
@@ -4962,6 +6038,9 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
         agentSelect.value = 'ALL';
       }
     }
+
+    // Populate Beat Select based on selected agent
+    populateBreakdownBeatDropdown(targetAgent, targetBeat);
 
     // Modal head icon, title, subtitle
     const iconBox = document.getElementById('breakdownHeadIcon');
@@ -5032,6 +6111,579 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     const modal = document.getElementById('dashboardBreakdownModal');
     if (modal) {
       modal.style.display = 'none';
+    }
+  }
+
+  function populateBreakdownBeatDropdown(agentName = 'ALL', selectedBeat = 'ALL') {
+    const beatSelect = document.getElementById('breakdownBeatSelect');
+    if (!beatSelect) return;
+    beatSelect.innerHTML = '<option value="ALL">All Beats &amp; Routes</option>';
+
+    const knownBeats = new Set();
+    if (agentName && agentName !== 'ALL') {
+      const plan = MASTER_BEAT_PLAN[agentName] || (agentName.includes('Shivam') ? MASTER_BEAT_PLAN.Shivam : MASTER_BEAT_PLAN.Rajesh);
+      if (plan) {
+        Object.values(plan).forEach(item => {
+          if (item.beat) knownBeats.add(item.beat);
+        });
+      }
+    } else {
+      Object.values(MASTER_BEAT_PLAN).forEach(plan => {
+        Object.values(plan).forEach(item => {
+          if (item.beat) knownBeats.add(item.beat);
+        });
+      });
+    }
+
+    (State.masterSheetBills || []).forEach(b => {
+      if (agentName === 'ALL' || isSameAgent(b.agent, agentName)) {
+        if (b.beat && b.beat.trim().length > 1) knownBeats.add(b.beat.trim());
+      }
+    });
+
+    (State.bills || []).forEach(b => {
+      if (agentName === 'ALL' || isSameAgent(b.agent, agentName)) {
+        if (b.beatName) knownBeats.add(b.beatName);
+        else if (b.beat) knownBeats.add(b.beat);
+      }
+    });
+
+    Array.from(knownBeats).sort().forEach(bName => {
+      const opt = document.createElement('option');
+      opt.value = bName;
+      opt.textContent = bName;
+      if (selectedBeat !== 'ALL' && isSameBeat(bName, selectedBeat)) {
+        opt.selected = true;
+      }
+      beatSelect.appendChild(opt);
+    });
+
+    if (selectedBeat === 'ALL') {
+      beatSelect.value = 'ALL';
+    }
+  }
+
+  // ========================================================
+  // AGENT & BEAT PERFORMANCE ANALYSIS ENGINE
+  // ========================================================
+
+  function getBeatAnalysisData(agentFilter = 'ALL', dateFilter = 'ALL', customDate = null, searchQuery = '') {
+    const filterMode = dateFilter || State.homeDateFilter || 'ALL';
+    const cDate = customDate || State.homeCustomDate;
+
+    // Filter live bills by date
+    const dateFilteredBills = State.bills.filter(b => matchesDateFilter(b.dispatchDate, filterMode, cDate));
+    const confirmedNorms = new Set(dateFilteredBills.map(b => normalizeInvoiceNumber(b.billNo)).filter(Boolean));
+
+    // Include basket if TODAY or ALL
+    const basketBills = [];
+    if ((filterMode === 'TODAY' || filterMode === 'ALL') && State.dispatchBasket && State.dispatchBasket.length > 0) {
+      State.dispatchBasket.forEach(b => {
+        if (!b || !b.billNo) return;
+        const norm = normalizeInvoiceNumber(b.billNo);
+        if (!confirmedNorms.has(norm)) {
+          basketBills.push({ ...b, isBasket: true, status: 'IN_BASKET' });
+        }
+      });
+    }
+    const allLiveBills = [...dateFilteredBills, ...basketBills];
+
+    // Ensure every live bill has an inferred beat if possible
+    allLiveBills.forEach(b => {
+      if (!b.beat && !b.beatName) {
+        const inf = inferBillBeat(b);
+        if (inf) b.beat = inf;
+      }
+    });
+
+    // Determine target agents
+    const agents = State.agents.filter(a => {
+      if (agentFilter === 'ALL') return true;
+      return isSameAgent(a.name, agentFilter);
+    });
+
+    const todayCode = getCurrentDayCode();
+    const dayFullNames = { Mon: 'Monday', Tue: 'Tuesday', Wed: 'Wednesday', Thu: 'Thursday', Fri: 'Friday', Sat: 'Saturday' };
+
+    const agentResults = [];
+    let grandBeatsCount = 0;
+    let grandDispatchedCount = 0;
+    let grandDispatchedAmt = 0;
+    let grandReceivedCount = 0;
+    let grandReceivedAmt = 0;
+    let grandDiffCount = 0;
+    let grandDiffAmt = 0;
+
+    agents.forEach(agent => {
+      const agentPlan = MASTER_BEAT_PLAN[agent.name] || (agent.name.includes('Shivam') ? MASTER_BEAT_PLAN.Shivam : MASTER_BEAT_PLAN.Rajesh);
+      const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+      const beatsList = [];
+      const seenBeatKeys = new Set();
+
+      days.forEach(day => {
+        const beatInfo = agentPlan ? agentPlan[day] : null;
+        if (!beatInfo || !beatInfo.beat) return;
+        const bName = beatInfo.beat;
+        const key = bName.toLowerCase().trim();
+        seenBeatKeys.add(key);
+
+        beatsList.push({
+          beatName: bName,
+          dayCode: day,
+          dayName: dayFullNames[day] || day,
+          area: beatInfo.area || bName,
+          isToday: day === todayCode
+        });
+      });
+
+      // Also pick up any additional beats present in bills or Master Sheet for this agent
+      const extraSourceBills = [...allLiveBills, ...(State.masterSheetBills || [])];
+      extraSourceBills.forEach(b => {
+        if (!isSameAgent(b.agent, agent.name)) return;
+        let rawName = String(b.beatName || b.beat || '').trim();
+        rawName = rawName.replace(/\s*\((Mon|Tue|Wed|Thu|Fri|Sat)[^)]*\)/gi, '').replace(/\s*\(Week\s*\d+[^)]*\)/gi, '').trim();
+        if (rawName && rawName.length > 1) {
+          const alreadyExists = beatsList.some(bt => isSameBeat(bt.beatName, rawName));
+          if (!alreadyExists && !seenBeatKeys.has(rawName.toLowerCase())) {
+            seenBeatKeys.add(rawName.toLowerCase());
+            beatsList.push({
+              beatName: rawName,
+              dayCode: '',
+              dayName: 'Custom Route',
+              area: rawName,
+              isToday: false
+            });
+          }
+        }
+      });
+
+      // Check if any live bills for this agent still have no matching beat in beatsList
+      const agentLiveBills = allLiveBills.filter(b => isSameAgent(b.agent, agent.name));
+      const unmatchedLiveBills = agentLiveBills.filter(b => {
+        const bBeat = b.beat || b.beatName || '';
+        return !bBeat || !beatsList.some(bt => isSameBeat(bt.beatName, bBeat));
+      });
+      if (unmatchedLiveBills.length > 0) {
+        beatsList.push({
+          beatName: 'General / Unassigned Route',
+          dayCode: '',
+          dayName: 'General Custody',
+          area: 'Bills without specific beat tag',
+          isToday: false,
+          isUnassignedBucket: true
+        });
+      }
+
+      const query = (searchQuery || '').trim().toLowerCase();
+      const filteredBeats = beatsList.filter(bt => {
+        if (!query) return true;
+        return bt.beatName.toLowerCase().includes(query) || bt.dayName.toLowerCase().includes(query) || bt.area.toLowerCase().includes(query);
+      });
+
+      let agentDispatchedCount = 0;
+      let agentDispatchedAmt = 0;
+      let agentReceivedCount = 0;
+      let agentReceivedAmt = 0;
+      let agentDiffCount = 0;
+      let agentDiffAmt = 0;
+
+      const beatCards = filteredBeats.map(bt => {
+        const matchBills = bt.isUnassignedBucket
+          ? unmatchedLiveBills
+          : agentLiveBills.filter(b => isSameBeat(b.beat || b.beatName, bt.beatName));
+
+        const dispatchedCount = matchBills.length;
+        let dispatchedAmt = 0;
+        let receivedCount = 0;
+        let receivedAmt = 0;
+        let diffCount = 0;
+        let diffAmt = 0;
+
+        matchBills.forEach(b => {
+          const amt = Number(b.amount) || 0;
+          dispatchedAmt += amt;
+
+          let outDue = 0;
+          if (b.outstanding !== undefined && b.outstanding !== null && !isNaN(b.outstanding)) {
+            outDue = Number(b.outstanding);
+          } else if (b.status === 'RECEIVED' || b.status === 'PAID_FULL') {
+            outDue = 0;
+          } else {
+            outDue = amt;
+          }
+
+          let collected = 0;
+          if (b.collectedAmt !== undefined && b.collectedAmt !== null && !isNaN(b.collectedAmt)) {
+            collected = Number(b.collectedAmt);
+          } else if (outDue < amt) {
+            collected = Math.max(0, amt - outDue);
+          } else if (b.status === 'RECEIVED' || b.status === 'PAID_FULL') {
+            collected = amt;
+          }
+
+          if (outDue <= 0) {
+            receivedCount++;
+            receivedAmt += (collected > 0 ? collected : amt);
+          } else if (collected > 0) {
+            // Partially collected bill: account for both collected and remaining pending
+            receivedCount++;
+            receivedAmt += collected;
+            diffCount++;
+            diffAmt += outDue;
+          } else {
+            // Completely pending / in custody
+            diffCount++;
+            diffAmt += outDue;
+          }
+        });
+
+        let clearanceRate = 0;
+        if (dispatchedAmt > 0) {
+          clearanceRate = Math.min(100, Math.round((receivedAmt / dispatchedAmt) * 100));
+        } else if (dispatchedCount > 0 && diffCount === 0) {
+          clearanceRate = 100;
+        }
+
+        // Master sheet metrics
+        const sheetBills = (State.masterSheetBills || []).filter(b => isSameAgent(b.agent, agent.name) && isSameBeat(b.beat, bt.beatName));
+        const sheetTotalCount = sheetBills.length;
+        const sheetPaidCount = sheetBills.filter(b => isBillPaidInFull(b)).length;
+        const sheetDueCount = Math.max(0, sheetTotalCount - sheetPaidCount);
+
+        agentDispatchedCount += dispatchedCount;
+        agentDispatchedAmt += dispatchedAmt;
+        agentReceivedCount += receivedCount;
+        agentReceivedAmt += receivedAmt;
+        agentDiffCount += diffCount;
+        agentDiffAmt += diffAmt;
+
+        return {
+          ...bt,
+          dispatchedCount,
+          dispatchedAmt,
+          receivedCount,
+          receivedAmt,
+          diffCount,
+          diffAmt,
+          clearanceRate,
+          sheetTotalCount,
+          sheetPaidCount,
+          sheetDueCount
+        };
+      });
+
+      grandBeatsCount += filteredBeats.length;
+      grandDispatchedCount += agentDispatchedCount;
+      grandDispatchedAmt += agentDispatchedAmt;
+      grandReceivedCount += agentReceivedCount;
+      grandReceivedAmt += agentReceivedAmt;
+      grandDiffCount += agentDiffCount;
+      grandDiffAmt += agentDiffAmt;
+
+      let agentClearanceRate = 0;
+      if (agentDispatchedAmt > 0) {
+        agentClearanceRate = Math.min(100, Math.round((agentReceivedAmt / agentDispatchedAmt) * 100));
+      } else if (agentDispatchedCount > 0 && agentDiffCount === 0) {
+        agentClearanceRate = 100;
+      }
+
+      agentResults.push({
+        agent,
+        beats: beatCards,
+        totals: {
+          dispatchedCount: agentDispatchedCount,
+          dispatchedAmt: agentDispatchedAmt,
+          receivedCount: agentReceivedCount,
+          receivedAmt: agentReceivedAmt,
+          diffCount: agentDiffCount,
+          diffAmt: agentDiffAmt,
+          clearanceRate: agentClearanceRate
+        }
+      });
+    });
+
+    let overallClearanceRate = 0;
+    if (grandDispatchedAmt > 0) {
+      overallClearanceRate = Math.min(100, Math.round((grandReceivedAmt / grandDispatchedAmt) * 100));
+    } else if (grandDispatchedCount > 0 && grandDiffCount === 0) {
+      overallClearanceRate = 100;
+    }
+
+    return {
+      agentResults,
+      summary: {
+        beatsCount: grandBeatsCount,
+        dispatchedCount: grandDispatchedCount,
+        dispatchedAmt: grandDispatchedAmt,
+        receivedCount: grandReceivedCount,
+        receivedAmt: grandReceivedAmt,
+        diffCount: grandDiffCount,
+        diffAmt: grandDiffAmt,
+        clearanceRate: overallClearanceRate
+      }
+    };
+  }
+
+  function openBeatAnalysisModal(initialAgent = 'ALL') {
+    State.beatAnalysisAgent = initialAgent || 'ALL';
+    State.beatAnalysisDateFilter = State.homeDateFilter || 'ALL';
+    State.beatAnalysisSearch = '';
+    State.isBeatAnalysisModalOpen = true;
+
+    // Reset toolbar
+    const searchInp = document.getElementById('beatAnalysisSearchInput');
+    if (searchInp) searchInp.value = '';
+    const clearBtn = document.getElementById('beatAnalysisClearSearchBtn');
+    if (clearBtn) clearBtn.style.display = 'none';
+
+    document.querySelectorAll('#beatAnalysisDateChips .diff-chip').forEach(c => {
+      c.classList.toggle('active', (c.dataset.bDate || 'ALL') === State.beatAnalysisDateFilter);
+    });
+
+    // Populate agent select
+    const sel = document.getElementById('beatAnalysisAgentSelect');
+    if (sel) {
+      sel.innerHTML = '<option value="ALL">All Agents (Overview)</option>';
+      State.agents.forEach(a => {
+        const opt = document.createElement('option');
+        opt.value = a.name;
+        opt.textContent = a.fullName || a.name;
+        if (State.beatAnalysisAgent !== 'ALL' && isSameAgent(a.name, State.beatAnalysisAgent)) {
+          opt.selected = true;
+        }
+        sel.appendChild(opt);
+      });
+      if (State.beatAnalysisAgent === 'ALL') sel.value = 'ALL';
+    }
+
+    renderBeatAnalysisModal();
+
+    const modal = document.getElementById('beatAnalysisModal');
+    if (modal) modal.style.display = 'flex';
+  }
+
+  function closeBeatAnalysisModal() {
+    State.isBeatAnalysisModalOpen = false;
+    const modal = document.getElementById('beatAnalysisModal');
+    if (modal) modal.style.display = 'none';
+  }
+
+  function renderBeatAnalysisModal() {
+    const data = getBeatAnalysisData(
+      State.beatAnalysisAgent,
+      State.beatAnalysisDateFilter,
+      State.homeCustomDate,
+      State.beatAnalysisSearch
+    );
+
+    // Update KPI strip
+    const elBeats = document.getElementById('baKpiBeatsCount');
+    const elAgents = document.getElementById('baKpiAgentsCount');
+    const elDispCnt = document.getElementById('baKpiDispatchedCount');
+    const elDispAmt = document.getElementById('baKpiDispatchedAmt');
+    const elRecCnt = document.getElementById('baKpiReceivedCount');
+    const elRecAmt = document.getElementById('baKpiReceivedAmt');
+    const elDiffCnt = document.getElementById('baKpiDiffCount');
+    const elDiffAmt = document.getElementById('baKpiDiffAmt');
+    const elRate = document.getElementById('baKpiClearanceRate');
+
+    if (elBeats) elBeats.textContent = data.summary.beatsCount;
+    if (elAgents) elAgents.textContent = `${data.agentResults.length} Agent${data.agentResults.length === 1 ? '' : 's'}`;
+    if (elDispCnt) elDispCnt.textContent = data.summary.dispatchedCount;
+    if (elDispAmt) elDispAmt.textContent = formatINR(data.summary.dispatchedAmt);
+    if (elRecCnt) elRecCnt.textContent = data.summary.receivedCount;
+    if (elRecAmt) elRecAmt.textContent = formatINR(data.summary.receivedAmt);
+    if (elDiffCnt) elDiffCnt.textContent = data.summary.diffCount;
+    if (elDiffAmt) elDiffAmt.textContent = formatINR(data.summary.diffAmt);
+    if (elRate) elRate.textContent = `${data.summary.clearanceRate}%`;
+
+    const container = document.getElementById('beatAnalysisContainer');
+    if (!container) return;
+    container.innerHTML = '';
+
+    if (data.agentResults.length === 0 || data.summary.beatsCount === 0) {
+      container.innerHTML = `
+        <div class="empty-placeholder" style="padding: 40px 20px;">
+          <i class="fa-solid fa-route" style="font-size: 2rem; color: #94a3b8; margin-bottom: 12px;"></i>
+          <p>No beat route records found for the selected agent and filters.</p>
+        </div>
+      `;
+      return;
+    }
+
+    data.agentResults.forEach(res => {
+      const agent = res.agent;
+      const beats = res.beats;
+      const totals = res.totals;
+
+      let avatarClass = 'avatar-rajesh-mini';
+      if (agent.name.toLowerCase().includes('shivam')) avatarClass = 'avatar-shivam-mini';
+      else if (agent.name.toLowerCase().includes('self')) avatarClass = 'avatar-self-mini';
+
+      const section = document.createElement('div');
+      section.className = 'beat-analysis-agent-section';
+
+      section.innerHTML = `
+        <div class="beat-analysis-agent-head">
+          <div class="beat-agent-profile">
+            <div class="beat-agent-avatar ${avatarClass}">
+              <i class="fa-solid ${agent.name.toLowerCase().includes('self') ? 'fa-store' : 'fa-user-tie'}"></i>
+            </div>
+            <div class="beat-agent-details">
+              <h4>${escapeHtml(agent.fullName || agent.name)}</h4>
+              <small>${beats.length} Beat Routes &bull; ${totals.clearanceRate}% Clearance Rate</small>
+            </div>
+          </div>
+          <div class="beat-agent-quick-totals font-mono">
+            <span>Out: <strong>${formatINR(totals.dispatchedAmt)}</strong> (${totals.dispatchedCount})</span>
+            <span class="text-success">&bull; In: <strong>${formatINR(totals.receivedAmt)}</strong> (${totals.receivedCount})</span>
+            <span class="${totals.diffCount > 0 ? 'text-danger' : 'text-success'}">&bull; Diff: <strong>${formatINR(totals.diffAmt)}</strong> (${totals.diffCount})</span>
+          </div>
+        </div>
+
+        <div class="beat-analysis-grid">
+          ${beats.map(bt => {
+            const hasPending = bt.diffCount > 0;
+            const progressColorClass = bt.clearanceRate >= 100 ? '' : (hasPending ? 'is-pending' : 'is-zero');
+            return `
+              <div class="beat-card ${bt.isToday ? 'is-active-day' : ''}">
+                <div class="beat-card-header">
+                  <div>
+                    <span class="beat-card-day ${bt.isToday ? 'today-tag' : ''}">
+                      ${bt.isToday ? '<i class="fa-solid fa-star"></i> Today' : (bt.dayName || 'Route')}
+                    </span>
+                    <div class="beat-card-name">${escapeHtml(bt.beatName)}</div>
+                    <small class="text-muted" style="font-size:0.73rem;">${escapeHtml(bt.area)}</small>
+                  </div>
+                  <span class="count-pill ${hasPending ? 'bg-danger text-white' : (bt.dispatchedCount > 0 ? 'bg-success text-white' : '')}" style="font-size:0.75rem;">
+                    ${hasPending ? `${bt.diffCount} Pending` : (bt.dispatchedCount > 0 ? '✓ Cleared' : '0 Dispatched')}
+                  </span>
+                </div>
+
+                <div class="beat-card-metrics font-mono">
+                  <div class="beat-metric-item">
+                    <span class="bm-label">Out</span>
+                    <span class="bm-val">${formatINR(bt.dispatchedAmt)}</span>
+                    <span class="bm-sub">${bt.dispatchedCount} bills</span>
+                  </div>
+                  <div class="beat-metric-item">
+                    <span class="bm-label">In</span>
+                    <span class="bm-val text-success">${formatINR(bt.receivedAmt)}</span>
+                    <span class="bm-sub">${bt.receivedCount} bills</span>
+                  </div>
+                  <div class="beat-metric-item">
+                    <span class="bm-label">Diff</span>
+                    <span class="bm-val ${hasPending ? 'text-danger' : 'text-success'}">${formatINR(bt.diffAmt)}</span>
+                    <span class="bm-sub">${bt.diffCount} bills</span>
+                  </div>
+                </div>
+
+                <div class="beat-recovery-strip">
+                  <span>Recovery: <strong>${bt.clearanceRate}%</strong></span>
+                  ${bt.sheetTotalCount > 0 ? `<span>Sheet: ${bt.sheetDueCount} due / ${bt.sheetTotalCount}</span>` : ''}
+                </div>
+
+                <div class="beat-progress-wrap">
+                  <div class="beat-progress-bar ${progressColorClass}" style="width: ${bt.clearanceRate}%;"></div>
+                </div>
+
+                <div class="beat-card-footer">
+                  <div class="beat-card-actions">
+                    <button type="button" class="btn btn-outline-secondary btn-xs flex-1" data-ba-view-bills="${escapeHtml(agent.name)}" data-ba-beat="${escapeHtml(bt.beatName)}" title="View bills for this beat">
+                      <i class="fa-solid fa-list"></i> Bills (${bt.dispatchedCount})
+                    </button>
+                    <button type="button" class="btn btn-primary btn-xs" data-ba-scan-out="${escapeHtml(agent.name)}" data-ba-beat="${escapeHtml(bt.beatName)}" title="Open Morning Dispatch Scan Out for this beat">
+                      <i class="fa-solid fa-arrow-up-from-bracket"></i> Scan Out
+                    </button>
+                    <button type="button" class="btn btn-success btn-xs" data-ba-scan-in="${escapeHtml(agent.name)}" data-ba-beat="${escapeHtml(bt.beatName)}" title="Open Evening Return Scan In for this beat">
+                      <i class="fa-solid fa-arrow-down-to-bracket"></i> Scan In
+                    </button>
+                  </div>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      `;
+
+      container.appendChild(section);
+    });
+
+    // Attach actions
+    container.querySelectorAll('[data-ba-view-bills]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const ag = btn.dataset.baViewBills;
+        const bt = btn.dataset.baBeat;
+        closeBeatAnalysisModal();
+        openDashboardBreakdown('AGENT', ag, bt);
+      });
+    });
+
+    container.querySelectorAll('[data-ba-scan-out]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const ag = btn.dataset.baScanOut;
+        const bt = btn.dataset.baBeat;
+        closeBeatAnalysisModal();
+        const agentObj = State.agents.find(a => isSameAgent(a.name, ag)) || { id: ag, name: ag };
+        State.activeAgent = agentObj;
+        State.activeBeat = bt;
+        State.selectedBeatName = bt;
+        State.activeScanMode = 'DISPATCH';
+        proceedToScanTab(true);
+      });
+    });
+
+    container.querySelectorAll('[data-ba-scan-in]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const ag = btn.dataset.baScanIn;
+        const bt = btn.dataset.baBeat;
+        closeBeatAnalysisModal();
+        const agentObj = State.agents.find(a => isSameAgent(a.name, ag)) || { id: ag, name: ag };
+        State.activeAgent = agentObj;
+        State.activeBeat = bt;
+        State.selectedBeatName = bt;
+        State.activeScanMode = 'SETTLEMENT';
+        proceedToScanTab(true);
+      });
+    });
+  }
+
+  function copyBeatAnalysisSummary() {
+    const data = getBeatAnalysisData(
+      State.beatAnalysisAgent,
+      State.beatAnalysisDateFilter,
+      State.homeCustomDate,
+      State.beatAnalysisSearch
+    );
+
+    let text = `📍 BILLAUDIT PRO - BEAT ROUTE ANALYSIS REPORT\n`;
+    text += `Filter: Agent=${State.beatAnalysisAgent} | Date=${State.beatAnalysisDateFilter}\n`;
+    text += `Total Dispatched: ${data.summary.dispatchedCount} bills (${formatINR(data.summary.dispatchedAmt)})\n`;
+    text += `Total Received: ${data.summary.receivedCount} bills (${formatINR(data.summary.receivedAmt)})\n`;
+    text += `Difference Pending: ${data.summary.diffCount} bills (${formatINR(data.summary.diffAmt)})\n`;
+    text += `Overall Clearance: ${data.summary.clearanceRate}%\n`;
+    text += `==============================================\n\n`;
+
+    data.agentResults.forEach(res => {
+      text += `👤 AGENT: ${res.agent.fullName || res.agent.name}\n`;
+      text += `Totals: Out ${formatINR(res.totals.dispatchedAmt)} | In ${formatINR(res.totals.receivedAmt)} | Diff ${formatINR(res.totals.diffAmt)} (${res.totals.clearanceRate}%)\n`;
+      text += `----------------------------------------------\n`;
+      res.beats.forEach((bt, idx) => {
+        text += `${idx + 1}. [${bt.dayName}] ${bt.beatName}\n`;
+        text += `   Dispatched: ${bt.dispatchedCount} (${formatINR(bt.dispatchedAmt)}) | Received: ${bt.receivedCount} | Diff: ${bt.diffCount} (${formatINR(bt.diffAmt)}) | ${bt.clearanceRate}%\n`;
+      });
+      text += `\n`;
+    });
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => {
+        showToast('Beat analysis report copied to clipboard!', 'success');
+      }).catch(() => {
+        showToast('Could not copy automatically', 'warning');
+      });
+    } else {
+      showToast('Clipboard not supported', 'warning');
     }
   }
 
@@ -5345,7 +6997,10 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
         dDate.value = getTodayDateString();
       }
 
+      State.dispatchBeatFilter = State.activeBeat ? 'BEAT' : 'ALL';
+
       await switchTab('tab-dispatch');
+      renderDispatchBasket();
       focusActiveScannerInput();
 
       if (pendingScan) {
@@ -5353,6 +7008,8 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       }
     } else {
       State.activeSettlementAgent = agentName;
+      State.settlementBeatFilter = State.activeBeat ? 'BEAT' : 'ALL';
+
       const badge = document.getElementById('settlementAgentBadge');
       if (badge) badge.textContent = displayAgentName;
 
@@ -5369,6 +7026,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       }
 
       await switchTab('tab-settlement');
+      loadSettlementForSelectedAgent();
       focusActiveScannerInput();
 
       if (pendingScan) {
@@ -5442,10 +7100,10 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     document.getElementById('bannerConfirmHandoverBtn')?.addEventListener('click', confirmDispatchHandover);
     document.getElementById('bannerViewBasketBtn')?.addEventListener('click', () => switchTab('tab-dispatch'));
 
-    // HOME TAB: date filter chips (Today, Yesterday, All Active Custody)
+    // HOME TAB: date filter chips (All Active Custody, Today, Yesterday, Overdue)
     document.querySelectorAll('#homeDateFilters .home-date-chip').forEach(chip => {
       chip.addEventListener('click', () => {
-        State.homeDateFilter = chip.dataset.homeDate || 'TODAY';
+        State.homeDateFilter = chip.dataset.homeDate || 'ALL';
         State.homeCustomDate = null;
         const picker = document.getElementById('homeCustomDatePicker');
         if (picker) picker.value = '';
@@ -5459,6 +7117,45 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
         State.homeDateFilter = 'CUSTOM';
         State.homeCustomDate = e.target.value;
         updateHomeStats();
+      }
+    });
+
+    // HOME TAB: Sync & Reconcile buttons
+    document.getElementById('homeSyncReconcileBtn')?.addEventListener('click', async () => {
+      showToast('Syncing Master & Tracking Sheets...', 'info', 2000);
+      await syncSheetDirect(false);
+      await syncBillsFromTrackingSheet(true);
+      updateHomeStats();
+    });
+    document.getElementById('btnHomeOpenReconcile')?.addEventListener('click', openPaymentReconciliationModal);
+
+    // HOME TAB: Decision Analysis Center KPI cards & Tabs
+    document.querySelectorAll('.decision-kpi-card').forEach(card => {
+      card.addEventListener('click', () => {
+        State.homeDecisionTab = card.dataset.decisionTab || 'UNRETURNED';
+        renderDecisionAnalysisCenter();
+      });
+    });
+    document.querySelectorAll('#homeDecisionTabs .decision-tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        State.homeDecisionTab = btn.dataset.decTab || 'UNRETURNED';
+        renderDecisionAnalysisCenter();
+      });
+    });
+    document.getElementById('homeDecisionSearchInput')?.addEventListener('input', (e) => {
+      State.homeDecisionSearch = e.target.value;
+      renderDecisionAnalysisCenter();
+    });
+    document.getElementById('homeDecisionAgentFilter')?.addEventListener('change', (e) => {
+      State.homeDecisionAgent = e.target.value;
+      renderDecisionAnalysisCenter();
+    });
+    document.getElementById('homeDecisionWhatsappBtn')?.addEventListener('click', () => {
+      const ag = State.homeDecisionAgent || 'ALL';
+      if (ag !== 'ALL') {
+        sendLeftOutWhatsApp(ag);
+      } else {
+        sendAllLeftOutWhatsApp();
       }
     });
 
@@ -5516,11 +7213,21 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       switchTab('tab-settings');
     });
 
-    // Global Keyboard Navigation (1-6 for Tabs)
+    // Global Keyboard Navigation (1-6 for Tabs, B for Beat Analysis)
     window.addEventListener('keydown', (e) => {
       const activeTag = document.activeElement ? document.activeElement.tagName : '';
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(activeTag)) return;
       if (State.isConfirmModalOpen || State.isBreakdownModalOpen) return;
+
+      if (e.key === 'b' || e.key === 'B') {
+        e.preventDefault();
+        if (State.isBeatAnalysisModalOpen) {
+          closeBeatAnalysisModal();
+        } else {
+          openBeatAnalysisModal('ALL');
+        }
+        return;
+      }
 
       const tabMap = {
         '1': 'tab-home',
@@ -5547,26 +7254,54 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     });
 
     document.getElementById('clearBasketBtn')?.addEventListener('click', () => {
-      if (State.dispatchBasket.length > 0 && confirm('Clear all scanned bills from basket?')) {
-        State.dispatchBasket = [];
-        renderDispatchBasket();
+      const activeBeat = State.activeBeat;
+      const isFilterBeat = State.dispatchBeatFilter === 'BEAT' && Boolean(activeBeat);
+      if (isFilterBeat) {
+        const targetItems = State.dispatchBasket.filter(item => {
+          const matchAgent = State.activeAgent ? isSameAgent(item.agent, State.activeAgent.name) : true;
+          const matchBeat = isSameBeat(item.beat || item.beatName, activeBeat);
+          return matchAgent && matchBeat;
+        });
+        if (targetItems.length === 0) return;
+        if (confirm(`Clear ${targetItems.length} scanned bills for ${activeBeat} from basket?`)) {
+          const toRemoveNorms = new Set(targetItems.map(b => normalizeInvoiceNumber(b.billNo)));
+          State.dispatchBasket = State.dispatchBasket.filter(b => !toRemoveNorms.has(normalizeInvoiceNumber(b.billNo)));
+          saveState('basket');
+          renderDispatchBasket();
+        }
+      } else {
+        if (State.dispatchBasket.length > 0 && confirm('Clear all scanned bills from basket?')) {
+          State.dispatchBasket = [];
+          saveState('basket');
+          renderDispatchBasket();
+        }
       }
     });
 
     document.getElementById('confirmDispatchBtn')?.addEventListener('click', confirmDispatchHandover);
     document.getElementById('printHandoverSlipBtn')?.addEventListener('click', () => window.print());
     document.getElementById('whatsappHandoverBtn')?.addEventListener('click', () => {
-      if (State.dispatchBasket.length === 0) return;
-      const total = State.dispatchBasket.reduce((s, b) => s + (Number(b.amount) || 0), 0);
-      const agent = State.activeAgent ? State.activeAgent.name : (State.dispatchBasket[0]?.agent || 'Sales Agent');
-      const beatInfo = State.activeBeat ? `\n*Beat/Week:* ${State.activeBeat}` : '';
+      const activeBeat = State.activeBeat;
+      const isFilterBeat = State.dispatchBeatFilter === 'BEAT' && Boolean(activeBeat);
+      const targetItems = isFilterBeat
+        ? State.dispatchBasket.filter(item => {
+            const matchAgent = State.activeAgent ? isSameAgent(item.agent, State.activeAgent.name) : true;
+            const matchBeat = isSameBeat(item.beat || item.beatName, activeBeat);
+            return matchAgent && matchBeat;
+          })
+        : State.dispatchBasket;
+
+      if (targetItems.length === 0) return;
+      const total = targetItems.reduce((s, b) => s + (Number(b.amount) || 0), 0);
+      const agent = State.activeAgent ? State.activeAgent.name : (targetItems[0]?.agent || 'Sales Agent');
+      const beatInfo = activeBeat ? `\n*Beat/Week:* ${activeBeat}` : '';
       const msg = 
 `*📦 BILL HANDOVER SLIP (OUT)*
 *Agent:* ${agent}${beatInfo}
 *Date:* ${document.getElementById('dispatchDate').value || getTodayDateString()}
-*Total Bills:* ${State.dispatchBasket.length} (${formatINR(total)})
+*Total Bills:* ${targetItems.length} (${formatINR(total)})
 -------------------------
-${State.dispatchBasket.map((b, i) => `${i + 1}. *${b.billNo}* [${b.agent}]${b.beat ? ` (${b.beat})` : ''} - ${b.party} (${formatINR(b.amount)})`).join('\n')}
+${targetItems.map((b, i) => `${i + 1}. *${b.billNo}* [${b.agent}]${b.beat ? ` (${b.beat})` : ''} - ${b.party} (${formatINR(b.amount)})`).join('\n')}
 -------------------------
 _BillAudit Pro_`;
       window.open(`https://wa.me/?text=${encodeURI(msg)}`, '_blank');
@@ -5618,14 +7353,18 @@ _BillAudit Pro_`;
     // ================== TAB 3: LEFT OUT ==================
     document.getElementById('leftOutAgentFilter')?.addEventListener('change', renderLeftOutTab);
     document.getElementById('leftOutBeatFilter')?.addEventListener('change', renderLeftOutTab);
+    document.getElementById('leftOutSearchInput')?.addEventListener('input', (e) => {
+      State.leftOutSearch = e.target.value;
+      renderLeftOutTab();
+    });
     document.getElementById('whatsappAllLeftOutBtn')?.addEventListener('click', sendAllLeftOutWhatsApp);
 
-    // Difference date filter chips (Today, Yesterday, All Time)
-    document.querySelectorAll('.diff-chip').forEach(chip => {
+    // Difference date filter chips (All Active, Today, Yesterday, Overdue)
+    document.querySelectorAll('#diffDateFilters .diff-chip').forEach(chip => {
       chip.addEventListener('click', () => {
-        document.querySelectorAll('.diff-chip').forEach(c => c.classList.remove('active'));
+        document.querySelectorAll('#diffDateFilters .diff-chip').forEach(c => c.classList.remove('active'));
         chip.classList.add('active');
-        State.diffDateFilter = chip.dataset.diffDate || 'TODAY';
+        State.diffDateFilter = chip.dataset.diffDate || 'ALL';
         renderLeftOutTab();
       });
     });
@@ -5815,6 +7554,11 @@ _BillAudit Pro_`;
           e.preventDefault();
           closeDashboardBreakdownModal();
         }
+      } else if (State.isBeatAnalysisModalOpen) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          closeBeatAnalysisModal();
+        }
       }
     });
 
@@ -5844,6 +7588,7 @@ _BillAudit Pro_`;
       syncBillsFromTrackingSheet(true).then(() => analyzeAndRenderPaymentReconciliation());
     });
     document.getElementById('btnApplyAllReconcile')?.addEventListener('click', completeAuditForAllPaidBills);
+    document.getElementById('diffSyncReconcileBtn')?.addEventListener('click', () => syncSheetDirect(true));
 
     document.querySelectorAll('#reconcileFilterTabs [data-rec-filter]').forEach(tab => {
       tab.addEventListener('click', () => {
@@ -5896,10 +7641,87 @@ _BillAudit Pro_`;
 
     document.getElementById('breakdownAgentSelect')?.addEventListener('change', (e) => {
       State.breakdownAgent = e.target.value;
+      State.breakdownBeat = 'ALL';
+      populateBreakdownBeatDropdown(State.breakdownAgent, 'ALL');
+      renderDashboardBreakdownTable();
+    });
+
+    document.getElementById('breakdownBeatSelect')?.addEventListener('change', (e) => {
+      State.breakdownBeat = e.target.value;
       renderDashboardBreakdownTable();
     });
 
     document.getElementById('breakdownCopySummaryBtn')?.addEventListener('click', copyBreakdownSummaryText);
+
+    // ================== BEAT ANALYSIS MODAL ==================
+    document.getElementById('sidebarBeatAnalysisBtn')?.addEventListener('click', () => {
+      openBeatAnalysisModal('ALL');
+    });
+
+    document.getElementById('btnOpenBeatAnalysis')?.addEventListener('click', () => {
+      openBeatAnalysisModal('ALL');
+    });
+
+    document.getElementById('closeBeatAnalysisModalBtn')?.addEventListener('click', closeBeatAnalysisModal);
+    document.getElementById('closeBeatAnalysisFooterBtn')?.addEventListener('click', closeBeatAnalysisModal);
+    document.getElementById('beatAnalysisModal')?.addEventListener('click', (e) => {
+      if (e.target.id === 'beatAnalysisModal') {
+        closeBeatAnalysisModal();
+      }
+    });
+
+    document.getElementById('beatAnalysisAgentSelect')?.addEventListener('change', (e) => {
+      State.beatAnalysisAgent = e.target.value;
+      renderBeatAnalysisModal();
+    });
+
+    document.querySelectorAll('#beatAnalysisDateChips .diff-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        document.querySelectorAll('#beatAnalysisDateChips .diff-chip').forEach(c => c.classList.remove('active'));
+        chip.classList.add('active');
+        State.beatAnalysisDateFilter = chip.dataset.bDate || 'TODAY';
+        renderBeatAnalysisModal();
+      });
+    });
+
+    document.getElementById('beatAnalysisSearchInput')?.addEventListener('input', (e) => {
+      State.beatAnalysisSearch = e.target.value;
+      const clearBtn = document.getElementById('beatAnalysisClearSearchBtn');
+      if (clearBtn) clearBtn.style.display = e.target.value ? 'inline-block' : 'none';
+      renderBeatAnalysisModal();
+    });
+
+    document.getElementById('beatAnalysisClearSearchBtn')?.addEventListener('click', () => {
+      const searchInp = document.getElementById('beatAnalysisSearchInput');
+      if (searchInp) searchInp.value = '';
+      State.beatAnalysisSearch = '';
+      const clearBtn = document.getElementById('beatAnalysisClearSearchBtn');
+      if (clearBtn) clearBtn.style.display = 'none';
+      renderBeatAnalysisModal();
+      searchInp?.focus();
+    });
+
+    document.getElementById('beatAnalysisCopySummaryBtn')?.addEventListener('click', copyBeatAnalysisSummary);
+
+    // Morning Dispatch Beat Filter buttons
+    document.getElementById('dispatchFilterBeatOnlyBtn')?.addEventListener('click', () => {
+      State.dispatchBeatFilter = 'BEAT';
+      renderDispatchBasket();
+    });
+    document.getElementById('dispatchFilterAllBeatsBtn')?.addEventListener('click', () => {
+      State.dispatchBeatFilter = 'ALL';
+      renderDispatchBasket();
+    });
+
+    // Evening Return Beat Filter buttons
+    document.getElementById('settlementFilterBeatOnlyBtn')?.addEventListener('click', () => {
+      State.settlementBeatFilter = 'BEAT';
+      loadSettlementForSelectedAgent();
+    });
+    document.getElementById('settlementFilterAllBeatsBtn')?.addEventListener('click', () => {
+      State.settlementBeatFilter = 'ALL';
+      loadSettlementForSelectedAgent();
+    });
   }
 
   // Application Startup

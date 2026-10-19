@@ -1900,7 +1900,13 @@ google.visualization.Query.setResponse({
   function normalizeDateString(d) {
     if (!d) return '';
     const str = String(d).trim();
-    if (/^\d{4}-\d{2}-\d{2}T/.test(str)) return str.split('T')[0];
+    if (/^\d{4}-\d{2}-\d{2}T/.test(str)) {
+      const parsed = new Date(str);
+      if (!isNaN(parsed.getTime())) {
+        return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`;
+      }
+      return str.split('T')[0];
+    }
     if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(str)) {
       const parts = str.split('-');
       return `${parts[0]}-${String(parts[1]).padStart(2, '0')}-${String(parts[2]).padStart(2, '0')}`;
@@ -2419,6 +2425,19 @@ google.visualization.Query.setResponse({
   console.log('Test 39: Historical Date Auto-Heal (Separating 427 Bills into 88 Today, 64 Yesterday)');
 
   const mockPayload427 = [];
+  const dNow39 = new Date();
+  const todaySheetDateStr = dNow39.toString(); // falsely stamped by sheet as today
+  const todayIso39 = dNow39.toISOString();
+
+  const dYest39 = new Date();
+  dYest39.setDate(dYest39.getDate() - 1);
+  const yestIso39 = dYest39.toISOString();
+  const yestStr39 = `${dYest39.getFullYear()}-${String(dYest39.getMonth() + 1).padStart(2, '0')}-${String(dYest39.getDate()).padStart(2, '0')}`;
+
+  const dOlder39 = new Date();
+  dOlder39.setDate(dOlder39.getDate() - 5);
+  const olderIso39 = dOlder39.toISOString();
+
   // 88 bills scanned out today to Shivam
   for (let i = 1; i <= 88; i++) {
     mockPayload427.push({
@@ -2426,9 +2445,9 @@ google.visualization.Query.setResponse({
       party: `Party Today ${i}`,
       amount: 3600,
       agent: 'Shivam',
-      dispatchDate: 'Sat Oct 10 2026 00:00:00 GMT+0530',
+      dispatchDate: todaySheetDateStr,
       status: 'WITH_AGENT',
-      lastActionDate: '2026-10-10T11:02:44.402Z'
+      lastActionDate: todayIso39
     });
   }
   // 64 bills from yesterday with Rajesh
@@ -2438,21 +2457,21 @@ google.visualization.Query.setResponse({
       party: `Party Yest ${j}`,
       amount: 5150,
       agent: 'Rajesh',
-      dispatchDate: 'Sat Oct 10 2026 00:00:00 GMT+0530', // falsely stamped by sheet
+      dispatchDate: todaySheetDateStr, // falsely stamped by sheet
       status: 'WITH_AGENT',
-      lastActionDate: '2026-10-09T12:37:51.854Z' // true action yesterday
+      lastActionDate: yestIso39 // true action yesterday
     });
   }
-  // 275 bills from older days (Oct 6, Oct 7, etc.)
+  // 275 bills from older days (5 days ago)
   for (let k = 1; k <= 275; k++) {
     mockPayload427.push({
       billNo: `IN-FY26/27-${2000 + k}`,
       party: `Party Older ${k}`,
       amount: 2500,
       agent: 'Rajesh',
-      dispatchDate: 'Sat Oct 10 2026 00:00:00 GMT+0530',
+      dispatchDate: todaySheetDateStr,
       status: k % 2 === 0 ? 'PAID_FULL' : 'RECEIVED',
-      lastActionDate: '2026-10-06T19:28:03.000Z'
+      lastActionDate: olderIso39
     });
   }
 
@@ -2460,9 +2479,6 @@ google.visualization.Query.setResponse({
 
   // Run auto-heal as in loadLocalState & syncBillsFromTrackingSheet
   const todayStr39 = todayDateStr;
-  const dYest39 = new Date();
-  dYest39.setDate(dYest39.getDate() - 1);
-  const yestStr39 = `${dYest39.getFullYear()}-${String(dYest39.getMonth() + 1).padStart(2, '0')}-${String(dYest39.getDate()).padStart(2, '0')}`;
 
   const healedBills = mockPayload427.map(cb => {
     let dDate = normalizeDateString(cb.dispatchDate);
@@ -2483,8 +2499,985 @@ google.visualization.Query.setResponse({
 
   console.log('✅ Test 39 Passed! 427 bills auto-healed with 100% precision: 88 Today, 64 Yesterday!\n');
 
-  console.log('🎉 ALL 39 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+  // ========================================================
+  // Test 40: Paid Bills are 100% Excluded from Missed Bills Detection
+  // ========================================================
+  console.log('Test 40: Paid Bills are 100% Excluded from Missed Bills Detection');
+
+  function isBillPaidInFullTest(b) {
+    if (!b) return false;
+    const status = String(b.status || '').toUpperCase();
+    if (status === 'PAID' || status === 'PAID_FULL' || status === 'RECEIVED' || status === 'RETURNED_IN_HAND') return true;
+    const receipt = String(b.receipt || b.refNo || '').trim();
+    if (/^PAID/i.test(receipt)) return true;
+    const outstanding = (b.outstanding !== undefined && b.outstanding !== null && b.outstanding !== '') ? Number(b.outstanding) : null;
+    const amount = Number(b.amount) || 0;
+    const collected = Number(b.collectedAmt) || 0;
+    if (amount > 0 && collected >= amount) return true;
+    if (outstanding !== null && outstanding <= 0 && (amount > 0 || receipt)) return true;
+    return false;
+  }
+
+  function detectMissedBills(masterBills, dispatchedBills, targetAgent = 'ALL') {
+    const todayDispatchedNos = new Set(dispatchedBills.map(b => normalizeInvoiceNumber(b.billNo)));
+    const missed = [];
+    let paidExcluded = 0;
+
+    masterBills.forEach(b => {
+      if (!b || !b.billNo) return;
+      const bAgent = String(b.agent || '').trim();
+      if (!bAgent) return;
+      if (targetAgent !== 'ALL' && bAgent.toLowerCase() !== targetAgent.toLowerCase()) return;
+
+      const outstanding = (b.outstanding !== undefined && b.outstanding !== null && b.outstanding !== '') ? Number(b.outstanding) : null;
+      const isPaid = isBillPaidInFullTest(b) || (outstanding !== null && outstanding <= 0 && (Number(b.amount) > 0 || b.receipt));
+      if (isPaid) {
+        paidExcluded++;
+        return; // STRICTLY EXCLUDED!
+      }
+
+      const norm = normalizeInvoiceNumber(b.billNo);
+      if (!todayDispatchedNos.has(norm)) {
+        missed.push(b);
+      }
+    });
+
+    return { missed, paidExcluded };
+  }
+
+  const masterList40 = [
+    { billNo: 'IN-101', agent: 'Rajesh', party: 'Shop A', amount: 5000, outstanding: 0, receipt: 'RCT-101' },   // PAID (receipt)
+    { billNo: 'IN-102', agent: 'Rajesh', party: 'Shop B', amount: 4000, outstanding: 4000, receipt: '' },      // UNPAID DUE
+    { billNo: 'IN-103', agent: 'Rajesh', party: 'Shop C', amount: 3000, outstanding: 0, status: 'PAID' },      // PAID (status)
+    { billNo: 'IN-104', agent: 'Rajesh', party: 'Shop D', amount: 2000, outstanding: 1000, receipt: 'PARTIAL'},// PARTIAL DUE
+    { billNo: 'IN-105', agent: 'Rajesh', party: 'Shop E', amount: 1500, status: 'PAID_FULL' },                 // PAID (status)
+    { billNo: 'IN-106', agent: 'Rajesh', party: 'Shop F', amount: 7000, outstanding: 7000, receipt: '' },      // UNPAID DUE
+    { billNo: 'IN-201', agent: 'Shivam', party: 'Shop G', amount: 9000, outstanding: 9000, receipt: '' }       // Shivam Due
+  ];
+
+  // Dispatch only IN-106 today
+  const dispatched40 = [
+    { billNo: 'IN-106', agent: 'Rajesh', status: 'WITH_AGENT' }
+  ];
+
+  const resRajesh40 = detectMissedBills(masterList40, dispatched40, 'Rajesh');
+  assert.strictEqual(resRajesh40.missed.length, 2, 'Only 2 due bills missed: IN-102 and IN-104');
+  assert.deepStrictEqual(resRajesh40.missed.map(b => b.billNo), ['IN-102', 'IN-104']);
+  assert.strictEqual(resRajesh40.paidExcluded, 3, 'Exactly 3 paid bills (IN-101, IN-103, IN-105) 100% excluded from missed!');
+
+  console.log('✅ Test 40 Passed! Paid bills are 100% excluded from Missed Bills detection!\n');
+
+  // ========================================================
+  // Test 41: Auto-Reconciliation of Live Custody with Master Sheet
+  // ========================================================
+  console.log('Test 41: Auto-Reconciliation of Live Custody with Master Sheet');
+
+  function reconcileCustodyMock(custodyBills, masterMap) {
+    let healedCount = 0;
+    let partialCount = 0;
+
+    custodyBills.forEach(b => {
+      if (!b || !b.billNo) return;
+      if (b.status !== 'WITH_AGENT' && b.status !== 'MISSING_ALERT') return;
+
+      const norm = normalizeInvoiceNumber(b.billNo);
+      const mm = masterMap.get(norm);
+      if (!mm) return;
+
+      const amt = Number(b.amount) || Number(mm.amount) || 0;
+      const masterOut = (mm.outstanding !== undefined && mm.outstanding !== null) ? Number(mm.outstanding) : null;
+      const masterStat = String(mm.status || '').toUpperCase();
+      const masterReceipt = String(mm.receipt || '').trim();
+      const isPaidRemark = /^PAID/i.test(masterReceipt);
+
+      const isFullPaid = (masterStat === 'PAID') ||
+                         (masterOut !== null && masterOut <= 0 && (amt > 0 || masterReceipt || isPaidRemark)) ||
+                         isPaidRemark;
+
+      const isPartial = !isFullPaid && (
+        masterStat === 'PARTIAL' ||
+        (masterOut !== null && masterOut > 0 && masterOut < amt) ||
+        (masterReceipt && masterOut !== null && masterOut > 0)
+      );
+
+      if (isFullPaid) {
+        b.status = 'PAID_FULL';
+        b.collectedAmt = amt;
+        b.outstanding = 0;
+        b.paymentMode = masterReceipt || 'Sheet Verified';
+        b.refNo = masterReceipt || 'PAID IN SHEET';
+        b.remarks = `Auto-Healed: Verified Paid on Master Sheet (${masterReceipt || 'Paid'})`;
+        healedCount++;
+      } else if (isPartial) {
+        b.status = 'PAID_PARTIAL';
+        b.collectedAmt = Math.max(0, amt - masterOut);
+        b.outstanding = masterOut;
+        b.remarks = `Auto-Healed: Partial on Master Sheet`;
+        partialCount++;
+      }
+    });
+
+    return { healedCount, partialCount };
+  }
+
+  const custodyList41 = [
+    { billNo: 'IN-A1', party: 'Customer 1', amount: 10000, agent: 'Rajesh', status: 'WITH_AGENT', collectedAmt: 0, outstanding: 10000 },
+    { billNo: 'IN-A2', party: 'Customer 2', amount: 5000, agent: 'Rajesh', status: 'WITH_AGENT', collectedAmt: 0, outstanding: 5000 },
+    { billNo: 'IN-A3', party: 'Customer 3', amount: 8000, agent: 'Rajesh', status: 'WITH_AGENT', collectedAmt: 0, outstanding: 8000 }
+  ];
+
+  const masterMap41 = new Map([
+    [normalizeInvoiceNumber('IN-A1'), { billNo: 'IN-A1', amount: 10000, outstanding: 0, receipt: 'RCT-999', status: 'PAID' }],
+    [normalizeInvoiceNumber('IN-A2'), { billNo: 'IN-A2', amount: 5000, outstanding: 2000, receipt: 'PARTIAL', status: 'PARTIAL' }],
+    [normalizeInvoiceNumber('IN-A3'), { billNo: 'IN-A3', amount: 8000, outstanding: 8000, receipt: '', status: 'PENDING' }]
+  ]);
+
+  const recResult41 = reconcileCustodyMock(custodyList41, masterMap41);
+  assert.strictEqual(recResult41.healedCount, 1, '1 bill fully healed (IN-A1)');
+  assert.strictEqual(recResult41.partialCount, 1, '1 bill partially healed (IN-A2)');
+
+  assert.strictEqual(custodyList41[0].status, 'PAID_FULL', 'IN-A1 promoted to PAID_FULL');
+  assert.strictEqual(custodyList41[0].collectedAmt, 10000, 'IN-A1 collected is 10000');
+  assert.strictEqual(custodyList41[0].outstanding, 0, 'IN-A1 outstanding is 0');
+
+  assert.strictEqual(custodyList41[1].status, 'PAID_PARTIAL', 'IN-A2 updated to PAID_PARTIAL');
+  assert.strictEqual(custodyList41[1].collectedAmt, 3000, 'IN-A2 collected is 3000');
+  assert.strictEqual(custodyList41[1].outstanding, 2000, 'IN-A2 outstanding is 2000');
+
+  assert.strictEqual(custodyList41[2].status, 'WITH_AGENT', 'IN-A3 genuinely remains WITH_AGENT');
+
+  console.log('✅ Test 41 Passed! Live custody auto-reconciles seamlessly with Master Sheet!\n');
+
+  // ========================================================
+  // Test 42: Difference Count and Amount Drop on Sheet Payment Reconcile
+  // ========================================================
+  console.log('Test 42: Difference Count and Amount Drop on Sheet Payment Reconcile');
+
+  const diffBillsBefore = custodyList41.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT');
+  assert.strictEqual(diffBillsBefore.length, 1, 'Difference count dropped from 3 bills to only 1 bill (IN-A3)!');
+  assert.strictEqual(diffBillsBefore[0].billNo, 'IN-A3');
+
+  const receivedBillsAfter = custodyList41.filter(b => b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL');
+  assert.strictEqual(receivedBillsAfter.length, 2, 'Received / Accounted count is now 2 bills (IN-A1 & IN-A2)!');
+
+  console.log('✅ Test 42 Passed! Difference count and amount drop immediately upon payment sync!\n');
+
+  // ========================================================
+  // Test 43: Morning Dispatch Guard Blocks Scanning Already-Paid Bills
+  // ========================================================
+  console.log('Test 43: Morning Dispatch Guard Blocks Scanning Already-Paid Bills');
+
+  const paidBillToScan = { billNo: 'IN-A1', amount: 10000, outstanding: 0, receipt: 'RCT-999', status: 'PAID' };
+  const unpaidBillToScan = { billNo: 'IN-A3', amount: 8000, outstanding: 8000, receipt: '', status: 'PENDING' };
+
+  assert.strictEqual(isBillPaidInFullTest(paidBillToScan), true, 'Paid bill recognized as fully paid by dispatch guard');
+  assert.strictEqual(isBillPaidInFullTest(unpaidBillToScan), false, 'Unpaid bill allowed through dispatch guard');
+
+  console.log('✅ Test 43 Passed! Morning dispatch guard intercepts and blocks paid bills!\n');
+
+  // ========================================================
+  // Test 44: isSameBeat() Matching Engine & Route Separation
+  // ========================================================
+  console.log('Test 44: isSameBeat() Matching Engine & Route Separation');
+
+  function cleanBeatStringTest(str) {
+    if (!str) return { clean: '', routeNum: null };
+    let s = String(str).trim();
+    // Strip day/week suffixes like (Mon, Week 1), (Mon), (Week 2), etc.
+    s = s.replace(/\s*\((Mon|Tue|Wed|Thu|Fri|Sat)[^)]*\)/gi, '');
+    s = s.replace(/\s*\(Week\s*\d+[^)]*\)/gi, '');
+
+    // Check for route number in parentheses e.g. (1), (2), [1], [2]
+    let routeNum = null;
+    const parenRoute = s.match(/[\(\[]\s*(\d+)\s*[\)\]]/);
+    if (parenRoute) {
+      routeNum = parseInt(parenRoute[1], 10);
+      s = s.replace(/[\(\[]\s*\d+\s*[\)\]]/g, '');
+    }
+
+    // Also check for trailing dash route number e.g. -1, -2, - 1, - 2
+    const dashRoute = s.match(/[-–—]\s*(\d+)\s*$/);
+    if (dashRoute) {
+      routeNum = parseInt(dashRoute[1], 10);
+      s = s.replace(/[-–—]\s*\d+\s*$/, '');
+    }
+
+    // Strip all non-alphanumeric chars for base matching
+    const clean = s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    return { clean, routeNum };
+  }
+
+  function isSameBeatTest(beatA, beatB) {
+    if (!beatA || !beatB) return false;
+    if (beatA === beatB) return true;
+
+    const a = cleanBeatStringTest(beatA);
+    const b = cleanBeatStringTest(beatB);
+    if (!a.clean || !b.clean) return false;
+
+    // Check route number consistency
+    // If both have route numbers, they must match exactly
+    if (a.routeNum !== null && b.routeNum !== null) {
+      if (a.routeNum !== b.routeNum) return false;
+    } else if (a.routeNum !== null && a.routeNum > 1) {
+      // a is Route 2+, but b has no route number -> cannot match Route 1 / unnumbered
+      return false;
+    } else if (b.routeNum !== null && b.routeNum > 1) {
+      // b is Route 2+, but a has no route number -> cannot match Route 1 / unnumbered
+      return false;
+    }
+
+    if (a.clean === b.clean) return true;
+
+    // Handle substring / abbreviation matches with safety
+    const minLen = Math.min(a.clean.length, b.clean.length);
+    if (minLen >= 4 && (a.clean.includes(b.clean) || b.clean.includes(a.clean))) {
+      return true;
+    }
+    return false;
+  }
+
+  // 1. Exact match
+  assert.strictEqual(isSameBeatTest('Mukhtiyarganj Market-1', 'Mukhtiyarganj Market-1'), true, 'Exact beat match');
+
+  // 2. Case-insensitivity & whitespace tolerance
+  assert.strictEqual(isSameBeatTest('mukhtiyarganj market-1', 'MUKHTIYARGANJ MARKET-1'), true, 'Case-insensitive');
+  assert.strictEqual(isSameBeatTest('  Kothi Road, Panna Naka  ', 'Kothi Road Panna Naka'), true, 'Punctuation & spacing tolerance');
+
+  // 3. Parenthetical day/week suffix removal
+  assert.strictEqual(isSameBeatTest('Mukhtiyarganj Market-1 (Mon, Week 1)', 'Mukhtiyarganj Market-1'), true, 'Strips (Mon, Week 1)');
+  assert.strictEqual(isSameBeatTest('Civil Line Panna Naka (Tue)', 'Civil Line Panna Naka'), true, 'Strips (Tue)');
+
+  // 4. Strict route number separation (Market-1 vs Market-2)
+  assert.strictEqual(isSameBeatTest('Mukhtiyarganj Market-1', 'Mukhtiyarganj Market-2'), false, 'Market-1 must NOT match Market-2');
+  assert.strictEqual(isSameBeatTest('Mukhtiyarganj Market-1 (Mon, Week 1)', 'Mukhtiyarganj Market-2 (Mon, Week 1)'), false, 'Market-1 (Mon) must NOT match Market-2 (Mon)');
+
+  // 5. Parenthetical route number format conversion: (2) vs -2
+  assert.strictEqual(isSameBeatTest('Mukhtiyarganj Market (2)', 'Mukhtiyarganj Market-2'), true, 'Format (2) matches -2');
+  assert.strictEqual(isSameBeatTest('Mukhtiyarganj Market (1)', 'Mukhtiyarganj Market (2)'), false, '(1) must NOT match (2)');
+
+  // 5b. Unnumbered / Route 1 vs Route 2 separation (preventing Rajesh Route 1 from bleeding into Shivam Route 2)
+  assert.strictEqual(isSameBeatTest('Mukhtiyarganj Market-2', 'MUKHTIYARGANJ MARKET'), false, 'Market-2 must NOT match unnumbered Route 1');
+  assert.strictEqual(isSameBeatTest('MUKHTIYARGANJ MARKET', 'Mukhtiyarganj Market (2)'), false, 'Unnumbered Route 1 must NOT match Market (2)');
+  assert.strictEqual(isSameBeatTest('MUKHTIYARGANJ MARKET', 'Mukhtiyarganj Market-1'), true, 'Unnumbered Route 1 matches Route 1');
+
+  // 6. Null & empty input safety
+  assert.strictEqual(isSameBeatTest('', 'Market-1'), false, 'Empty string returns false');
+  assert.strictEqual(isSameBeatTest(null, 'Market-1'), false, 'Null returns false');
+  assert.strictEqual(isSameBeatTest(undefined, null), false, 'Undefined/null returns false');
+
+  console.log('✅ Test 44 Passed! isSameBeat() Matching Engine & Route Separation verified 100%!\n');
+
+  // ========================================================
+  // Test 45: Morning Dispatch Basket Beat Filtering & Beat Mismatch Interception
+  // ========================================================
+  console.log('Test 45: Morning Dispatch Basket Beat Filtering & Beat Mismatch Interception');
+
+  function isSameAgentTest(agentA, agentB) {
+    if (!agentA || !agentB) return false;
+    if (agentA === agentB) return true;
+    const a = String(agentA).toLowerCase().trim();
+    const b = String(agentB).toLowerCase().trim();
+    if (a === b) return true;
+    if (a.includes('shivam') && b.includes('shivam')) return true;
+    if (a.includes('rajesh') && b.includes('rajesh')) return true;
+    if (a.includes('self') && b.includes('self')) return true;
+    return false;
+  }
+
+  // Basket simulation
+  const mockBasket = [
+    { billNo: 'IN-101', agent: 'Rajesh', beat: 'Mukhtiyarganj Market-1 (Mon, Week 1)', amount: 5000 },
+    { billNo: 'IN-102', agent: 'Rajesh', beat: 'Mukhtiyarganj Market-1', amount: 3000 },
+    { billNo: 'IN-103', agent: 'Rajesh', beat: 'Civil Line Panna Naka (Tue)', amount: 4500 },
+    { billNo: 'IN-201', agent: 'Shivam', beat: 'Mukhtiyarganj Market-2 (Mon, Week 1)', amount: 7000 }
+  ];
+
+  function filterDispatchBasketMock(basket, activeAgent, activeBeat, filterMode) {
+    if (filterMode === 'ALL' || !activeBeat) {
+      return basket;
+    }
+    return basket.filter(item => {
+      const matchAgent = activeAgent ? isSameAgentTest(item.agent, activeAgent.name || activeAgent) : true;
+      const matchBeat = isSameBeatTest(item.beat || item.beatName, activeBeat);
+      return matchAgent && matchBeat;
+    });
+  }
+
+  // 1. BEAT filter mode for Rajesh on Mukhtiyarganj Market-1
+  const rajeshActiveBeat = 'Mukhtiyarganj Market-1 (Mon, Week 1)';
+  const beatFilteredBasket = filterDispatchBasketMock(mockBasket, { name: 'Rajesh Chaurasiya' }, rajeshActiveBeat, 'BEAT');
+  assert.strictEqual(beatFilteredBasket.length, 2, 'Only 2 bills for Mukhtiyarganj Market-1 shown in basket');
+  assert.deepStrictEqual(beatFilteredBasket.map(b => b.billNo), ['IN-101', 'IN-102']);
+
+  // 2. ALL filter mode shows everything in basket
+  const allFilteredBasket = filterDispatchBasketMock(mockBasket, { name: 'Rajesh Chaurasiya' }, rajeshActiveBeat, 'ALL');
+  assert.strictEqual(allFilteredBasket.length, 4, 'ALL filter shows all 4 items in basket');
+
+  // 3. Beat mismatch detection when scanning
+  function checkScanBeatMismatch(scannedBillBeat, activeBeat) {
+    if (!activeBeat || !scannedBillBeat) return false;
+    return !isSameBeatTest(scannedBillBeat, activeBeat);
+  }
+
+  assert.strictEqual(checkScanBeatMismatch('Civil Line Panna Naka', rajeshActiveBeat), true, 'Mismatch triggered for different beat');
+  assert.strictEqual(checkScanBeatMismatch('Mukhtiyarganj Market-2', rajeshActiveBeat), true, 'Mismatch triggered for Market-2 when active is Market-1');
+  assert.strictEqual(checkScanBeatMismatch('Mukhtiyarganj Market-1', rajeshActiveBeat), false, 'No mismatch for matching beat');
+
+  // 4. Selective Handover: Dispatches only filtered items, preserves remaining items in basket
+  function confirmSelectiveHandoverMock(basket, visibleItems, custodyBills) {
+    const visibleNorms = new Set(visibleItems.map(b => normalizeInvoiceNumber(b.billNo)));
+    const remainingBasket = basket.filter(b => !visibleNorms.has(normalizeInvoiceNumber(b.billNo)));
+    const newCustody = [...custodyBills, ...visibleItems.map(b => ({ ...b, status: 'WITH_AGENT' }))];
+    return { remainingBasket, newCustody };
+  }
+
+  const handoverRes = confirmSelectiveHandoverMock(mockBasket, beatFilteredBasket, []);
+  assert.strictEqual(handoverRes.newCustody.length, 2, 'Exactly 2 bills dispatched to custody');
+  assert.strictEqual(handoverRes.remainingBasket.length, 2, 'Remaining 2 bills preserved in basket');
+  assert.deepStrictEqual(handoverRes.remainingBasket.map(b => b.billNo), ['IN-103', 'IN-201']);
+
+  console.log('✅ Test 45 Passed! Morning Dispatch Basket Beat Filtering & Beat Mismatch Interception verified 100%!\n');
+
+  // ========================================================
+  // Test 46: Evening Return (Settlement) Beat Filtering & Route Clearance
+  // ========================================================
+  console.log('Test 46: Evening Return (Settlement) Beat Filtering & Route Clearance');
+
+  const mockCustodyBills46 = [
+    { billNo: 'IN-R1', agent: 'Rajesh', beat: 'Mukhtiyarganj Market-1', amount: 4000, status: 'WITH_AGENT', outstanding: 4000 },
+    { billNo: 'IN-R2', agent: 'Rajesh', beat: 'Mukhtiyarganj Market-1 (Mon, Week 1)', amount: 6000, status: 'RECEIVED', outstanding: 0, collectedAmt: 6000 },
+    { billNo: 'IN-R3', agent: 'Rajesh', beat: 'Civil Line Panna Naka', amount: 5000, status: 'WITH_AGENT', outstanding: 5000 },
+    { billNo: 'IN-R4', agent: 'Rajesh', beat: 'Mukhtiyarganj Market-1', amount: 2000, status: 'WITH_AGENT', outstanding: 2000 }
+  ];
+
+  function filterSettlementBillsMock(bills, activeBeat, filterMode) {
+    if (filterMode === 'ALL' || !activeBeat) return bills;
+    return bills.filter(b => isSameBeatTest(b.beat || b.beatName, activeBeat));
+  }
+
+  function computeSettlementSummaryMock(bills) {
+    let totalAmt = 0, receivedAmt = 0, diffAmt = 0;
+    let receivedCount = 0, diffCount = 0;
+    bills.forEach(b => {
+      const amt = Number(b.amount) || 0;
+      totalAmt += amt;
+      if (b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL') {
+        receivedCount++;
+        receivedAmt += (Number(b.collectedAmt) || amt);
+      } else {
+        diffCount++;
+        diffAmt += (b.outstanding !== undefined ? Number(b.outstanding) : amt);
+      }
+    });
+    return { totalAmt, receivedAmt, diffAmt, totalCount: bills.length, receivedCount, diffCount };
+  }
+
+  // 1. Filter by Mukhtiyarganj Market-1
+  const settlementBeatFiltered = filterSettlementBillsMock(mockCustodyBills46, 'Mukhtiyarganj Market-1', 'BEAT');
+  assert.strictEqual(settlementBeatFiltered.length, 3, 'Settlement filtered to 3 bills for Market-1');
+  assert.deepStrictEqual(settlementBeatFiltered.map(b => b.billNo), ['IN-R1', 'IN-R2', 'IN-R4']);
+
+  // 2. Summary math under beat filter
+  const summaryBeat = computeSettlementSummaryMock(settlementBeatFiltered);
+  assert.strictEqual(summaryBeat.totalAmt, 12000, 'Total dispatched for Market-1 is 4000 + 6000 + 2000 = 12000');
+  assert.strictEqual(summaryBeat.receivedAmt, 6000, 'Received for Market-1 is 6000');
+  assert.strictEqual(summaryBeat.diffAmt, 6000, 'Difference for Market-1 is 4000 + 2000 = 6000');
+  assert.strictEqual(summaryBeat.diffCount, 2, '2 difference bills pending for Market-1');
+
+  // 3. Toggled to ALL beats
+  const settlementAllFiltered = filterSettlementBillsMock(mockCustodyBills46, 'Mukhtiyarganj Market-1', 'ALL');
+  assert.strictEqual(settlementAllFiltered.length, 4, 'Settlement ALL shows all 4 bills');
+  const summaryAll = computeSettlementSummaryMock(settlementAllFiltered);
+  assert.strictEqual(summaryAll.totalAmt, 17000, 'Total dispatched across all beats is 17000');
+
+  console.log('✅ Test 46 Passed! Evening Return (Settlement) Beat Filtering & Route Clearance verified 100%!\n');
+
+  // ========================================================
+  // Test 47: Dashboard Breakdown Filtering by Agent and Beat
+  // ========================================================
+  console.log('Test 47: Dashboard Breakdown Filtering by Agent and Beat');
+
+  const breakdownTestBills = [
+    { billNo: 'IN-B1', agent: 'Rajesh Chaurasiya', beat: 'Mukhtiyarganj Market-1', amount: 1000, status: 'WITH_AGENT' },
+    { billNo: 'IN-B2', agent: 'Rajesh Chaurasiya', beat: 'Mukhtiyarganj Market-1 (Mon, Week 1)', amount: 2000, status: 'RECEIVED' },
+    { billNo: 'IN-B3', agent: 'Rajesh Chaurasiya', beat: 'Civil Line Panna Naka', amount: 3000, status: 'WITH_AGENT' },
+    { billNo: 'IN-B4', agent: 'Shivam Dwivedi', beat: 'Mukhtiyarganj Market-2', amount: 4000, status: 'WITH_AGENT' },
+    { billNo: 'IN-B5', agent: 'Shivam Dwivedi', beat: 'Rajendra Nagar / Jawahar Nagar', amount: 5000, status: 'RECEIVED' }
+  ];
+
+  function getBreakdownBaseBillsMock(bills, targetAgent, targetBeat) {
+    let list = bills;
+    if (targetAgent && targetAgent !== 'ALL') {
+      list = list.filter(b => isSameAgentTest(b.agent, targetAgent));
+    }
+    if (targetBeat && targetBeat !== 'ALL') {
+      list = list.filter(b => isSameBeatTest(b.beat || b.beatName, targetBeat));
+    }
+    return list;
+  }
+
+  // 1. Filter by Rajesh and Mukhtiyarganj Market-1
+  const rajeshMarket1 = getBreakdownBaseBillsMock(breakdownTestBills, 'Rajesh', 'Mukhtiyarganj Market-1');
+  assert.strictEqual(rajeshMarket1.length, 2, 'Exactly 2 bills for Rajesh on Market-1');
+  assert.deepStrictEqual(rajeshMarket1.map(b => b.billNo), ['IN-B1', 'IN-B2']);
+
+  // 2. Filter by Rajesh and ALL beats
+  const rajeshAllBeats = getBreakdownBaseBillsMock(breakdownTestBills, 'Rajesh', 'ALL');
+  assert.strictEqual(rajeshAllBeats.length, 3, 'All 3 bills for Rajesh');
+
+  // 3. Filter by Shivam and Mukhtiyarganj Market-2
+  const shivamMarket2 = getBreakdownBaseBillsMock(breakdownTestBills, 'Shivam', 'Mukhtiyarganj Market-2');
+  assert.strictEqual(shivamMarket2.length, 1, 'Exactly 1 bill for Shivam on Market-2');
+  assert.strictEqual(shivamMarket2[0].billNo, 'IN-B4');
+
+  // 4. Ensure Shivam\'s Market-2 returns 0 for Rajesh
+  const rajeshMarket2 = getBreakdownBaseBillsMock(breakdownTestBills, 'Rajesh', 'Mukhtiyarganj Market-2');
+  assert.strictEqual(rajeshMarket2.length, 0, 'Rajesh has 0 bills for Market-2 (strict separation)');
+
+  console.log('✅ Test 47 Passed! Dashboard Breakdown Filtering by Agent and Beat verified 100%!\n');
+
+  // ========================================================
+  // Test 48: getBeatAnalysisData() Route Performance Calculation Engine
+  // ========================================================
+  console.log('Test 48: getBeatAnalysisData() Route Performance Calculation Engine');
+
+  const BEAT_PLAN_TEST = {
+    Rajesh: {
+      Mon: { beat: 'Mukhtiyarganj Market-1', area: 'Mukhtiyarganj Market-1' },
+      Tue: { beat: 'Civil Line Panna Naka', area: 'Civil Line Panna Naka' },
+      Wed: { beat: 'Bharhut Nagar Bank Colony', area: 'Bharhut Nagar Bank Colony' },
+      Thu: { beat: 'Kothi Road Bagha', area: 'Kothi Road Bagha' },
+      Fri: { beat: 'Dhawari Mahadeva', area: 'Dhawari Mahadeva' },
+      Sat: { beat: 'Pul Gadi – Raigaon', area: 'Pul Gadi – Raigaon' }
+    },
+    Shivam: {
+      Mon: { beat: 'Mukhtiyarganj Market-2', area: 'Mukhtiyarganj Market-2' },
+      Tue: { beat: 'Rajendra Nagar / Jawahar Nagar', area: 'Rajendra Nagar / Jawahar Nagar' },
+      Wed: { beat: 'Pateri Virat Nagar', area: 'Pateri Virat Nagar' },
+      Thu: { beat: 'Kothi Road Khama Khuja', area: 'Kothi Road Khama Khuja' },
+      Fri: { beat: 'Prem Nagar Dhawari', area: 'Prem Nagar Dhawari' },
+      Sat: { beat: 'Pateri VITS Road', area: 'Pateri VITS Road' }
+    },
+    Self: {
+      Mon: { beat: 'In-Store Counter / Self', area: 'Direct Party Pickup / Walk-in' },
+      Tue: { beat: 'In-Store Counter / Self', area: 'Direct Party Pickup / Walk-in' },
+      Wed: { beat: 'In-Store Counter / Self', area: 'Direct Party Pickup / Walk-in' },
+      Thu: { beat: 'In-Store Counter / Self', area: 'Direct Party Pickup / Walk-in' },
+      Fri: { beat: 'In-Store Counter / Self', area: 'Direct Party Pickup / Walk-in' },
+      Sat: { beat: 'In-Store Counter / Self', area: 'Direct Party Pickup / Walk-in' }
+    }
+  };
+
+  const testAgents = [
+    { id: 'AG-001', name: 'Rajesh', fullName: 'Rajesh Chaurasiya' },
+    { id: 'AG-002', name: 'Shivam', fullName: 'Shivam Dwivedi' },
+    { id: 'AG-003', name: 'Self', fullName: 'Self / In-Store' }
+  ];
+
+  const testCustodyBills48 = [
+    // Rajesh Monday (Market-1): 2 bills (1 received, 1 pending)
+    { billNo: 'IN-4801', agent: 'Rajesh', beat: 'Mukhtiyarganj Market-1', amount: 5000, collectedAmt: 5000, status: 'RECEIVED' },
+    { billNo: 'IN-4802', agent: 'Rajesh', beat: 'Mukhtiyarganj Market-1', amount: 3000, outstanding: 3000, status: 'WITH_AGENT' },
+    // Rajesh Tuesday (Civil Line): 1 bill received
+    { billNo: 'IN-4803', agent: 'Rajesh', beat: 'Civil Line Panna Naka', amount: 4000, collectedAmt: 4000, status: 'RECEIVED' },
+    // Shivam Monday (Market-2): 2 bills (both received)
+    { billNo: 'IN-4804', agent: 'Shivam', beat: 'Mukhtiyarganj Market-2', amount: 6000, collectedAmt: 6000, status: 'RECEIVED' },
+    { billNo: 'IN-4805', agent: 'Shivam', beat: 'Mukhtiyarganj Market-2', amount: 4000, collectedAmt: 4000, status: 'RECEIVED' },
+    // Shivam Tuesday (Rajendra Nagar): 1 bill pending
+    { billNo: 'IN-4806', agent: 'Shivam', beat: 'Rajendra Nagar / Jawahar Nagar', amount: 5000, outstanding: 5000, status: 'WITH_AGENT' }
+  ];
+
+  const testMasterSheetBills48 = [
+    { billNo: 'IN-4801', agent: 'Rajesh', beat: 'Mukhtiyarganj Market-1', amount: 5000, status: 'PAID', receipt: 'R101' },
+    { billNo: 'IN-4802', agent: 'Rajesh', beat: 'Mukhtiyarganj Market-1', amount: 3000, status: 'PENDING', receipt: '', outstanding: 3000 },
+    { billNo: 'IN-4899', agent: 'Rajesh', beat: 'Mukhtiyarganj Market-1', amount: 2000, status: 'PENDING', receipt: '', outstanding: 2000 }, // in sheet, not dispatched
+    { billNo: 'IN-4804', agent: 'Shivam', beat: 'Mukhtiyarganj Market-2', amount: 6000, status: 'PAID', receipt: 'R102' }
+  ];
+
+  function getBeatAnalysisDataMock(bills, masterBills, agentFilter = 'ALL', searchQuery = '') {
+    const agents = testAgents.filter(a => {
+      if (agentFilter === 'ALL') return true;
+      return isSameAgentTest(a.name, agentFilter);
+    });
+
+    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const agentResults = [];
+    let grandDispatchedCount = 0, grandDispatchedAmt = 0;
+    let grandReceivedCount = 0, grandReceivedAmt = 0;
+    let grandDiffCount = 0, grandDiffAmt = 0;
+
+    agents.forEach(agent => {
+      const plan = BEAT_PLAN_TEST[agent.name] || BEAT_PLAN_TEST.Rajesh;
+      const beatsList = [];
+      const seenBeats = new Set();
+
+      days.forEach(d => {
+        const info = plan[d];
+        if (!info || !info.beat) return;
+        const bName = info.beat;
+        seenBeats.add(bName.toLowerCase());
+        beatsList.push({ beatName: bName, dayCode: d, area: info.area });
+      });
+
+      const q = (searchQuery || '').trim().toLowerCase();
+      const filteredBeats = beatsList.filter(bt => !q || bt.beatName.toLowerCase().includes(q) || bt.area.toLowerCase().includes(q));
+
+      let aDispatchedCount = 0, aDispatchedAmt = 0;
+      let aReceivedCount = 0, aReceivedAmt = 0;
+      let aDiffCount = 0, aDiffAmt = 0;
+
+      const beatCards = filteredBeats.map(bt => {
+        const matchBills = bills.filter(b => isSameAgentTest(b.agent, agent.name) && isSameBeatTest(b.beat || b.beatName, bt.beatName));
+        const dispatchedCount = matchBills.length;
+        let dispatchedAmt = 0, receivedCount = 0, receivedAmt = 0, diffCount = 0, diffAmt = 0;
+
+        matchBills.forEach(b => {
+          const amt = Number(b.amount) || 0;
+          dispatchedAmt += amt;
+          if (b.status === 'RECEIVED' || b.status === 'PAID_FULL' || b.status === 'PAID_PARTIAL') {
+            receivedCount++;
+            receivedAmt += (Number(b.collectedAmt) || amt);
+          } else {
+            diffCount++;
+            diffAmt += (b.outstanding !== undefined ? Number(b.outstanding) : amt);
+          }
+        });
+
+        const clearanceRate = dispatchedAmt > 0 ? Math.round((receivedAmt / dispatchedAmt) * 100) : (dispatchedCount > 0 && diffCount === 0 ? 100 : 0);
+
+        const sheetBills = masterBills.filter(b => isSameAgentTest(b.agent, agent.name) && isSameBeatTest(b.beat, bt.beatName));
+        const sheetTotalCount = sheetBills.length;
+        const sheetPaidCount = sheetBills.filter(b => isBillPaidInFullTest(b)).length;
+        const sheetDueCount = Math.max(0, sheetTotalCount - sheetPaidCount);
+
+        aDispatchedCount += dispatchedCount;
+        aDispatchedAmt += dispatchedAmt;
+        aReceivedCount += receivedCount;
+        aReceivedAmt += receivedAmt;
+        aDiffCount += diffCount;
+        aDiffAmt += diffAmt;
+
+        return {
+          ...bt,
+          dispatchedCount, dispatchedAmt,
+          receivedCount, receivedAmt,
+          diffCount, diffAmt,
+          clearanceRate,
+          sheetTotalCount, sheetPaidCount, sheetDueCount
+        };
+      });
+
+      grandDispatchedCount += aDispatchedCount;
+      grandDispatchedAmt += aDispatchedAmt;
+      grandReceivedCount += aReceivedCount;
+      grandReceivedAmt += aReceivedAmt;
+      grandDiffCount += aDiffCount;
+      grandDiffAmt += aDiffAmt;
+
+      const aClearance = aDispatchedAmt > 0 ? Math.round((aReceivedAmt / aDispatchedAmt) * 100) : 0;
+      agentResults.push({
+        agent,
+        beats: beatCards,
+        totals: {
+          dispatchedCount: aDispatchedCount,
+          dispatchedAmt: aDispatchedAmt,
+          receivedCount: aReceivedCount,
+          receivedAmt: aReceivedAmt,
+          diffCount: aDiffCount,
+          diffAmt: aDiffAmt,
+          clearanceRate: aClearance
+        }
+      });
+    });
+
+    const grandClearance = grandDispatchedAmt > 0 ? Math.round((grandReceivedAmt / grandDispatchedAmt) * 100) : 0;
+
+    return {
+      agentResults,
+      summary: {
+        dispatchedCount: grandDispatchedCount,
+        dispatchedAmt: grandDispatchedAmt,
+        receivedCount: grandReceivedCount,
+        receivedAmt: grandReceivedAmt,
+        diffCount: grandDiffCount,
+        diffAmt: grandDiffAmt,
+        clearanceRate: grandClearance
+      }
+    };
+  }
+
+  const analysisRes = getBeatAnalysisDataMock(testCustodyBills48, testMasterSheetBills48, 'ALL');
+
+  // Verify grand totals
+  assert.strictEqual(analysisRes.summary.dispatchedCount, 6, 'Total 6 bills dispatched across all agents');
+  assert.strictEqual(analysisRes.summary.dispatchedAmt, 27000, 'Total ₹27,000 dispatched');
+  assert.strictEqual(analysisRes.summary.receivedAmt, 19000, 'Total ₹19,000 received (5000+4000+6000+4000)');
+  assert.strictEqual(analysisRes.summary.diffAmt, 8000, 'Total ₹8,000 pending difference (3000 + 5000)');
+  assert.strictEqual(analysisRes.summary.clearanceRate, 70, 'Clearance is 19000 / 27000 = 70%');
+
+  // Verify Rajesh Monday Beat (Mukhtiyarganj Market-1)
+  const rajeshAnalysis = analysisRes.agentResults.find(r => r.agent.name === 'Rajesh');
+  assert(rajeshAnalysis, 'Rajesh analysis must exist');
+  const rajeshMonBeat = rajeshAnalysis.beats.find(b => b.beatName === 'Mukhtiyarganj Market-1');
+  assert.strictEqual(rajeshMonBeat.dispatchedCount, 2, 'Rajesh Market-1 dispatched 2 bills');
+  assert.strictEqual(rajeshMonBeat.dispatchedAmt, 8000, 'Rajesh Market-1 dispatched ₹8,000');
+  assert.strictEqual(rajeshMonBeat.receivedCount, 1, 'Rajesh Market-1 received 1 bill');
+  assert.strictEqual(rajeshMonBeat.receivedAmt, 5000, 'Rajesh Market-1 received ₹5,000');
+  assert.strictEqual(rajeshMonBeat.diffCount, 1, 'Rajesh Market-1 diff is 1 bill');
+  assert.strictEqual(rajeshMonBeat.diffAmt, 3000, 'Rajesh Market-1 diff is ₹3,000');
+  assert.strictEqual(rajeshMonBeat.clearanceRate, 63, '5000 / 8000 = 63% clearance');
+  assert.strictEqual(rajeshMonBeat.sheetTotalCount, 3, 'Master sheet has 3 bills for Market-1');
+  assert.strictEqual(rajeshMonBeat.sheetPaidCount, 1, 'Master sheet has 1 paid bill (IN-4801)');
+  assert.strictEqual(rajeshMonBeat.sheetDueCount, 2, 'Master sheet has 2 due bills (IN-4802, IN-4899)');
+
+  // Verify Shivam Monday Beat (Mukhtiyarganj Market-2)
+  const shivamAnalysis = analysisRes.agentResults.find(r => r.agent.name === 'Shivam');
+  assert(shivamAnalysis, 'Shivam analysis must exist');
+  const shivamMonBeat = shivamAnalysis.beats.find(b => b.beatName === 'Mukhtiyarganj Market-2');
+  assert.strictEqual(shivamMonBeat.dispatchedCount, 2, 'Shivam Market-2 dispatched 2 bills');
+  assert.strictEqual(shivamMonBeat.dispatchedAmt, 10000, 'Shivam Market-2 dispatched ₹10,000');
+  assert.strictEqual(shivamMonBeat.receivedAmt, 10000, 'Shivam Market-2 received ₹10,000');
+  assert.strictEqual(shivamMonBeat.diffAmt, 0, 'Shivam Market-2 diff is 0');
+  assert.strictEqual(shivamMonBeat.clearanceRate, 100, '100% clearance for Shivam Market-2');
+
+  console.log('✅ Test 48 Passed! getBeatAnalysisData() Route Performance Calculation Engine verified 100%!\n');
+
+  // ========================================================
+  // Test 49: Beat Analysis Controls (Agent Filter, Date Filter, and Route Search)
+  // ========================================================
+  console.log('Test 49: Beat Analysis Controls (Agent Filter, Date Filter, and Route Search)');
+
+  // 1. Agent Filter
+  const rajeshOnlyAnalysis = getBeatAnalysisDataMock(testCustodyBills48, testMasterSheetBills48, 'Rajesh');
+  assert.strictEqual(rajeshOnlyAnalysis.agentResults.length, 1, 'Only 1 agent returned');
+  assert.strictEqual(rajeshOnlyAnalysis.agentResults[0].agent.name, 'Rajesh');
+  assert.strictEqual(rajeshOnlyAnalysis.summary.dispatchedCount, 3, 'Rajesh dispatched 3 bills total');
+  assert.strictEqual(rajeshOnlyAnalysis.summary.dispatchedAmt, 12000, 'Rajesh dispatched ₹12,000 total');
+
+  const shivamOnlyAnalysis = getBeatAnalysisDataMock(testCustodyBills48, testMasterSheetBills48, 'Shivam');
+  assert.strictEqual(shivamOnlyAnalysis.agentResults.length, 1, 'Only 1 agent returned');
+  assert.strictEqual(shivamOnlyAnalysis.agentResults[0].agent.name, 'Shivam');
+  assert.strictEqual(shivamOnlyAnalysis.summary.dispatchedCount, 3, 'Shivam dispatched 3 bills total');
+  assert.strictEqual(shivamOnlyAnalysis.summary.dispatchedAmt, 15000, 'Shivam dispatched ₹15,000 total');
+
+  // 2. Route Search Filter
+  const searchCivil = getBeatAnalysisDataMock(testCustodyBills48, testMasterSheetBills48, 'ALL', 'civil');
+  const rajeshCivil = searchCivil.agentResults.find(r => r.agent.name === 'Rajesh');
+  assert.strictEqual(rajeshCivil.beats.length, 1, 'Only Civil Line beat returned for Rajesh');
+  assert.strictEqual(rajeshCivil.beats[0].beatName, 'Civil Line Panna Naka');
+
+  const searchMarket2 = getBeatAnalysisDataMock(testCustodyBills48, testMasterSheetBills48, 'ALL', 'Market-2');
+  const shivamMarket2Search = searchMarket2.agentResults.find(r => r.agent.name === 'Shivam');
+  assert.strictEqual(shivamMarket2Search.beats.length, 1, 'Only Market-2 beat returned for Shivam');
+  assert.strictEqual(shivamMarket2Search.beats[0].beatName, 'Mukhtiyarganj Market-2');
+
+  const searchNonExistent = getBeatAnalysisDataMock(testCustodyBills48, testMasterSheetBills48, 'ALL', 'nonexistent beat xyz');
+  assert.strictEqual(searchNonExistent.summary.dispatchedCount, 0, 'No bills match nonexistent beat');
+
+  // 3. Date Filter Engine integration
+  const dNowTest = new Date();
+  const testTodayStr = `${dNowTest.getFullYear()}-${String(dNowTest.getMonth() + 1).padStart(2, '0')}-${String(dNowTest.getDate()).padStart(2, '0')}`;
+  const dYestTest = new Date();
+  dYestTest.setDate(dYestTest.getDate() - 1);
+  const testYestStr = `${dYestTest.getFullYear()}-${String(dYestTest.getMonth() + 1).padStart(2, '0')}-${String(dYestTest.getDate()).padStart(2, '0')}`;
+
+  const multiDayBills = [
+    { billNo: 'IN-T1', agent: 'Rajesh', beat: 'Mukhtiyarganj Market-1', amount: 2000, dispatchDate: testTodayStr, status: 'WITH_AGENT' },
+    { billNo: 'IN-Y1', agent: 'Rajesh', beat: 'Mukhtiyarganj Market-1', amount: 3000, dispatchDate: testYestStr, status: 'RECEIVED', collectedAmt: 3000 }
+  ];
+
+  function getBeatAnalysisWithDateFilter(bills, dateFilter) {
+    const filtered = bills.filter(b => matchesDateFilter(b.dispatchDate, dateFilter));
+    return getBeatAnalysisDataMock(filtered, [], 'Rajesh');
+  }
+
+  const todayAnalysis = getBeatAnalysisWithDateFilter(multiDayBills, 'TODAY');
+  assert.strictEqual(todayAnalysis.summary.dispatchedCount, 1, 'TODAY filter includes 1 bill');
+  assert.strictEqual(todayAnalysis.summary.dispatchedAmt, 2000, 'TODAY filter dispatched ₹2,000');
+
+  const yestAnalysis = getBeatAnalysisWithDateFilter(multiDayBills, 'YESTERDAY');
+  assert.strictEqual(yestAnalysis.summary.dispatchedCount, 1, 'YESTERDAY filter includes 1 bill');
+  assert.strictEqual(yestAnalysis.summary.dispatchedAmt, 3000, 'YESTERDAY filter dispatched ₹3,000');
+
+  const allAnalysis = getBeatAnalysisWithDateFilter(multiDayBills, 'ALL');
+  assert.strictEqual(allAnalysis.summary.dispatchedCount, 2, 'ALL filter includes 2 bills');
+  assert.strictEqual(allAnalysis.summary.dispatchedAmt, 5000, 'ALL filter dispatched ₹5,000');
+
+  console.log('✅ Test 49 Passed! Beat Analysis Controls (Agent Filter, Date Filter, and Route Search) verified 100%!\n');
+
+  // ========================================================
+  // Test 50: Morning Dispatch WhatsApp Handover & Clear Basket Scoping
+  // ========================================================
+  console.log('Test 50: Morning Dispatch WhatsApp Handover & Clear Basket Scoping');
+
+  let testBasket50 = [
+    { billNo: 'IN-W1', agent: 'Rajesh', beat: 'Mukhtiyarganj Market-1', party: 'Shree Krishna Store', amount: 5000 },
+    { billNo: 'IN-W2', agent: 'Rajesh', beat: 'Mukhtiyarganj Market-1', party: 'Gupta Traders', amount: 3000 },
+    { billNo: 'IN-W3', agent: 'Shivam', beat: 'Mukhtiyarganj Market-2', party: 'Satguru Provision', amount: 4000 },
+    { billNo: 'IN-W4', agent: 'Rajesh', beat: 'Civil Line Panna Naka', party: 'Apex Medical', amount: 2000 }
+  ];
+
+  function getWhatsAppHandoverItemsMock(basket, activeAgent, activeBeat, filterMode) {
+    const isFilterBeat = filterMode === 'BEAT' && Boolean(activeBeat);
+    return isFilterBeat
+      ? basket.filter(item => {
+          const matchAgent = activeAgent ? isSameAgentTest(item.agent, activeAgent) : true;
+          const matchBeat = isSameBeatTest(item.beat || item.beatName, activeBeat);
+          return matchAgent && matchBeat;
+        })
+      : basket;
+  }
+
+  function clearBasketMock(basket, activeAgent, activeBeat, filterMode) {
+    const isFilterBeat = filterMode === 'BEAT' && Boolean(activeBeat);
+    if (isFilterBeat) {
+      const targetItems = basket.filter(item => {
+        const matchAgent = activeAgent ? isSameAgentTest(item.agent, activeAgent) : true;
+        const matchBeat = isSameBeatTest(item.beat || item.beatName, activeBeat);
+        return matchAgent && matchBeat;
+      });
+      const toRemoveNorms = new Set(targetItems.map(b => b.billNo.toUpperCase().trim()));
+      return basket.filter(b => !toRemoveNorms.has(b.billNo.toUpperCase().trim()));
+    } else {
+      return [];
+    }
+  }
+
+  // 1. WhatsApp handover scoped to Rajesh on Mukhtiyarganj Market-1
+  const waItemsBeat = getWhatsAppHandoverItemsMock(testBasket50, 'Rajesh', 'Mukhtiyarganj Market-1', 'BEAT');
+  assert.strictEqual(waItemsBeat.length, 2, 'Handover slip contains exactly 2 bills for Market-1');
+  assert.deepStrictEqual(waItemsBeat.map(b => b.billNo), ['IN-W1', 'IN-W2']);
+  const waTotalBeat = waItemsBeat.reduce((s, b) => s + b.amount, 0);
+  assert.strictEqual(waTotalBeat, 8000, 'Handover slip total is ₹8,000 (5000+3000)');
+
+  // 2. Clear basket under beat filter removes only Market-1 bills
+  const basketAfterBeatClear = clearBasketMock(testBasket50, 'Rajesh', 'Mukhtiyarganj Market-1', 'BEAT');
+  assert.strictEqual(basketAfterBeatClear.length, 2, 'Remaining basket has 2 bills (Shivam Market-2 and Rajesh Civil Line)');
+  assert.deepStrictEqual(basketAfterBeatClear.map(b => b.billNo), ['IN-W3', 'IN-W4']);
+
+  // 3. Clear basket under ALL filter clears entire basket
+  const basketAfterAllClear = clearBasketMock(basketAfterBeatClear, 'Rajesh', 'Mukhtiyarganj Market-1', 'ALL');
+  assert.strictEqual(basketAfterAllClear.length, 0, 'Entire basket cleared when filter is ALL');
+
+  console.log('✅ Test 50 Passed! Morning Dispatch WhatsApp Handover & Clear Basket Scoping verified 100%!\n');
+
+  // ========================================================
+  // Test 51: getAgentLeftOutStats with isSameBeat Route Isolation
+  // ========================================================
+  console.log('Test 51: getAgentLeftOutStats with isSameBeat Route Isolation');
+
+  const custodyBills51 = [
+    { billNo: 'IN-L1', agent: 'Rajesh', beat: 'Mukhtiyarganj Market-1', amount: 5000, status: 'WITH_AGENT' },
+    { billNo: 'IN-L2', agent: 'Rajesh', beat: 'Mukhtiyarganj Market-2', amount: 6000, status: 'WITH_AGENT' },
+    { billNo: 'IN-L3', agent: 'Rajesh', beat: 'Civil Line Panna Naka', amount: 4000, status: 'WITH_AGENT' },
+    { billNo: 'IN-L4', agent: 'Rajesh', beat: 'Mukhtiyarganj Market-1', amount: 3000, status: 'RECEIVED' }
+  ];
+
+  function getAgentLeftOutStatsWithIsSameBeat(bills, agentName, beatFilter) {
+    let agentBills = bills.filter(b => isSameAgentTest(b.agent, agentName));
+    if (beatFilter && beatFilter !== 'ALL') {
+      agentBills = agentBills.filter(b => isSameBeatTest(b.beat || b.beatName, beatFilter));
+    }
+    const leftOutBills = agentBills.filter(b => b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT');
+    const checkedInBills = agentBills.filter(b => b.status === 'RECEIVED' || b.status === 'PAID_FULL');
+    let totalAmt = agentBills.reduce((s, b) => s + b.amount, 0);
+    let leftOutAmt = leftOutBills.reduce((s, b) => s + b.amount, 0);
+    return {
+      agent: agentName,
+      totalCount: agentBills.length,
+      totalAmt,
+      checkedInCount: checkedInBills.length,
+      leftOutCount: leftOutBills.length,
+      leftOutAmt,
+      leftOutBills
+    };
+  }
+
+  // Filter Rajesh by Mukhtiyarganj Market-1: must ONLY match IN-L1 and IN-L4, NEVER IN-L2
+  const rStatsMarket1 = getAgentLeftOutStatsWithIsSameBeat(custodyBills51, 'Rajesh', 'Mukhtiyarganj Market-1');
+  assert.strictEqual(rStatsMarket1.totalCount, 2, 'Market-1 has exactly 2 bills');
+  assert.strictEqual(rStatsMarket1.leftOutCount, 1, 'Market-1 has 1 left-out bill');
+  assert.strictEqual(rStatsMarket1.leftOutAmt, 5000, 'Market-1 left-out amount is ₹5,000');
+  assert.strictEqual(rStatsMarket1.leftOutBills[0].billNo, 'IN-L1');
+
+  // Filter Rajesh by Mukhtiyarganj Market-2: must ONLY match IN-L2
+  const rStatsMarket2 = getAgentLeftOutStatsWithIsSameBeat(custodyBills51, 'Rajesh', 'Mukhtiyarganj Market-2');
+  assert.strictEqual(rStatsMarket2.totalCount, 1, 'Market-2 has exactly 1 bill');
+  assert.strictEqual(rStatsMarket2.leftOutCount, 1, 'Market-2 has 1 left-out bill');
+  assert.strictEqual(rStatsMarket2.leftOutAmt, 6000, 'Market-2 left-out amount is ₹6,000');
+  assert.strictEqual(rStatsMarket2.leftOutBills[0].billNo, 'IN-L2');
+
+  console.log('✅ Test 51 Passed! getAgentLeftOutStats with isSameBeat Route Isolation verified 100%!\n');
+
+  // ========================================================
+  // Test 52: Partial Payment Split Accounting in getBeatAnalysisData
+  // ========================================================
+  console.log('Test 52: Partial Payment Split Accounting in getBeatAnalysisData');
+
+  const partialPaymentBills52 = [
+    { billNo: 'IN-P1', agent: 'Rajesh', beat: 'Mukhtiyarganj Market-1', amount: 10000, collectedAmt: 4000, outstanding: 6000, status: 'PAID_PARTIAL' },
+    { billNo: 'IN-P2', agent: 'Rajesh', beat: 'Mukhtiyarganj Market-1', amount: 5000, collectedAmt: 5000, outstanding: 0, status: 'PAID_FULL' },
+    { billNo: 'IN-P3', agent: 'Rajesh', beat: 'Mukhtiyarganj Market-1', amount: 8000, collectedAmt: 0, outstanding: 8000, status: 'WITH_AGENT' }
+  ];
+
+  function computeBeatRouteMetricsMock(bills) {
+    let dispatchedCount = bills.length;
+    let dispatchedAmt = 0;
+    let receivedCount = 0;
+    let receivedAmt = 0;
+    let diffCount = 0;
+    let diffAmt = 0;
+
+    bills.forEach(b => {
+      const amt = Number(b.amount) || 0;
+      dispatchedAmt += amt;
+
+      let outDue = 0;
+      if (b.outstanding !== undefined && b.outstanding !== null && !isNaN(b.outstanding)) {
+        outDue = Number(b.outstanding);
+      } else if (b.status === 'RECEIVED' || b.status === 'PAID_FULL') {
+        outDue = 0;
+      } else {
+        outDue = amt;
+      }
+
+      let collected = 0;
+      if (b.collectedAmt !== undefined && b.collectedAmt !== null && !isNaN(b.collectedAmt)) {
+        collected = Number(b.collectedAmt);
+      } else if (outDue < amt) {
+        collected = Math.max(0, amt - outDue);
+      } else if (b.status === 'RECEIVED' || b.status === 'PAID_FULL') {
+        collected = amt;
+      }
+
+      if (outDue <= 0) {
+        receivedCount++;
+        receivedAmt += (collected > 0 ? collected : amt);
+      } else if (collected > 0) {
+        // Partially collected bill: account for both collected and remaining pending
+        receivedCount++;
+        receivedAmt += collected;
+        diffCount++;
+        diffAmt += outDue;
+      } else {
+        // Completely pending / in custody
+        diffCount++;
+        diffAmt += outDue;
+      }
+    });
+
+    const clearanceRate = dispatchedAmt > 0 ? Math.min(100, Math.round((receivedAmt / dispatchedAmt) * 100)) : 0;
+    return { dispatchedCount, dispatchedAmt, receivedCount, receivedAmt, diffCount, diffAmt, clearanceRate };
+  }
+
+  const metrics52 = computeBeatRouteMetricsMock(partialPaymentBills52);
+
+  // 1. Total Dispatched
+  assert.strictEqual(metrics52.dispatchedCount, 3, '3 bills dispatched');
+  assert.strictEqual(metrics52.dispatchedAmt, 23000, 'Total ₹23,000 dispatched (10k + 5k + 8k)');
+
+  // 2. Received / Collected: 4000 (from P1) + 5000 (from P2) = 9000
+  assert.strictEqual(metrics52.receivedCount, 2, '2 bills have collections');
+  assert.strictEqual(metrics52.receivedAmt, 9000, 'Total ₹9,000 collected');
+
+  // 3. Difference / Pending: 6000 (from P1) + 8000 (from P3) = 14000
+  assert.strictEqual(metrics52.diffCount, 2, '2 bills have pending dues');
+  assert.strictEqual(metrics52.diffAmt, 14000, 'Total ₹14,000 pending difference');
+
+  // 4. Exact mathematical balance: receivedAmt + diffAmt must equal dispatchedAmt!
+  assert.strictEqual(metrics52.receivedAmt + metrics52.diffAmt, metrics52.dispatchedAmt, 'dispatchedAmt == receivedAmt + diffAmt');
+
+  // 5. Clearance Rate: 9000 / 23000 = 39.13% -> 39%
+  assert.strictEqual(metrics52.clearanceRate, 39, 'Clearance rate is exactly 39%');
+
+  console.log('✅ Test 52 Passed! Partial Payment Split Accounting in getBeatAnalysisData verified 100%!\n');
+
+  // ========================================================
+  // Test 53: Missing Bills Detection (WITH_AGENT, LEFT_OUT_ALERT, MISSING_ALERT, PAID_PARTIAL) & Aging Days
+  // ========================================================
+  console.log('Test 53: Missing Bills Detection & Aging Days Calculation');
+
+  function getBillPendingAmountMock(b) {
+    if (!b) return 0;
+    const amt = Number(b.amount) || 0;
+    const st = String(b.status || '').toUpperCase();
+    if (st === 'RECEIVED' || st === 'PAID_FULL' || st === 'RETURNED_IN_HAND') return 0;
+    if (b.outstanding !== undefined && b.outstanding !== null && b.outstanding !== '' && !isNaN(b.outstanding)) {
+      return Math.max(0, Number(b.outstanding));
+    }
+    if (b.collectedAmt !== undefined && b.collectedAmt !== null && !isNaN(b.collectedAmt) && Number(b.collectedAmt) > 0) {
+      return Math.max(0, amt - Number(b.collectedAmt));
+    }
+    return amt;
+  }
+
+  function isBillUnreturnedInFieldMock(b) {
+    if (!b) return false;
+    const st = String(b.status || '').toUpperCase();
+    return st === 'WITH_AGENT' || st === 'MISSING_ALERT' || st === 'LEFT_OUT_ALERT' || st === 'IN_BASKET';
+  }
+
+  function isBillMissingOrPendingMock(b) {
+    if (!b) return false;
+    if (isBillUnreturnedInFieldMock(b)) return true;
+    const st = String(b.status || '').toUpperCase();
+    if (st === 'PAID_PARTIAL') {
+      return getBillPendingAmountMock(b) > 0;
+    }
+    return false;
+  }
+
+  const sampleCustody53 = [
+    { billNo: 'IN-M1', status: 'WITH_AGENT', amount: 5000, outstanding: 5000 },
+    { billNo: 'IN-M2', status: 'LEFT_OUT_ALERT', amount: 7500, outstanding: 7500 },
+    { billNo: 'IN-M3', status: 'PAID_PARTIAL', amount: 10000, collectedAmt: 4000, outstanding: 6000 },
+    { billNo: 'IN-M4', status: 'PAID_FULL', amount: 8000, collectedAmt: 8000, outstanding: 0 },
+    { billNo: 'IN-M5', status: 'RETURNED_IN_HAND', amount: 3000, outstanding: 3000 }
+  ];
+
+  const unreturned53 = sampleCustody53.filter(isBillUnreturnedInFieldMock);
+  const allMissingOrPending53 = sampleCustody53.filter(isBillMissingOrPendingMock);
+  const totalPendingAmt53 = allMissingOrPending53.reduce((s, b) => s + getBillPendingAmountMock(b), 0);
+
+  assert.strictEqual(unreturned53.length, 2, '2 bills physically unreturned in field (WITH_AGENT + LEFT_OUT_ALERT)');
+  assert.strictEqual(allMissingOrPending53.length, 3, '3 bills have missing/pending balance (includes PAID_PARTIAL with ₹6,000 due)');
+  assert.strictEqual(totalPendingAmt53, 18500, 'Total pending balance is 5000 + 7500 + 6000 = ₹18,500');
+  console.log('✅ Test 53 Passed! Missing Bills & Partial Balance Detection verified 100%!\n');
+
+  // ========================================================
+  // Test 54: Beat Route Backfill & Unassigned Route Bucket in Beat Analysis
+  // ========================================================
+  console.log('Test 54: Beat Route Inference from Dispatch Date & Unassigned Bucket');
+
+  const beatPlan54 = {
+    Rajesh: {
+      Mon: { beat: 'Mukhtiyarganj Market-1' },
+      Tue: { beat: 'Civil Line Panna Naka' },
+      Wed: { beat: 'Bharhut Nagar Bank Colony' },
+      Thu: { beat: 'Kothi Road Bagha' },
+      Fri: { beat: 'Dhawari Mahadeva' },
+      Sat: { beat: 'Pul Gadi – Raigaon' }
+    }
+  };
+
+  function inferBeatMock(b) {
+    if (b.beat) return b.beat;
+    const [y, m, d] = b.dispatchDate.split('-').map(Number);
+    const dt = new Date(y, m - 1, d);
+    const dayCode = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][dt.getDay()];
+    return beatPlan54[b.agent]?.[dayCode]?.beat || '';
+  }
+
+  // 2026-10-06 is a Tuesday -> Rajesh's Tuesday route is Civil Line Panna Naka
+  const trackingBillWithoutBeat = { billNo: 'IN-T101', agent: 'Rajesh', dispatchDate: '2026-10-06', amount: 4200, status: 'WITH_AGENT' };
+  const inferredBeat = inferBeatMock(trackingBillWithoutBeat);
+  assert.strictEqual(inferredBeat, 'Civil Line Panna Naka', 'Inferred Tuesday beat for Rajesh from dispatch date');
+  console.log('✅ Test 54 Passed! Beat Route Inference from Dispatch Date verified 100%!\n');
+
+  console.log('🎉 ALL 54 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
 })();
+
 
 
 

@@ -71,6 +71,12 @@
           <span class="key-hint">5</span>
         </button>
 
+        <button type="button" class="nav-item" id="sidebarBeatAnalysisBtn" title="Beat Analysis for Each Agent (Key: B)">
+          <i class="fa-solid fa-chart-column nav-icon text-warning"></i>
+          <span class="nav-label">Beat Analysis</span>
+          <span class="key-hint">B</span>
+        </button>
+
         <button class="nav-item tab-item" data-tab="tab-settings" title="Sheet Sync &amp; Settings (Key: 6)">
           <i class="fa-solid fa-gear nav-icon"></i>
           <span class="nav-label">Settings &amp; Sync</span>
@@ -197,22 +203,28 @@
           <span class="section-title-hint" id="homeCustodySectionHint">Live totals across all agents</span>
         </div>
 
-        <!-- DASHBOARD DATE FILTER BAR (Today, Yesterday, All Active Custody, Pick Date) -->
+        <!-- DASHBOARD DATE FILTER BAR (All Active Custody, Today, Yesterday, Overdue, Pick Date) -->
         <div class="dashboard-date-filter-bar mt-2">
           <div class="home-date-chips" id="homeDateFilters">
-            <button type="button" class="home-date-chip active" data-home-date="TODAY">
+            <button type="button" class="home-date-chip active" data-home-date="ALL">
+              <i class="fa-solid fa-layer-group"></i> All Active Custody
+            </button>
+            <button type="button" class="home-date-chip" data-home-date="TODAY">
               <i class="fa-solid fa-calendar-day"></i> Today
             </button>
             <button type="button" class="home-date-chip" data-home-date="YESTERDAY">
               <i class="fa-solid fa-clock-rotate-left"></i> Yesterday
             </button>
-            <button type="button" class="home-date-chip" data-home-date="ALL">
-              <i class="fa-solid fa-layer-group"></i> All Active Custody
+            <button type="button" class="home-date-chip" data-home-date="OVERDUE">
+              <i class="fa-solid fa-fire-flame-curved text-danger"></i> Overdue (&gt;3d)
             </button>
           </div>
-          <div class="date-custom-picker-wrap">
+          <div class="date-custom-picker-wrap" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
             <label for="homeCustomDatePicker" class="custom-date-label"><i class="fa-regular fa-calendar"></i> Pick Date:</label>
             <input type="date" id="homeCustomDatePicker" class="form-input form-input-compact" />
+            <button type="button" class="btn btn-outline-primary btn-xs font-bold" id="homeSyncReconcileBtn" title="Sync Master &amp; Tracking Sheets and auto-reconcile paid bills">
+              <i class="fa-solid fa-arrows-rotate"></i> Sync &amp; Reconcile
+            </button>
           </div>
         </div>
 
@@ -251,7 +263,7 @@
               <div class="card-pro-amount font-mono" id="homeStatOutAmt">₹0.00 in transit</div>
             </div>
             <div class="card-pro-footer">
-              Total bills taken by agents today
+              Total bills handed to sales agents
               <div class="card-click-hint"><i class="fa-solid fa-list-ul"></i> Click to view bill breakdown</div>
             </div>
           </div>
@@ -278,7 +290,7 @@
           <!-- METRIC 3: DIFFERENCE (ALERT CARD) -->
           <div class="metric-card-pro card-pro-diff" id="homeDiffCardPro">
             <div class="card-pro-top">
-              <span class="card-pro-tag tag-danger"><i class="fa-solid fa-triangle-exclamation"></i> 3. DIFFERENCE (PENDING)</span>
+              <span class="card-pro-tag tag-danger"><i class="fa-solid fa-triangle-exclamation"></i> 3. DIFFERENCE (MISSING / PENDING)</span>
               <span class="card-pro-icon-sub text-danger"><i class="fa-solid fa-scale-unbalanced"></i></span>
             </div>
             <div class="card-pro-numbers">
@@ -289,20 +301,217 @@
               <div class="card-pro-amount font-mono text-danger" id="homeStatLeftAmt">₹0.00 still pending</div>
             </div>
             <div class="card-pro-footer footer-diff" id="homeDiffFooter">
-              Bills still unreturned with agents
+              Bills still unreturned or pending balance
               <div class="card-click-hint"><i class="fa-solid fa-list-ul"></i> Click to view bill breakdown</div>
             </div>
           </div>
         </div>
 
         <!-- AGENTS CUSTODY BREAKDOWN SECTION -->
-        <div class="section-title-strip mt-4">
-          <span class="section-title-label"><i class="fa-solid fa-users"></i> Agent Pending Custody</span>
-          <span class="section-title-hint">Pending bills by agent</span>
+        <div class="section-title-strip mt-4" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+          <div>
+            <span class="section-title-label"><i class="fa-solid fa-users"></i> Agent Pending Custody</span>
+            <span class="section-title-hint">Pending bills by agent &amp; route</span>
+          </div>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button type="button" class="btn btn-outline-danger btn-sm font-bold" id="btnHomeOpenReconcile" title="Cross-check all pending bills against Master Sheet payments">
+              <i class="fa-solid fa-wand-magic-sparkles"></i> Reconcile Sheet Payments
+            </button>
+            <button type="button" class="btn btn-outline-primary btn-sm font-bold" id="btnOpenBeatAnalysis" title="View detailed beat-by-beat performance analysis for each agent">
+              <i class="fa-solid fa-chart-pie"></i> Beat Analysis of Agents
+            </button>
+          </div>
         </div>
 
         <div class="agent-quick-cards-grid mt-2" id="homeAgentDiffGrid">
           <!-- Dynamically populated with Rajesh, Shivam, Self -->
+        </div>
+
+        <!-- ======================================================== -->
+        <!-- EXECUTIVE DECISION & MISSING BILLS INTELLIGENCE CENTER    -->
+        <!-- ======================================================== -->
+        <div class="section-title-strip mt-4" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+          <div>
+            <span class="section-title-label"><i class="fa-solid fa-compass-drafting text-primary"></i> Missing Bills &amp; Decision Analysis Center</span>
+            <span class="section-title-hint">Actionable breakdown of unreturned custody bills, overdue risk, partial balances &amp; undispatched sheet dues</span>
+          </div>
+          <span class="badge-count-pill" id="decisionTotalActionBadge" style="background: var(--primary); color: #fff; padding: 3px 10px; font-size: 0.76rem;">Live Analysis</span>
+        </div>
+
+        <!-- 4 DECISION KPI CARDS (CLICK TO FILTER ACTION TABLE) -->
+        <div class="decision-kpi-grid mt-2">
+          <div class="decision-kpi-card kpi-card-unreturned active" data-decision-tab="UNRETURNED" id="decKpiUnreturnedCard">
+            <div class="dec-kpi-top">
+              <span class="dec-kpi-tag tag-danger"><i class="fa-solid fa-person-walking-luggage"></i> 1. UNRETURNED WITH AGENT</span>
+              <i class="fa-solid fa-circle-exclamation text-danger"></i>
+            </div>
+            <div class="dec-kpi-main">
+              <span class="dec-kpi-count font-mono text-danger" id="decKpiUnreturnedCount">0</span>
+              <span class="dec-kpi-amt font-mono" id="decKpiUnreturnedAmt">₹0.00</span>
+            </div>
+            <div class="dec-kpi-sub" id="decKpiUnreturnedSub">Physical bills in field custody</div>
+          </div>
+
+          <div class="decision-kpi-card kpi-card-overdue" data-decision-tab="OVERDUE" id="decKpiOverdueCard">
+            <div class="dec-kpi-top">
+              <span class="dec-kpi-tag tag-warning"><i class="fa-solid fa-clock-rotate-left"></i> 2. OVERDUE (&gt;3 DAYS)</span>
+              <i class="fa-solid fa-fire-flame-curved text-warning"></i>
+            </div>
+            <div class="dec-kpi-main">
+              <span class="dec-kpi-count font-mono text-warning" id="decKpiOverdueCount">0</span>
+              <span class="dec-kpi-amt font-mono" id="decKpiOverdueAmt">₹0.00</span>
+            </div>
+            <div class="dec-kpi-sub" id="decKpiOverdueSub">Stuck in field &gt; 3 days (High Risk)</div>
+          </div>
+
+          <div class="decision-kpi-card kpi-card-partial" data-decision-tab="PARTIAL" id="decKpiPartialCard">
+            <div class="dec-kpi-top">
+              <span class="dec-kpi-tag tag-info"><i class="fa-solid fa-scale-unbalanced-flip"></i> 3. PARTIAL BALANCE DUE</span>
+              <i class="fa-solid fa-coins text-primary"></i>
+            </div>
+            <div class="dec-kpi-main">
+              <span class="dec-kpi-count font-mono text-primary" id="decKpiPartialCount">0</span>
+              <span class="dec-kpi-amt font-mono" id="decKpiPartialAmt">₹0.00</span>
+            </div>
+            <div class="dec-kpi-sub" id="decKpiPartialSub">Part paid, balance recovery pending</div>
+          </div>
+
+          <div class="decision-kpi-card kpi-card-missed" data-decision-tab="MISSED_SHEET" id="decKpiMissedCard">
+            <div class="dec-kpi-top">
+              <span class="dec-kpi-tag tag-purple"><i class="fa-solid fa-folder-open"></i> 4. UNDISPATCHED IN SHEET</span>
+              <i class="fa-solid fa-file-circle-exclamation" style="color: #7c3aed;"></i>
+            </div>
+            <div class="dec-kpi-main">
+              <span class="dec-kpi-count font-mono" style="color: #7c3aed;" id="decKpiMissedCount">0</span>
+              <span class="dec-kpi-amt font-mono" id="decKpiMissedAmt">₹0.00</span>
+            </div>
+            <div class="dec-kpi-sub" id="decKpiMissedSub">Unpaid in Master Sheet, not sent out</div>
+          </div>
+        </div>
+
+        <!-- 2-COLUMN VISUAL ANALYTICS: RECOVERY DONUT + AGING & ROUTE BOTTLENECKS -->
+        <div class="decision-analytics-grid mt-3">
+          <!-- LEFT PANEL: CUSTODY RECOVERY DONUT & AGENT CLEARANCE BARS -->
+          <div class="clean-card decision-chart-card">
+            <div class="decision-card-head">
+              <div>
+                <h4><i class="fa-solid fa-chart-pie text-primary"></i> Custody Recovery &amp; Agent Clearance</h4>
+                <p>Proportion of dispatched bills accounted vs pending recovery</p>
+              </div>
+              <span class="font-mono font-bold text-success" id="decisionOverallRecoveryBadge">0% Accounted</span>
+            </div>
+
+            <div class="donut-and-legend-row mt-2">
+              <div class="donut-svg-wrap">
+                <svg width="140" height="140" viewBox="0 0 140 140" class="custody-donut-svg">
+                  <circle cx="70" cy="70" r="62" fill="none" stroke="var(--border-light)" stroke-width="14"></circle>
+                  <circle id="donutSegReceived" cx="70" cy="70" r="62" fill="none" stroke="var(--success)" stroke-width="14" stroke-dasharray="0 389.56" stroke-dashoffset="0" transform="rotate(-90 70 70)"></circle>
+                  <circle id="donutSegPending" cx="70" cy="70" r="62" fill="none" stroke="var(--danger)" stroke-width="14" stroke-dasharray="0 389.56" stroke-dashoffset="0" transform="rotate(-90 70 70)"></circle>
+                </svg>
+                <div class="donut-center-label">
+                  <span class="donut-big-num font-mono" id="donutCenterTotal">0</span>
+                  <small>BILLS</small>
+                </div>
+              </div>
+
+              <div class="donut-legend-col">
+                <div class="legend-row">
+                  <span class="legend-dot bg-success"></span>
+                  <span class="legend-name">Accounted / Paid:</span>
+                  <strong class="font-mono text-success" id="chartLegendReceived">0 (0%)</strong>
+                </div>
+                <div class="legend-row">
+                  <span class="legend-dot bg-danger"></span>
+                  <span class="legend-name">Missing / Pending:</span>
+                  <strong class="font-mono text-danger" id="chartLegendPending">0 (0%)</strong>
+                </div>
+                <div class="legend-row legend-total-row">
+                  <span class="legend-name">Total Custody Value:</span>
+                  <strong class="font-mono" id="chartLegendTotal">0 (₹0.00)</strong>
+                </div>
+              </div>
+            </div>
+
+            <div class="agent-bars-section mt-3">
+              <div class="small-caps-label">Agent Clearance Rate (Accounted / Dispatched)</div>
+              <div id="agentBarsContainer" class="agent-bars-list mt-1"></div>
+            </div>
+          </div>
+
+          <!-- RIGHT PANEL: MISSING BILLS AGING & TOP RISK ROUTES -->
+          <div class="clean-card decision-chart-card">
+            <div class="decision-card-head">
+              <div>
+                <h4><i class="fa-solid fa-hourglass-half text-danger"></i> Missing Bills Aging &amp; Bottleneck Routes</h4>
+                <p>How long unreturned bills have been stuck in the field &amp; highest-risk beats</p>
+              </div>
+              <span class="font-mono font-bold text-danger" id="decisionAvgAgingBadge">Avg: 0d</span>
+            </div>
+
+            <div class="aging-buckets-grid mt-2" id="agingBucketsContainer">
+              <!-- Populated dynamically with 0-1d, 2-3d, 4-7d, 8+d buckets -->
+            </div>
+
+            <div class="bottleneck-beats-section mt-3">
+              <div class="small-caps-label">Top Bottleneck Beats (Highest Pending / Missing Value)</div>
+              <div id="topRiskBeatsContainer" class="bottleneck-beats-list mt-1"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- INTERACTIVE MISSING BILLS & DECISION ACTION TABLE -->
+        <div class="clean-card mt-3" id="homeDecisionActionCard">
+          <div class="decision-table-header">
+            <div class="decision-tabs" id="homeDecisionTabs">
+              <button type="button" class="decision-tab-btn active" data-dec-tab="UNRETURNED">
+                🚨 Unreturned in Field (<span id="decTabCntUnreturned">0</span>)
+              </button>
+              <button type="button" class="decision-tab-btn" data-dec-tab="OVERDUE">
+                ⏰ Overdue &gt;3 Days (<span id="decTabCntOverdue">0</span>)
+              </button>
+              <button type="button" class="decision-tab-btn" data-dec-tab="PARTIAL">
+                ⚠️ Partial Balance Due (<span id="decTabCntPartial">0</span>)
+              </button>
+              <button type="button" class="decision-tab-btn" data-dec-tab="MISSED_SHEET">
+                📂 Undispatched Sheet Dues (<span id="decTabCntMissed">0</span>)
+              </button>
+            </div>
+
+            <div class="decision-table-controls">
+              <input type="text" id="homeDecisionSearchInput" class="form-input form-input-compact" placeholder="🔍 Search bill no, party, beat, receipt..." style="min-width: 210px;" />
+              <select id="homeDecisionAgentFilter" class="form-select form-input-compact">
+                <option value="ALL">All Agents</option>
+                <option value="Rajesh">Rajesh Chaurasiya</option>
+                <option value="Shivam">Shivam Dwivedi</option>
+                <option value="Self">Self / Counter</option>
+              </select>
+              <button type="button" class="btn btn-outline-whatsapp btn-sm" id="homeDecisionWhatsappBtn" title="Send WhatsApp follow-up list for filtered missing bills">
+                <i class="fa-brands fa-whatsapp"></i> WhatsApp Follow-Up
+              </button>
+            </div>
+          </div>
+
+          <div class="table-wrap mt-2" style="max-height: 420px; overflow-y: auto;">
+            <table class="minimal-table decision-action-table">
+              <thead>
+                <tr>
+                  <th>Invoice No</th>
+                  <th>Customer / Party</th>
+                  <th>Agent &amp; Route</th>
+                  <th>Date / Days in Field</th>
+                  <th style="text-align: right;">Bill Amt</th>
+                  <th style="text-align: right;">Pending Due</th>
+                  <th>Payment / Receipt</th>
+                  <th style="text-align: center;">Decision Action</th>
+                </tr>
+              </thead>
+              <tbody id="homeDecisionTbody">
+                <tr class="empty-row">
+                  <td colspan="8">Loading missing bills analysis...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </section>
 
@@ -381,6 +590,25 @@
                 Ready for next invoice scan...
               </div>
             </div>
+
+            <!-- Master Sheet Pending Invoices for Active Beat Queue -->
+            <div class="clean-card beat-queue-card mt-2" id="dispatchBeatQueueCard" style="display: none;">
+              <div class="beat-queue-head">
+                <div class="head-left">
+                  <span class="queue-title"><i class="fa-solid fa-list-check text-primary"></i> <span id="dispatchQueueTitle">Beat Invoices in Sheet</span></span>
+                  <span class="count-pill font-mono" id="dispatchQueueCount">0</span>
+                </div>
+                <button type="button" class="btn btn-outline-primary btn-xs font-bold" id="dispatchAddAllQueueBtn">
+                  <i class="fa-solid fa-plus-double"></i> Add All to Basket
+                </button>
+              </div>
+              <div class="beat-queue-sub" id="dispatchQueueSub">
+                Pending bills assigned to this beat in Master Sheet
+              </div>
+              <div class="beat-queue-list mt-2" id="dispatchBeatQueueList">
+                <!-- Populated dynamically -->
+              </div>
+            </div>
           </div>
 
           <!-- RIGHT COLUMN: DISPATCH BASKET -->
@@ -394,6 +622,17 @@
                 <div class="head-right">
                   <span class="total-caption">Total: <strong class="font-mono text-success" id="dispatchBasketTotal">₹0.00</strong></span>
                   <button id="clearBasketBtn" class="text-btn text-danger">Clear All</button>
+                </div>
+              </div>
+
+              <!-- Beat Filter Strip for Morning Dispatch -->
+              <div class="basket-beat-filter-strip" id="dispatchBasketFilterStrip" style="display: none;">
+                <span class="beat-strip-label" id="dispatchBasketFilterLabel">
+                  <i class="fa-solid fa-location-dot"></i> Showing: <strong id="dispatchBasketBeatName">Current Beat</strong>
+                </span>
+                <div class="beat-strip-toggle">
+                  <button type="button" class="beat-chip-toggle active" id="dispatchFilterBeatOnlyBtn">Current Beat Only</button>
+                  <button type="button" class="beat-chip-toggle" id="dispatchFilterAllBeatsBtn">All In Basket</button>
                 </div>
               </div>
 
@@ -549,6 +788,17 @@
                 </div>
               </div>
 
+              <!-- Beat Filter Strip for Evening Return -->
+              <div class="basket-beat-filter-strip" id="settlementBeatFilterStrip" style="display: none;">
+                <span class="beat-strip-label" id="settlementBeatFilterLabel">
+                  <i class="fa-solid fa-location-dot"></i> Beat: <strong id="settlementBasketBeatName">Selected Beat Only</strong>
+                </span>
+                <div class="beat-strip-toggle">
+                  <button type="button" class="beat-chip-toggle active" id="settlementFilterBeatOnlyBtn">This Beat Only</button>
+                  <button type="button" class="beat-chip-toggle" id="settlementFilterAllBeatsBtn">All Beats</button>
+                </div>
+              </div>
+
               <div class="bill-list desktop-scrollable-list" id="settlementListContainer">
                 <div class="empty-placeholder">
                   <i class="fa-solid fa-user-check"></i>
@@ -586,14 +836,18 @@
             </div>
           </div>
 
-          <!-- Date History Filter: Today / Yesterday / All Days -->
-          <div class="diff-date-filter-row mt-2">
-            <span class="diff-date-label"><i class="fa-regular fa-calendar"></i> History:</span>
-            <div class="diff-date-chips" id="diffDateFilters">
-              <button class="diff-chip active" data-diff-date="TODAY">Today</button>
-              <button class="diff-chip" data-diff-date="YESTERDAY">Yesterday</button>
-              <button class="diff-chip" data-diff-date="ALL">All Time</button>
+          <!-- Date History Filter: All Active / Today / Yesterday / Overdue -->
+          <div class="diff-date-filter-row mt-2" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <span class="diff-date-label"><i class="fa-regular fa-calendar"></i> Scope:</span>
+              <div class="diff-date-chips" id="diffDateFilters">
+                <button class="diff-chip active" data-diff-date="ALL">All Active Custody</button>
+                <button class="diff-chip" data-diff-date="TODAY">Today</button>
+                <button class="diff-chip" data-diff-date="YESTERDAY">Yesterday</button>
+                <button class="diff-chip" data-diff-date="OVERDUE">⏰ Overdue (&gt;3d)</button>
+              </div>
             </div>
+            <input type="text" id="leftOutSearchInput" class="form-input form-input-compact" placeholder="🔍 Search missing bill no, party, beat..." style="min-width: 240px;" />
           </div>
 
           <!-- Daily Status Summary Strip -->
@@ -609,10 +863,21 @@
               <small class="statCollected" id="statCollected">0 bills</small>
             </div>
             <div class="strip-item alert-item statCardMissing" id="statCardMissing">
-              <span class="strip-label">⚠️ Difference</span>
+              <span class="strip-label">⚠️ Difference (Missing / Pending)</span>
               <span class="strip-val font-mono text-danger statMissingAmt" id="statMissingAmt">₹0</span>
               <small class="statMissing" id="statMissing">0 bills</small>
             </div>
+          </div>
+
+          <!-- Auto-Reconciliation & Live Sheet Sync Banner -->
+          <div id="diffAutoReconcileBanner" class="diff-reconcile-banner mt-3" style="display: none;">
+            <div class="diff-reconcile-content">
+              <i class="fa-solid fa-wand-magic-sparkles text-success"></i>
+              <span id="diffAutoReconcileText">Auto-Reconciliation Active: 0 paid bills cleared from difference</span>
+            </div>
+            <button id="diffSyncReconcileBtn" class="btn btn-sm btn-outline-success">
+              <i class="fa-solid fa-arrows-rotate"></i> Sync &amp; Reconcile Now
+            </button>
           </div>
 
           <!-- Filters Row -->
@@ -640,8 +905,8 @@
           <div class="missed-bills-box mt-3" id="missedBillsBox" style="display: none;">
             <div class="missed-bills-header">
               <div>
-                <span class="missed-title"><i class="fa-solid fa-triangle-exclamation text-danger"></i> Missed Bills (<span id="missedBillsCount">0</span>)</span>
-                <p class="missed-sub">Assigned in Master Sheet but never dispatched today</p>
+                <span class="missed-title"><i class="fa-solid fa-triangle-exclamation text-danger"></i> Undispatched Sheet Due Bills (<span id="missedBillsCount">0</span>)</span>
+                <p class="missed-sub">Assigned in Master Sheet with pending balance, but not yet in active custody (Paid bills excluded)</p>
               </div>
               <button class="btn btn-outline-danger btn-sm" id="toggleMissedBillsBtn">
                 Show List
@@ -660,8 +925,9 @@
                   <th>Invoice No</th>
                   <th>Agent &amp; Beat</th>
                   <th>Party Name</th>
-                  <th>Amount</th>
-                  <th>Dispatched Date</th>
+                  <th>Bill Amt</th>
+                  <th>Pending Due</th>
+                  <th>Dispatched / Aging</th>
                   <th>Receipt No</th>
                   <th>Payment Status</th>
                   <th>Action</th>
@@ -1375,6 +1641,9 @@
           <select id="breakdownAgentSelect" class="form-select form-input-compact">
             <option value="ALL">All Agents</option>
           </select>
+          <select id="breakdownBeatSelect" class="form-select form-input-compact" style="max-width: 170px;">
+            <option value="ALL">All Beats &amp; Routes</option>
+          </select>
           <button type="button" class="btn btn-outline-secondary btn-sm" id="breakdownCopySummaryBtn" title="Copy text summary">
             <i class="fa-regular fa-copy"></i> Copy
           </button>
@@ -1412,6 +1681,95 @@
         <div style="display: flex; gap: 8px;">
           <button type="button" class="btn btn-dark btn-sm" id="closeBreakdownModalFooterBtn">Close</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================================================== -->
+  <!-- MODAL: AGENT & BEAT PERFORMANCE ANALYSIS ENGINE          -->
+  <!-- ======================================================== -->
+  <div id="beatAnalysisModal" class="modal-backdrop" style="display: none;">
+    <div class="modal-card modal-xl">
+      <div class="modal-head">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <div class="breakdown-icon-box" style="background: rgba(37,99,235,0.1); color: var(--primary);">
+            <i class="fa-solid fa-chart-pie"></i>
+          </div>
+          <div>
+            <h3 id="beatAnalysisModalTitle">Agent &amp; Beat Route Analysis</h3>
+            <p class="modal-subtitle" style="font-size: 0.85rem; color: #64748b; margin: 2px 0 0;">
+              Live performance, custody difference, collection rate &amp; route health for each beat of each sales agent
+            </p>
+          </div>
+        </div>
+        <button class="modal-close" id="closeBeatAnalysisModalBtn">&times;</button>
+      </div>
+
+      <!-- Filter Controls Toolbar -->
+      <div class="breakdown-toolbar mt-3">
+        <div class="breakdown-search-wrap">
+          <i class="fa-solid fa-magnifying-glass"></i>
+          <input type="text" id="beatAnalysisSearchInput" class="form-input form-input-compact" placeholder="Search beat or route name..." />
+          <button type="button" id="beatAnalysisClearSearchBtn" class="clear-search-btn" style="display:none;">&times;</button>
+        </div>
+        
+        <div class="diff-date-chips" id="beatAnalysisDateChips">
+          <button type="button" class="diff-chip active" data-b-date="ALL">All Active Custody</button>
+          <button type="button" class="diff-chip" data-b-date="TODAY">Today</button>
+          <button type="button" class="diff-chip" data-b-date="YESTERDAY">Yesterday</button>
+          <button type="button" class="diff-chip" data-b-date="OVERDUE">⏰ Overdue (&gt;3d)</button>
+        </div>
+
+        <div class="breakdown-actions">
+          <select id="beatAnalysisAgentSelect" class="form-select form-input-compact">
+            <option value="ALL">All Agents (Overview)</option>
+          </select>
+          <button type="button" class="btn btn-outline-secondary btn-sm" id="beatAnalysisCopySummaryBtn" title="Copy text summary to clipboard">
+            <i class="fa-regular fa-copy"></i> Copy Summary
+          </button>
+        </div>
+      </div>
+
+      <!-- KPI Summary Strip -->
+      <div class="breakdown-kpi-strip mt-3" id="beatAnalysisKpiStrip">
+        <div class="kpi-box kpi-total">
+          <span class="kpi-label"><i class="fa-solid fa-route"></i> Beats Monitored</span>
+          <span class="kpi-val font-mono" id="baKpiBeatsCount">0</span>
+          <small class="kpi-sub" id="baKpiAgentsCount">3 Agents</small>
+        </div>
+        <div class="kpi-box kpi-total">
+          <span class="kpi-label"><i class="fa-solid fa-truck-fast"></i> Dispatched Out</span>
+          <span class="kpi-val font-mono" id="baKpiDispatchedCount">0</span>
+          <small class="kpi-sub font-mono" id="baKpiDispatchedAmt">₹0.00</small>
+        </div>
+        <div class="kpi-box kpi-paid">
+          <span class="kpi-label"><i class="fa-solid fa-circle-check"></i> Received In</span>
+          <span class="kpi-val font-mono text-success" id="baKpiReceivedCount">0</span>
+          <small class="kpi-sub font-mono text-success" id="baKpiReceivedAmt">₹0.00</small>
+        </div>
+        <div class="kpi-box kpi-pending">
+          <span class="kpi-label"><i class="fa-solid fa-triangle-exclamation"></i> Difference (Pending)</span>
+          <span class="kpi-val font-mono text-danger" id="baKpiDiffCount">0</span>
+          <small class="kpi-sub font-mono text-danger" id="baKpiDiffAmt">₹0.00</small>
+        </div>
+        <div class="kpi-box kpi-receipts">
+          <span class="kpi-label"><i class="fa-solid fa-percent"></i> Clearance Rate</span>
+          <span class="kpi-val font-mono text-primary" id="baKpiClearanceRate">0%</span>
+          <small class="kpi-sub text-muted" id="baKpiRecoverySub">Live Accounted</small>
+        </div>
+      </div>
+
+      <!-- Beat Analysis Content Container (scrollable) -->
+      <div class="beat-analysis-scrollable mt-3" id="beatAnalysisContainer" style="max-height: 60vh; overflow-y: auto; padding-right: 4px;">
+        <!-- Populated dynamically with agent sections and beat cards/tables -->
+      </div>
+
+      <!-- Modal Footer -->
+      <div class="modal-foot mt-3" style="display: flex; justify-content: space-between; align-items: center;">
+        <div class="text-muted" style="font-size: 0.82rem;" id="beatAnalysisFooterInfo">
+          Showing beat performance across sales agents
+        </div>
+        <button type="button" class="btn btn-dark btn-sm" id="closeBeatAnalysisFooterBtn">Close</button>
       </div>
     </div>
   </div>
