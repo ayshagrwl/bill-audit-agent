@@ -78,6 +78,17 @@ function doGet(e) {
       });
     }
 
+    if (action === 'DEDUPE_LOGS' || action === 'CLEAN_LOGS') {
+      const res = cleanDuplicateScanInRows(ss);
+      return respondJSON({
+        status: 'OK',
+        message: `Deduplication complete: cleaned ${res.removedCount} duplicate / auto-healed rows from Scan_In_Log!`,
+        keptCount: res.keptCount,
+        removedCount: res.removedCount,
+        timestamp: getFormattedTimestamp()
+      });
+    }
+
     return respondJSON({ status: 'ERROR', message: 'Unknown action: ' + action });
   } catch (err) {
     return respondJSON({ status: 'ERROR', message: err.toString() });
@@ -200,7 +211,11 @@ function recordScanOut(ss, bills, dispatchDate, defaultAgent, timestamp) {
  */
 function recordScanIn(ss, p, timestamp) {
   const inSheet = ss.getSheetByName(TRACKING_TABS.SCAN_IN);
+  if (!inSheet) return;
+
   const billNo = String(p.billNo || '').trim();
+  if (!billNo) return;
+
   const agent = String(p.agent || '').trim();
   const party = String(p.party || 'Standard Customer').trim();
   const totalAmt = Number(p.amount || p.totalAmount) || 0;
@@ -211,6 +226,26 @@ function recordScanIn(ss, p, timestamp) {
   const status = String(p.status || (collectedAmt >= totalAmt && totalAmt > 0 ? 'PAID_FULL' : 'PAID_PARTIAL')).trim();
   const returnReason = String(p.returnReason || '').trim();
   const remarks = String(p.remarks || (status === 'RETURNED_IN_HAND' ? 'Verified Return' : 'Checked IN')).trim();
+
+  // Guard: If this was an automated reconciliation/heal, do NOT create rows in Scan_In_Log!
+  if (remarks.indexOf('Auto-Healed') !== -1 || remarks.indexOf('Verified Paid on Master Sheet') !== -1) {
+    const custodyBill = {
+      billNo,
+      party,
+      amount: totalAmt,
+      agent,
+      status,
+      collectedAmt,
+      outstanding: remainingDue,
+      paymentMode,
+      refNo,
+      returnReason,
+      remarks,
+      lastActionDate: timestamp
+    };
+    syncCustodyBills(ss, [custodyBill], timestamp);
+    return;
+  }
 
   const row = [
     timestamp,
@@ -227,7 +262,34 @@ function recordScanIn(ss, p, timestamp) {
     remarks
   ];
 
-  inSheet.appendRow(row);
+  // Anti-duplication check: if bill was already recorded today in Scan_In_Log, update that row instead of appending duplicate rows
+  const lastRow = inSheet.getLastRow();
+  let existingRow = -1;
+  const todayPrefix = String(timestamp || '').slice(0, 10);
+
+  if (lastRow > 1) {
+    const numRows = Math.min(lastRow - 1, 300);
+    const startRow = lastRow - numRows + 1;
+    const existingData = inSheet.getRange(startRow, 1, numRows, 2).getValues();
+    const targetNorm = normalizeInvNumber(billNo);
+
+    for (let i = existingData.length - 1; i >= 0; i--) {
+      const rowTime = String(existingData[i][0] || '');
+      const rowBill = String(existingData[i][1] || '').trim();
+      if (rowBill && normalizeInvNumber(rowBill) === targetNorm) {
+        if (!todayPrefix || rowTime.indexOf(todayPrefix) === 0) {
+          existingRow = startRow + i;
+          break;
+        }
+      }
+    }
+  }
+
+  if (existingRow > 0) {
+    inSheet.getRange(existingRow, 1, 1, row.length).setValues([row]);
+  } else {
+    inSheet.appendRow(row);
+  }
 
   // Update Live Custody
   const custodyBill = {
@@ -252,7 +314,26 @@ function recordScanIn(ss, p, timestamp) {
  * Process queue items from offline sync
  */
 function processSyncQueue(ss, queue, timestamp) {
-  queue.forEach(item => {
+  if (!queue || !Array.isArray(queue) || queue.length === 0) return;
+
+  // Deduplicate queue items by billNo and type so each bill is only processed once in this batch
+  const seenKeys = new Set();
+  const dedupedQueue = [];
+
+  for (let i = queue.length - 1; i >= 0; i--) {
+    const item = queue[i];
+    if (!item) continue;
+    const p = item.payload;
+    const billNo = p && p.billNo ? normalizeInvNumber(p.billNo) : null;
+    if (billNo) {
+      const key = `${item.type}_${billNo}`;
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+    }
+    dedupedQueue.unshift(item);
+  }
+
+  dedupedQueue.forEach(item => {
     const type = item.type;
     const p = item.payload;
     const itemTime = item.timestamp || timestamp;
@@ -288,7 +369,10 @@ function syncCustodyBills(ss, bills, timestamp, defaultStatus, defaultDispatchDa
     const existingBillNos = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
     existingBillNos.forEach((r, idx) => {
       const bNo = String(r[0]).trim();
-      if (bNo) billRowMap[bNo] = idx + 2;
+      if (bNo) {
+        billRowMap[bNo] = idx + 2;
+        billRowMap[normalizeInvNumber(bNo)] = idx + 2;
+      }
     });
   }
 
@@ -327,12 +411,14 @@ function syncCustodyBills(ss, bills, timestamp, defaultStatus, defaultDispatchDa
       updated
     ];
 
-    const existingIdx = billRowMap[billNo];
+    const existingIdx = billRowMap[billNo] || billRowMap[normalizeInvNumber(billNo)];
     if (existingIdx) {
       sheet.getRange(existingIdx, 1, 1, rowValues.length).setValues([rowValues]);
     } else {
       newRows.push(rowValues);
-      billRowMap[billNo] = lastRow + newRows.length;
+      const newIdx = lastRow + newRows.length;
+      billRowMap[billNo] = newIdx;
+      billRowMap[normalizeInvNumber(billNo)] = newIdx;
     }
   });
 
@@ -553,4 +639,68 @@ function getTodayDateString() {
 function respondJSON(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+/**
+ * Normalize Invoice number by stripping common prefixes and leading zeros
+ */
+function normalizeInvNumber(val) {
+  if (!val) return '';
+  return String(val).trim().toUpperCase()
+    .replace(/^IN-FY\d{2}\/\d{2}-/i, '')
+    .replace(/^IN-\d{2}-/i, '')
+    .replace(/^IN-/i, '')
+    .replace(/^0+/, '');
+}
+
+/**
+ * Deduplicate and cleanse Scan_In_Log:
+ * - Removes auto-healed phantom rows mistakenly recorded
+ * - Deduplicates multiple check-in rows for the same bill on the same date, keeping the latest row
+ */
+function cleanDuplicateScanInRows(ss) {
+  const sheet = ss.getSheetByName(TRACKING_TABS.SCAN_IN);
+  if (!sheet) return { removedCount: 0, keptCount: 0 };
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return { removedCount: 0, keptCount: 0 };
+
+  const data = sheet.getRange(2, 1, lastRow - 1, 12).getValues();
+  const seen = new Map();
+  let removedCount = 0;
+
+  data.forEach(row => {
+    const timestamp = String(row[0] || '').trim();
+    const dateStr = timestamp.slice(0, 10);
+    const billNo = String(row[1] || '').trim();
+    const remarks = String(row[11] || '').trim();
+
+    // Remove unintended auto-healed rows
+    if (remarks.indexOf('Auto-Healed') !== -1 || remarks.indexOf('Verified Paid on Master Sheet') !== -1) {
+      removedCount++;
+      return;
+    }
+
+    if (!billNo) {
+      removedCount++;
+      return;
+    }
+
+    const norm = normalizeInvNumber(billNo);
+    const key = `${dateStr}_${norm}`;
+
+    if (seen.has(key)) {
+      removedCount++;
+    }
+    seen.set(key, row);
+  });
+
+  const cleanRows = Array.from(seen.values());
+
+  sheet.getRange(2, 1, Math.max(1, lastRow - 1), 12).clearContent();
+  if (cleanRows.length > 0) {
+    sheet.getRange(2, 1, cleanRows.length, 12).setValues(cleanRows);
+  }
+
+  return { removedCount, keptCount: cleanRows.length };
 }

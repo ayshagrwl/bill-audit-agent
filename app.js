@@ -123,6 +123,7 @@
     breakdownBeat: 'ALL',    // 'ALL' or specific beat name
     breakdownFilter: 'ALL',  // 'ALL', 'PENDING', 'PAID', 'RECEIPT'
     breakdownSearch: '',     // search query
+    isSyncing: false,
     isBreakdownModalOpen: false,
     dispatchBeatFilter: 'BEAT',  // 'BEAT' (current beat only) or 'ALL'
     settlementBeatFilter: 'ALL', // Default 'ALL' so unreturned bills across beats are immediately visible
@@ -382,6 +383,17 @@
 
       const storedQueue = localStorage.getItem(STORAGE_KEYS.OFFLINE_QUEUE);
       State.offlineQueue = storedQueue ? JSON.parse(storedQueue) : [];
+      // Cleanse any poisoned or auto-healed items that were mistakenly enqueued
+      if (Array.isArray(State.offlineQueue)) {
+        const origLen = State.offlineQueue.length;
+        State.offlineQueue = State.offlineQueue.filter(item => {
+          const rem = (item && item.payload && item.payload.remarks) ? String(item.payload.remarks) : '';
+          return !rem.includes('Auto-Healed') && !rem.includes('Verified Paid on Master Sheet');
+        });
+        if (State.offlineQueue.length !== origLen) {
+          saveState('queue');
+        }
+      }
 
       const storedLogs = localStorage.getItem(STORAGE_KEYS.AUDIT_LOGS);
       State.auditLogs = storedLogs ? JSON.parse(storedLogs) : [];
@@ -2467,6 +2479,12 @@
     let bill = State.bills.find(b => b.billNo === parsed.billNo) ||
                State.bills.find(b => normalizeInvoiceNumber(b.billNo) === normalizeInvoiceNumber(parsed.billNo));
 
+    if (bill && (bill.status === 'RECEIVED' || bill.status === 'PAID_FULL' || bill.status === 'RETURNED_IN_HAND')) {
+      SoundFX.playBeep('warning');
+      showToast(`Bill ${bill.billNo} is already checked in (${bill.status})!`, 'info', 2000);
+      return;
+    }
+
     const billAmt = parseFloat(parsed.amount) || 0;
     const outstanding = (parsed.outstanding !== undefined && parsed.outstanding !== null)
       ? parseFloat(parsed.outstanding)
@@ -3813,22 +3831,6 @@ _BillAudit Pro_`;
         b.returnReason = '';
         b.remarks = `Auto-Healed: Verified Paid on Master Sheet (${masterReceipt || 'Paid'})`;
         b.lastActionDate = nowIST;
-
-        queueSyncAction('SETTLEMENT_PAYMENT', {
-          billNo: b.billNo,
-          agent: b.agent,
-          party: b.party,
-          amount: amt,
-          totalAmount: amt,
-          collectedAmt: amt,
-          remainingDue: 0,
-          paymentMode: b.paymentMode,
-          refNo: b.refNo,
-          status: 'PAID_FULL',
-          remarks: b.remarks,
-          timestamp: nowIST
-        });
-
         healedCount++;
       } else if (isPartial) {
         b.status = 'PAID_PARTIAL';
@@ -3841,22 +3843,6 @@ _BillAudit Pro_`;
         }
         b.remarks = `Auto-Healed: Partial on Master Sheet (Paid: ₹${coll}, Due: ₹${masterOut})`;
         b.lastActionDate = nowIST;
-
-        queueSyncAction('SETTLEMENT_PAYMENT', {
-          billNo: b.billNo,
-          agent: b.agent,
-          party: b.party,
-          amount: amt,
-          totalAmount: amt,
-          collectedAmt: coll,
-          remainingDue: masterOut,
-          paymentMode: b.paymentMode || 'Partial',
-          refNo: b.refNo || '',
-          status: 'PAID_PARTIAL',
-          remarks: b.remarks,
-          timestamp: nowIST
-        });
-
         partialCount++;
       } else if (masterOut !== null && masterOut > 0) {
         b.outstanding = masterOut;
@@ -4221,25 +4207,12 @@ _BillAudit Pro_`;
       timestamp: nowIST
     });
 
-    queueSyncAction('SETTLEMENT_PAYMENT', {
-      billNo: b.billNo,
-      agent: b.agent,
-      party: b.party,
-      totalAmount: b.amount,
-      status: b.status,
-      collectedAmt: b.collectedAmt,
-      remainingDue: b.outstanding,
-      paymentMode: b.paymentMode,
-      refNo: b.refNo,
-      remarks: b.remarks,
-      timestamp: nowIST
-    });
-
     saveState('bills');
     updateGlobalStats();
     renderLeftOutTab();
     updateHomeStats();
     analyzeAndRenderPaymentReconciliation();
+    syncCustodyToTrackingSheet();
 
     SoundFX.playBeep('success');
     showToast(`Audit Completed for ${billNo}!`, 'success');
@@ -4273,20 +4246,6 @@ _BillAudit Pro_`;
         timestamp: nowIST
       });
 
-      queueSyncAction('SETTLEMENT_PAYMENT', {
-        billNo: b.billNo,
-        agent: b.agent,
-        party: b.party,
-        totalAmount: b.amount,
-        status: 'PAID_FULL',
-        collectedAmt: b.collectedAmt,
-        remainingDue: 0,
-        paymentMode: b.paymentMode,
-        refNo: b.refNo,
-        remarks: b.remarks,
-        timestamp: nowIST
-      });
-
       completedCount++;
       totalAmt += (Number(b.collectedAmt) || Number(b.amount) || 0);
     });
@@ -4296,6 +4255,7 @@ _BillAudit Pro_`;
     renderLeftOutTab();
     updateHomeStats();
     analyzeAndRenderPaymentReconciliation();
+    syncCustodyToTrackingSheet();
 
     SoundFX.playBeep('success');
     ConfettiFX.celebrate();
@@ -4506,9 +4466,11 @@ _BillAudit Pro_`;
   // 10. GOOGLE SHEETS & MASTER SHEET SYNC
   // ========================================================
 
+  let syncDebounceTimer = null;
+
   function queueSyncAction(type, payload) {
     State.offlineQueue.push({
-      id: 'Q-' + Date.now(),
+      id: 'Q-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5),
       type,
       timestamp: new Date().toISOString(),
       payload
@@ -4518,14 +4480,19 @@ _BillAudit Pro_`;
 
     const targetUrl = State.settings.trackingSheetScriptUrl || State.settings.scriptUrl;
     if (navigator.onLine && targetUrl) {
-      processOfflineQueue();
+      if (syncDebounceTimer) clearTimeout(syncDebounceTimer);
+      syncDebounceTimer = setTimeout(() => {
+        processOfflineQueue();
+      }, 350);
     }
   }
 
   async function processOfflineQueue() {
     const targetUrl = State.settings.trackingSheetScriptUrl || State.settings.scriptUrl;
     if (!targetUrl || State.offlineQueue.length === 0) return;
+    if (State.isSyncing) return;
 
+    State.isSyncing = true;
     const btn = document.getElementById('quickSyncBtn');
     const text = document.getElementById('syncStatusText');
     if (btn) btn.classList.add('syncing');
@@ -4547,7 +4514,8 @@ _BillAudit Pro_`;
 
       const res = await resp.json();
       if (res && res.success) {
-        State.offlineQueue = [];
+        const processedIds = new Set(queueSnapshot.map(item => item.id));
+        State.offlineQueue = State.offlineQueue.filter(item => !processedIds.has(item.id));
         saveState('queue');
         updateOfflineQueueBadge();
         if (text) text.textContent = 'Synced';
@@ -4557,7 +4525,34 @@ _BillAudit Pro_`;
       console.warn('Sync failed, queued offline:', e);
       if (text) text.textContent = 'Queued';
     } finally {
+      State.isSyncing = false;
       if (btn) btn.classList.remove('syncing');
+      if (State.offlineQueue.length > 0 && navigator.onLine) {
+        if (syncDebounceTimer) clearTimeout(syncDebounceTimer);
+        syncDebounceTimer = setTimeout(() => {
+          processOfflineQueue();
+        }, 500);
+      }
+    }
+  }
+
+  async function syncCustodyToTrackingSheet() {
+    const targetUrl = State.settings.trackingSheetScriptUrl || State.settings.scriptUrl;
+    if (!targetUrl || !State.bills || State.bills.length === 0) return;
+
+    try {
+      await fetch(targetUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({
+          action: 'BATCH_SYNC',
+          queue: [], // Zero scan-in logs! Only updates Live_Custody & Daily_Summary
+          bills: State.bills,
+          timestamp: new Date().toISOString()
+        })
+      });
+    } catch (e) {
+      console.warn('Background custody sync failed:', e);
     }
   }
 
@@ -7486,6 +7481,35 @@ _BillAudit Pro_`;
     });
     document.getElementById('testTrackingSheetBtn')?.addEventListener('click', testTrackingSheetConnection);
     document.getElementById('forceSyncSheetBtn')?.addEventListener('click', processOfflineQueue);
+    document.getElementById('dedupeScanInLogBtn')?.addEventListener('click', async () => {
+      const url = (State.settings.trackingSheetScriptUrl || '').trim();
+      if (!url) {
+        showToast('Tracking sheet URL not configured', 'warning');
+        return;
+      }
+      const btn = document.getElementById('dedupeScanInLogBtn');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Cleaning...';
+      }
+      try {
+        const resp = await fetch(`${url}?action=DEDUPE_LOGS&t=${Date.now()}`);
+        const res = await resp.json();
+        if (res && res.status === 'OK') {
+          SoundFX.playBeep('success');
+          showToast(res.message || 'Scan_In_Log cleaned successfully!', 'success', 4000);
+        } else {
+          showToast(res.message || 'Deduplication failed', 'error');
+        }
+      } catch (e) {
+        showToast('Failed to contact Tracking Sheet script: ' + e.message, 'error');
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = '<i class="fa-solid fa-broom"></i> Clean Duplicate Scan-In Rows';
+        }
+      }
+    });
 
     document.getElementById('loadSampleBillsBtn')?.addEventListener('click', loadSampleBills);
     document.getElementById('generateQrCodesBtn')?.addEventListener('click', previewPrintableQRCodes);

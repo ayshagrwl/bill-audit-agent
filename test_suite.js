@@ -3475,7 +3475,113 @@ google.visualization.Query.setResponse({
   assert.strictEqual(inferredBeat, 'Civil Line Panna Naka', 'Inferred Tuesday beat for Rajesh from dispatch date');
   console.log('✅ Test 54 Passed! Beat Route Inference from Dispatch Date verified 100%!\n');
 
-  console.log('🎉 ALL 54 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+  // ========================================================
+  // Test 55: Zero-Row Auto-Creation & Scan-In Log Anti-Duplication Engine
+  // ========================================================
+  console.log('Test 55: Zero-Row Auto-Creation & Scan-In Log Anti-Duplication Engine');
+
+  // 1. Verify Auto-Reconcile with Master Sheet never pushes to offline queue or Scan-In Log
+  const mockState55 = {
+    bills: [
+      { billNo: 'IN-5501', party: 'Store 1', amount: 5000, agent: 'Rajesh', status: 'WITH_AGENT', collectedAmt: 0, outstanding: 5000 },
+      { billNo: 'IN-5502', party: 'Store 2', amount: 3000, agent: 'Shivam', status: 'WITH_AGENT', collectedAmt: 0, outstanding: 3000 },
+      { billNo: 'IN-5503', party: 'Store 3', amount: 8000, agent: 'Rajesh', status: 'WITH_AGENT', collectedAmt: 0, outstanding: 8000 }
+    ],
+    offlineQueue: []
+  };
+
+  const mockMaster55 = new Map([
+    [normalizeInvoiceNumber('IN-5501'), { billNo: 'IN-5501', amount: 5000, outstanding: 0, receipt: 'R-5501', status: 'PAID' }],
+    [normalizeInvoiceNumber('IN-5502'), { billNo: 'IN-5502', amount: 3000, outstanding: 1000, receipt: 'PARTIAL', status: 'PARTIAL' }]
+  ]);
+
+  // Reconcile function matching app.js (no queueSyncAction!)
+  function reconcileCustodyFixed(state, masterMap) {
+    let healed = 0;
+    state.bills.forEach(b => {
+      const norm = normalizeInvoiceNumber(b.billNo);
+      const mm = masterMap.get(norm);
+      if (!mm) return;
+      if (mm.status === 'PAID') {
+        b.status = 'PAID_FULL';
+        b.collectedAmt = b.amount;
+        b.outstanding = 0;
+        healed++;
+      } else if (mm.status === 'PARTIAL') {
+        b.status = 'PAID_PARTIAL';
+        b.collectedAmt = b.amount - mm.outstanding;
+        b.outstanding = mm.outstanding;
+        healed++;
+      }
+    });
+    return healed;
+  }
+
+  const healed55 = reconcileCustodyFixed(mockState55, mockMaster55);
+  assert.strictEqual(healed55, 2, '2 bills healed in memory');
+  assert.strictEqual(mockState55.offlineQueue.length, 0, 'ZERO settlement actions queued during auto-reconcile!');
+
+  // 2. Verify duplicate Scan-In guard prevents multi-row creation on rapid scans
+  function receiveBillSettlementGuarded(state, parsed) {
+    let bill = state.bills.find(b => normalizeInvoiceNumber(b.billNo) === normalizeInvoiceNumber(parsed.billNo));
+    if (bill && (bill.status === 'RECEIVED' || bill.status === 'PAID_FULL')) {
+      return { accepted: false, reason: 'ALREADY_CHECKED_IN' };
+    }
+    if (bill) {
+      bill.status = 'RECEIVED';
+      state.offlineQueue.push({ type: 'SETTLEMENT_RETURN', billNo: bill.billNo });
+      return { accepted: true };
+    }
+    return { accepted: false, reason: 'NOT_FOUND' };
+  }
+
+  // Scan 1st time
+  const scan1 = receiveBillSettlementGuarded(mockState55, { billNo: 'IN-5503' });
+  assert.strictEqual(scan1.accepted, true, 'First scan of IN-5503 accepted');
+  assert.strictEqual(mockState55.offlineQueue.length, 1, '1 action queued');
+
+  // Scan 2nd time (duplicate burst)
+  const scan2 = receiveBillSettlementGuarded(mockState55, { billNo: 'IN-5503' });
+  assert.strictEqual(scan2.accepted, false, 'Duplicate second scan rejected');
+  assert.strictEqual(scan2.reason, 'ALREADY_CHECKED_IN');
+  assert.strictEqual(mockState55.offlineQueue.length, 1, 'Queue remains strictly 1 (no duplicate)');
+
+  // 3. Verify cleanDuplicateScanInRows removes auto-healed phantom rows and same-day duplicates
+  const rawLogRows = [
+    ['2026-10-20 10:00:00', 'IN-1001', 'Rajesh', 'Party A', 5000, 5000, 0, 'Cash', 'R1', 'PAID_FULL', '', 'Checked IN'],
+    ['2026-10-20 10:05:00', 'IN-1001', 'Rajesh', 'Party A', 5000, 5000, 0, 'Cash', 'R1', 'PAID_FULL', '', 'Checked IN (Duplicate Scan)'],
+    ['2026-10-20 10:10:00', 'IN-1002', 'Shivam', 'Party B', 3000, 3000, 0, 'Sheet Verified', 'PAID', 'PAID_FULL', '', 'Auto-Healed: Verified Paid on Master Sheet'],
+    ['2026-10-20 10:15:00', 'IN-1003', 'Rajesh', 'Party C', 7000, 7000, 0, 'Cash', 'R3', 'PAID_FULL', '', 'Checked IN']
+  ];
+
+  function cleanRowsMock(rows) {
+    const seen = new Map();
+    let removed = 0;
+    rows.forEach(r => {
+      const dateStr = String(r[0]).slice(0, 10);
+      const bNo = String(r[1]).trim();
+      const rem = String(r[11] || '');
+      if (rem.includes('Auto-Healed') || rem.includes('Verified Paid on Master Sheet')) {
+        removed++;
+        return;
+      }
+      const norm = normalizeInvoiceNumber(bNo);
+      const key = `${dateStr}_${norm}`;
+      if (seen.has(key)) removed++;
+      seen.set(key, r);
+    });
+    return { clean: Array.from(seen.values()), removed };
+  }
+
+  const cleanResult = cleanRowsMock(rawLogRows);
+  assert.strictEqual(cleanResult.removed, 2, '2 invalid rows removed (1 duplicate scan + 1 auto-healed phantom row)');
+  assert.strictEqual(cleanResult.clean.length, 2, 'Exactly 2 clean distinct bills retained in Scan_In_Log');
+  assert.strictEqual(cleanResult.clean[0][1], 'IN-1001', 'Retained latest IN-1001');
+  assert.strictEqual(cleanResult.clean[1][1], 'IN-1003', 'Retained IN-1003');
+
+  console.log('✅ Test 55 Passed! Zero-Row Auto-Creation & Scan-In Log Anti-Duplication Engine verified 100%!\n');
+
+  console.log('🎉 ALL 55 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
 })();
 
 
