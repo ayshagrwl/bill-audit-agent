@@ -201,9 +201,14 @@
     return false;
   }
 
+  const beatCleanCache = new Map();
   function cleanBeatString(str) {
     if (!str) return { clean: '', routeNum: null };
-    let s = String(str).trim();
+    const rawKey = String(str);
+    const cached = beatCleanCache.get(rawKey);
+    if (cached) return cached;
+
+    let s = rawKey.trim();
     // Strip day/week suffixes like (Mon, Week 1), (Mon), (Week 2), etc.
     s = s.replace(/\s*\((Mon|Tue|Wed|Thu|Fri|Sat)[^)]*\)/gi, '');
     s = s.replace(/\s*\(Week\s*\d+[^)]*\)/gi, '');
@@ -225,7 +230,9 @@
 
     // Strip all non-alphanumeric chars for base matching
     const clean = s.toLowerCase().replace(/[^a-z0-9]/g, '');
-    return { clean, routeNum };
+    const res = { clean, routeNum };
+    if (beatCleanCache.size < 5000) beatCleanCache.set(rawKey, res);
+    return res;
   }
 
   function isSameBeat(beatA, beatB) {
@@ -488,56 +495,74 @@
   /**
    * Normalizes any date format (ISO, YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY) to canonical YYYY-MM-DD
    */
+  const dateNormCache = new Map();
+  const dateAgingCache = new Map();
+  let dateAgingCacheDay = '';
+
   function normalizeDateString(d) {
     if (!d) return '';
     const str = String(d).trim();
     if (!str) return '';
+    const cached = dateNormCache.get(str);
+    if (cached !== undefined) return cached;
 
-    // If ISO timestamp like 2026-10-09T18:30:00.000Z - convert to local timezone date
-    if (/^\d{4}-\d{2}-\d{2}T/.test(str)) {
+    let res = str;
+    // Fast path for already canonical YYYY-MM-DD
+    if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+      res = str;
+    } else if (/^\d{4}-\d{2}-\d{2}T/.test(str)) {
       const parsed = new Date(str);
       if (!isNaN(parsed.getTime())) {
-        return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`;
+        res = `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`;
+      } else {
+        res = str.split('T')[0];
       }
-      return str.split('T')[0];
-    }
-
-    // If format like YYYY-MM-DD or YYYY-M-D
-    if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(str)) {
+    } else if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(str)) {
       const parts = str.split('-');
-      return `${parts[0]}-${String(parts[1]).padStart(2, '0')}-${String(parts[2]).padStart(2, '0')}`;
+      res = `${parts[0]}-${String(parts[1]).padStart(2, '0')}-${String(parts[2]).padStart(2, '0')}`;
+    } else {
+      const dmy = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+      if (dmy) {
+        res = `${dmy[3]}-${String(dmy[2]).padStart(2, '0')}-${String(dmy[1]).padStart(2, '0')}`;
+      } else {
+        const parsed = new Date(str);
+        if (!isNaN(parsed.getTime())) {
+          res = `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`;
+        }
+      }
     }
 
-    // If format like DD/MM/YYYY or DD-MM-YYYY
-    const dmy = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
-    if (dmy) {
-      return `${dmy[3]}-${String(dmy[2]).padStart(2, '0')}-${String(dmy[1]).padStart(2, '0')}`;
-    }
-
-    // Try parsing as standard Date
-    const parsed = new Date(str);
-    if (!isNaN(parsed.getTime())) {
-      return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`;
-    }
-
-    return str;
+    if (dateNormCache.size < 5000) dateNormCache.set(str, res);
+    return res;
   }
 
   /**
    * Computes how many days a bill has been in the field since its dispatchDate (or lastActionDate).
+   * Memoized by date string for O(1) instant sorting and filtering.
    */
   function getBillAgingDays(billOrDate) {
     const rawDate = (billOrDate && typeof billOrDate === 'object')
       ? (billOrDate.dispatchDate || billOrDate.lastActionDate || '')
       : billOrDate;
+    if (!rawDate) return 0;
     const norm = normalizeDateString(rawDate);
     if (!norm || !/^\d{4}-\d{2}-\d{2}$/.test(norm)) return 0;
+
+    const now = new Date();
+    const todayKey = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}`;
+    if (dateAgingCacheDay !== todayKey) {
+      dateAgingCache.clear();
+      dateAgingCacheDay = todayKey;
+    }
+    const cachedAge = dateAgingCache.get(norm);
+    if (cachedAge !== undefined) return cachedAge;
+
     const [y, m, d] = norm.split('-').map(Number);
     const billTime = new Date(y, m - 1, d).getTime();
-    const now = new Date();
     const todayTime = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-    if (isNaN(billTime)) return 0;
-    return Math.max(0, Math.floor((todayTime - billTime) / 86400000));
+    const age = isNaN(billTime) ? 0 : Math.max(0, Math.floor((todayTime - billTime) / 86400000));
+    dateAgingCache.set(norm, age);
+    return age;
   }
 
   /**
@@ -600,32 +625,37 @@
 
   /**
    * Infers a bill's Beat Route from Master Sheet or from Agent + Dispatch Date day-of-week schedule.
+   * Caches result on the bill object so it never repeats lookups during rendering.
    */
   function inferBillBeat(b) {
     if (!b) return '';
     const existingBeat = String(b.beat || b.beatName || '').trim();
     if (existingBeat) return existingBeat;
+    if (b._inferredBeat !== undefined) return b._inferredBeat;
 
+    let resolved = '';
     const mm = b.billNo ? findMasterBill(b.billNo) : null;
     if (mm && mm.beat && String(mm.beat).trim()) {
-      return String(mm.beat).trim();
-    }
-
-    const agentName = String(b.agent || (mm && mm.agent) || '').trim();
-    const rawDate = normalizeDateString(b.dispatchDate || b.lastActionDate || '');
-    if (agentName && rawDate && /^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
-      const [y, m, d] = rawDate.split('-').map(Number);
-      const dt = new Date(y, m - 1, d);
-      const dayCodes = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-      const dayCode = dayCodes[dt.getDay()];
-      const plan = MASTER_BEAT_PLAN[agentName] ||
-        (agentName.toLowerCase().includes('shivam') ? MASTER_BEAT_PLAN.Shivam :
-         (agentName.toLowerCase().includes('self') ? MASTER_BEAT_PLAN.Self : MASTER_BEAT_PLAN.Rajesh));
-      if (plan && plan[dayCode] && plan[dayCode].beat) {
-        return plan[dayCode].beat;
+      resolved = String(mm.beat).trim();
+    } else {
+      const agentName = String(b.agent || (mm && mm.agent) || '').trim();
+      const rawDate = normalizeDateString(b.dispatchDate || b.lastActionDate || '');
+      if (agentName && rawDate && /^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+        const [y, m, d] = rawDate.split('-').map(Number);
+        const dt = new Date(y, m - 1, d);
+        const dayCodes = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        const dayCode = dayCodes[dt.getDay()];
+        const plan = MASTER_BEAT_PLAN[agentName] ||
+          (agentName.toLowerCase().includes('shivam') ? MASTER_BEAT_PLAN.Shivam :
+           (agentName.toLowerCase().includes('self') ? MASTER_BEAT_PLAN.Self : MASTER_BEAT_PLAN.Rajesh));
+        if (plan && plan[dayCode] && plan[dayCode].beat) {
+          resolved = plan[dayCode].beat;
+        }
       }
     }
-    return '';
+    if (resolved) b.beat = resolved;
+    b._inferredBeat = resolved;
+    return resolved;
   }
 
   /**
@@ -726,12 +756,57 @@
   }
 
   /**
-   * Rebuild the O(1) Master Sheet Hash Map for instant 0.001ms bill lookup
+   * Rebuild the O(1) Master Sheet Hash Map AND pre-index Due Bills, Beat Lists, and Beat Stats
+   * in a single linear pass so UI renders never scan 15,000+ rows repeatedly.
    */
   function rebuildMasterSheetMap() {
     State.masterSheetMap.clear();
+    State.masterDueBills = [];
+    State.masterPaidExcludedCount = 0;
+    State.masterAgentBeatsMap = { ALL: new Set(), Rajesh: new Set(), Shivam: new Set(), Self: new Set() };
+
     for (let i = 0; i < State.masterSheetBills.length; i++) {
-      registerBillInMap(State.masterSheetMap, State.masterSheetBills[i]);
+      const b = State.masterSheetBills[i];
+      if (!b || !b.billNo) continue;
+      registerBillInMap(State.masterSheetMap, b);
+      if (!b._normBillNo) b._normBillNo = normalizeInvoiceNumber(b.billNo);
+
+      const rawAg = String(b.agent || '').trim();
+      let canonAg = '';
+      if (rawAg) {
+        const agLow = rawAg.toLowerCase();
+        if (agLow.includes('shivam')) canonAg = 'Shivam';
+        else if (agLow.includes('self')) canonAg = 'Self';
+        else if (agLow.includes('rajesh')) canonAg = 'Rajesh';
+        else canonAg = rawAg;
+      }
+      b._canonAgent = canonAg;
+
+      const rawBeat = String(b.beat || '').trim();
+      if (rawBeat.length > 1) {
+        State.masterAgentBeatsMap.ALL.add(rawBeat);
+        if (canonAg && State.masterAgentBeatsMap[canonAg]) {
+          State.masterAgentBeatsMap[canonAg].add(rawBeat);
+        }
+      }
+
+      if (rawAg) {
+        const outstanding = (b.outstanding !== undefined && b.outstanding !== null && b.outstanding !== '') ? Number(b.outstanding) : null;
+        const isPaid = isBillPaidInFull(b) || (outstanding !== null && outstanding <= 0 && (Number(b.amount) > 0 || b.receipt));
+        b._isPaid = isPaid;
+        if (isPaid) {
+          State.masterPaidExcludedCount++;
+        } else {
+          State.masterDueBills.push(b);
+        }
+      }
+    }
+
+    // Clear any cached beat inference on custody bills so they pick up newly loaded Master Sheet beats
+    if (State.bills && State.bills.length > 0) {
+      for (let i = 0; i < State.bills.length; i++) {
+        delete State.bills[i]._inferredBeat;
+      }
     }
   }
 
@@ -741,9 +816,10 @@
   function addBillToMasterIndex(b) {
     if (!b || !b.billNo) return;
     registerBillInMap(State.masterSheetMap, b);
+    b._normBillNo = normalizeInvoiceNumber(b.billNo);
 
-    const norm = normalizeInvoiceNumber(b.billNo);
-    const idx = State.masterSheetBills.findIndex(x => normalizeInvoiceNumber(x.billNo) === norm);
+    const norm = b._normBillNo;
+    const idx = State.masterSheetBills.findIndex(x => (x._normBillNo || normalizeInvoiceNumber(x.billNo)) === norm);
     if (idx >= 0) {
       State.masterSheetBills[idx] = b;
     } else {
@@ -752,10 +828,10 @@
   }
 
   /**
-   * Search Master Sheet for an Invoice Number (O(1) Instant Hash Map Lookup)
-   * Matches exact, normalized, prefix-stripped, or numeric suffix (e.g. 3921 inside IN-FY26/27-3921)
+   * Search Master Sheet for an Invoice Number (Strictly O(1) Instant Hash Map Lookup by default).
+   * Prevents O(N*M) main-thread freezes when called across hundreds of custody bills.
    */
-  function findMasterBill(invoiceInput) {
+  function findMasterBill(invoiceInput, allowSlowScan = false) {
     if (!invoiceInput) return null;
     const cleanInput = String(invoiceInput).trim();
     if (!cleanInput) return null;
@@ -766,7 +842,8 @@
     }
 
     // 1. O(1) exact uppercase match (0.001ms)
-    let match = State.masterSheetMap.get(cleanInput.toUpperCase());
+    const upperInput = cleanInput.toUpperCase();
+    let match = State.masterSheetMap.get(upperInput);
     if (match) return match;
 
     // 2. O(1) normalized alphanumeric match
@@ -776,7 +853,7 @@
 
     // 3. O(1) stripped prefix match (e.g. user/barcode scans "VCH-3965" or "14015503-0001")
     const strippedInput = stripInvoicePrefix(cleanInput);
-    if (strippedInput && strippedInput !== cleanInput.toUpperCase()) {
+    if (strippedInput && strippedInput !== upperInput) {
       match = State.masterSheetMap.get(strippedInput) || State.masterSheetMap.get(normalizeInvoiceNumber(strippedInput));
       if (match) return match;
     }
@@ -791,22 +868,20 @@
         match = State.masterSheetMap.get(noZeros);
         if (match) return match;
       }
-    }
-
-    // 5. Suffix match fallback on digit string
-    if (digitsOnly.length >= 3) {
-      for (let i = 0; i < State.masterSheetBills.length; i++) {
-        const b = State.masterSheetBills[i];
-        const bDigits = b.billNo.replace(/\D/g, '');
-        if (bDigits.endsWith(digitsOnly)) return b;
+      if (digitsOnly.length > 4) {
+        const last4 = digitsOnly.slice(-4);
+        match = State.masterSheetMap.get(last4) || State.masterSheetMap.get(last4.replace(/^0+/, ''));
+        if (match) return match;
       }
     }
 
-    // 5. Substring contains match (fallback only)
-    for (let i = 0; i < State.masterSheetBills.length; i++) {
-      const b = State.masterSheetBills[i];
-      if (b.billNo.toUpperCase().includes(cleanInput.toUpperCase()) || cleanInput.toUpperCase().includes(b.billNo.toUpperCase())) {
-        return b;
+    // 5. Optional fallback scan ONLY when explicitly requested by single manual scan
+    if (allowSlowScan && State.masterSheetBills.length > 0) {
+      for (let i = 0; i < State.masterSheetBills.length; i++) {
+        const b = State.masterSheetBills[i];
+        if (b.billNo.toUpperCase().includes(upperInput) || upperInput.includes(b.billNo.toUpperCase())) {
+          return b;
+        }
       }
     }
 
@@ -2036,28 +2111,28 @@
     }
 
     // Bills already in basket or already in custody
-    const inBasketNorms = new Set(State.dispatchBasket.map(b => normalizeInvoiceNumber(b.billNo)));
+    const inBasketNorms = new Set(State.dispatchBasket.map(b => b._normBillNo || (b._normBillNo = normalizeInvoiceNumber(b.billNo))));
     const today = getTodayDateString();
     const inCustodyNorms = new Set(
       State.bills
-        .filter(b => b.dispatchDate === today || b.status === 'WITH_AGENT' || b.status === 'MISSING_ALERT')
-        .map(b => normalizeInvoiceNumber(b.billNo))
+        .filter(b => b.dispatchDate === today || isBillUnreturnedInField(b))
+        .map(b => b._normBillNo || (b._normBillNo = normalizeInvoiceNumber(b.billNo)))
     );
 
+    const dueSource = State.masterDueBills || State.masterSheetBills || [];
     const queueBills = [];
-    State.masterSheetBills.forEach(b => {
-      if (!b || !b.billNo) return;
-      if (activeAgent && b.agent && !isSameAgent(b.agent, activeAgent)) return;
-      if (!isSameBeat(b.beat, activeBeat)) return;
+    for (let i = 0; i < dueSource.length; i++) {
+      const b = dueSource[i];
+      if (!b || !b.billNo) continue;
+      if (activeAgent && b.agent && !isSameAgent(b._canonAgent || b.agent, activeAgent)) continue;
+      if (!isSameBeat(b.beat, activeBeat)) continue;
+      if (b._isPaid !== undefined ? b._isPaid : isBillPaidInFull(b)) continue;
 
-      // Exclude already paid
-      if (isBillPaidInFull(b)) return;
-
-      const norm = normalizeInvoiceNumber(b.billNo);
-      if (inBasketNorms.has(norm) || inCustodyNorms.has(norm)) return;
+      const norm = b._normBillNo || (b._normBillNo = normalizeInvoiceNumber(b.billNo));
+      if (inBasketNorms.has(norm) || inCustodyNorms.has(norm)) continue;
 
       queueBills.push(b);
-    });
+    }
 
     card.style.display = 'block';
     if (titleEl) titleEl.textContent = `${activeBeat} — Sheet Pending`;
@@ -3468,11 +3543,13 @@
       return getBillPendingAmount(b) - getBillPendingAmount(a);
     });
 
-    // Populate Left Out Table
+    // Populate Left Out Table (capped at top 100 rows for instant DOM rendering)
     if (allLeftOutBills.length === 0) {
       tbody.innerHTML = `<tr class="empty-row"><td colspan="9">🎉 Zero missing/pending bills for this filter! All dispatched bills are accounted for.</td></tr>`;
     } else {
-      allLeftOutBills.forEach(b => {
+      const fragment = document.createDocumentFragment();
+      const displayBills = allLeftOutBills.slice(0, 100);
+      displayBills.forEach(b => {
         const tr = document.createElement('tr');
         const resolvedBeat = b.beat || b.beatName || inferBillBeat(b) || '';
         const beatTag = resolvedBeat ? `<div style="font-size:0.75rem; color:#64748b; margin-top:2px;"><i class="fa-solid fa-location-dot"></i> ${escapeHtml(resolvedBeat)}</div>` : '';
@@ -3507,8 +3584,15 @@
             </div>
           </td>
         `;
-        tbody.appendChild(tr);
+        fragment.appendChild(tr);
       });
+      if (allLeftOutBills.length > 100) {
+        const moreTr = document.createElement('tr');
+        moreTr.className = 'empty-row';
+        moreTr.innerHTML = `<td colspan="9" style="text-align:center; font-weight:600; color:var(--text-muted);">Showing top 100 of ${allLeftOutBills.length} missing/pending bills (sorted by oldest field age). Use the search box or agent/beat filter above to narrow down.</td>`;
+        fragment.appendChild(moreTr);
+      }
+      tbody.appendChild(fragment);
     }
 
     // Attach Action Listeners
@@ -3572,60 +3656,49 @@
   }
 
   /**
-   * Helper to get all Undispatched Sheet Due Bills (bills in Master Sheet with pending balance
-   * that are NOT in active custody or already paid).
+   * Helper to get all Undispatched Sheet Due Bills (uses pre-indexed State.masterDueBills for <1ms lookup).
    */
   function getUndispatchedSheetDueBills(selectedAgent = 'ALL', selectedBeat = 'ALL', searchQuery = '') {
     if (!State.masterSheetBills || State.masterSheetBills.length === 0) {
       return { missed: [], paidExcludedCount: 0 };
     }
+    if (!State.masterDueBills) {
+      rebuildMasterSheetMap();
+    }
 
     const custodyNorms = new Set(
-      (State.bills || []).map(b => normalizeInvoiceNumber(b.billNo)).filter(Boolean)
+      (State.bills || []).map(b => b._normBillNo || (b._normBillNo = normalizeInvoiceNumber(b.billNo))).filter(Boolean)
     );
     const basketNorms = new Set(
-      (State.dispatchBasket || []).map(b => normalizeInvoiceNumber(b.billNo)).filter(Boolean)
+      (State.dispatchBasket || []).map(b => b._normBillNo || (b._normBillNo = normalizeInvoiceNumber(b.billNo))).filter(Boolean)
     );
 
     const missed = [];
-    let paidExcludedCount = 0;
     const q = (searchQuery || '').trim().toLowerCase();
+    const dueSource = State.masterDueBills || [];
 
-    State.masterSheetBills.forEach(b => {
-      if (!b || !b.billNo) return;
-      const bAgent = String(b.agent || '').trim();
-      if (!bAgent) return;
-
-      if (selectedAgent !== 'ALL' && !isSameAgent(bAgent, selectedAgent)) {
-        return;
+    for (let i = 0; i < dueSource.length; i++) {
+      const b = dueSource[i];
+      if (selectedAgent !== 'ALL' && !isSameAgent(b._canonAgent || b.agent, selectedAgent)) {
+        continue;
       }
       if (selectedBeat !== 'ALL' && !isSameBeat(b.beat, selectedBeat)) {
-        return;
+        continue;
       }
-
-      const outstanding = (b.outstanding !== undefined && b.outstanding !== null && b.outstanding !== '') ? Number(b.outstanding) : null;
-      const isPaid = isBillPaidInFull(b) || (outstanding !== null && outstanding <= 0 && (Number(b.amount) > 0 || b.receipt));
-      if (isPaid) {
-        paidExcludedCount++;
-        return;
-      }
-
-      const norm = normalizeInvoiceNumber(b.billNo);
+      const norm = b._normBillNo || (b._normBillNo = normalizeInvoiceNumber(b.billNo));
       if (custodyNorms.has(norm) || basketNorms.has(norm)) {
-        return;
+        continue;
       }
-
       if (q) {
         const billNoStr = String(b.billNo || '').toLowerCase();
         const partyStr = String(b.party || '').toLowerCase();
         const beatStr = String(b.beat || '').toLowerCase();
-        if (!billNoStr.includes(q) && !partyStr.includes(q) && !beatStr.includes(q)) return;
+        if (!billNoStr.includes(q) && !partyStr.includes(q) && !beatStr.includes(q)) continue;
       }
-
       missed.push(b);
-    });
+    }
 
-    return { missed, paidExcludedCount };
+    return { missed, paidExcludedCount: State.masterPaidExcludedCount || 0 };
   }
 
   /**
@@ -3945,7 +4018,9 @@ _BillAudit Pro_`;
         const reconcileRes = reconcileCustodyWithMasterSheet();
         saveState('bills');
         updateGlobalStats();
-        renderLeftOutTab();
+        if (State.activeTab === 'tab-leftout') renderLeftOutTab();
+        else if (State.activeTab === 'tab-ledger') renderMasterLedger();
+        else if (State.activeTab === 'tab-settlement') loadSettlementForSelectedAgent();
         updateHomeStats();
 
         if (showFeedback) {
@@ -4288,9 +4363,9 @@ _BillAudit Pro_`;
           if (item.beat) knownBeats.add(item.beat);
         });
       });
-      (State.masterSheetBills || []).forEach(b => {
-        if (b.beat && b.beat.trim().length > 1) knownBeats.add(b.beat.trim());
-      });
+      if (State.masterAgentBeatsMap && State.masterAgentBeatsMap.ALL) {
+        State.masterAgentBeatsMap.ALL.forEach(bName => knownBeats.add(bName));
+      }
       (State.bills || []).forEach(b => {
         if (b.beatName) knownBeats.add(b.beatName);
         else if (b.beat) knownBeats.add(b.beat);
@@ -4307,11 +4382,10 @@ _BillAudit Pro_`;
     const useMaster = State.masterSheetBills && State.masterSheetBills.length > 0;
     const sourceBills = useMaster ? State.masterSheetBills : State.bills;
 
-    // Fast O(1) map for today's custody lookup
-    const today = getTodayDateString();
+    // Fast O(1) map for custody lookup
     const todayCustodyMap = new Map();
     State.bills.forEach(b => {
-      const norm = normalizeInvoiceNumber(b.billNo);
+      const norm = b._normBillNo || (b._normBillNo = normalizeInvoiceNumber(b.billNo));
       todayCustodyMap.set(norm, b);
       todayCustodyMap.set(b.billNo.toUpperCase(), b);
     });
@@ -4323,26 +4397,25 @@ _BillAudit Pro_`;
       const b = sourceBills[i];
       if (!b || !b.billNo) continue;
 
-      const billNoStr = String(b.billNo).toLowerCase();
-      const partyStr = String(b.party || '').toLowerCase();
+      // Agent filter first (fast check)
+      const bAgent = b._canonAgent || String(b.agent || '').trim();
+      if (agentFilter !== 'ALL' && !isSameAgent(bAgent, agentFilter)) {
+        continue;
+      }
 
       // Search filter (Invoice or Party)
       if (search) {
+        const billNoStr = String(b.billNo).toLowerCase();
+        const partyStr = String(b.party || '').toLowerCase();
         if (!billNoStr.includes(search) && !partyStr.includes(search)) {
           continue;
         }
       }
 
-      // Agent filter
-      const bAgent = String(b.agent || '').trim();
-      if (agentFilter !== 'ALL' && !isSameAgent(bAgent, agentFilter)) {
-        continue;
-      }
-
       // Payment & Custody Status filter
       const outstanding = (b.outstanding !== undefined && b.outstanding !== null) ? Number(b.outstanding) : 0;
       const receipt = String(b.receipt || '').trim();
-      const norm = normalizeInvoiceNumber(b.billNo);
+      const norm = b._normBillNo || (b._normBillNo = normalizeInvoiceNumber(b.billNo));
       const custodyRecord = todayCustodyMap.get(norm) || todayCustodyMap.get(b.billNo.toUpperCase());
 
       // Beat filter
@@ -4875,8 +4948,8 @@ _BillAudit Pro_`;
 
       updateGlobalStats();
       renderAgentSelects();
-      renderLeftOutTab();
-      renderMasterLedger();
+      if (State.activeTab === 'tab-leftout') renderLeftOutTab();
+      else if (State.activeTab === 'tab-ledger') renderMasterLedger();
       updateHomeStats();
       updateMasterSheetUI();
 
@@ -6130,11 +6203,10 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       });
     }
 
-    (State.masterSheetBills || []).forEach(b => {
-      if (agentName === 'ALL' || isSameAgent(b.agent, agentName)) {
-        if (b.beat && b.beat.trim().length > 1) knownBeats.add(b.beat.trim());
-      }
-    });
+    const preBeats = State.masterAgentBeatsMap && (State.masterAgentBeatsMap[agentName] || State.masterAgentBeatsMap.ALL);
+    if (preBeats) {
+      preBeats.forEach(bName => knownBeats.add(bName));
+    }
 
     (State.bills || []).forEach(b => {
       if (agentName === 'ALL' || isSameAgent(b.agent, agentName)) {
@@ -6191,6 +6263,26 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       }
     });
 
+    // Pre-aggregate Master Sheet counts by Agent + Beat in ONE single pass (instead of 21 separate filter passes)
+    const sheetBeatTotals = new Map();
+    const masterRows = State.masterSheetBills || [];
+    for (let i = 0; i < masterRows.length; i++) {
+      const mb = masterRows[i];
+      if (!mb || !mb.beat || !mb.agent) continue;
+      const ag = mb._canonAgent || mb.agent;
+      const bKey = `${ag}___${mb.beat.trim()}`;
+      let entry = sheetBeatTotals.get(bKey);
+      if (!entry) {
+        entry = { agent: ag, beat: mb.beat.trim(), total: 0, paid: 0 };
+        sheetBeatTotals.set(bKey, entry);
+      }
+      entry.total++;
+      if (mb._isPaid !== undefined ? mb._isPaid : isBillPaidInFull(mb)) {
+        entry.paid++;
+      }
+    }
+    const sheetBeatEntries = Array.from(sheetBeatTotals.values());
+
     // Determine target agents
     const agents = State.agents.filter(a => {
       if (agentFilter === 'ALL') return true;
@@ -6232,12 +6324,19 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
         });
       });
 
-      // Also pick up any additional beats present in bills or Master Sheet for this agent
-      const extraSourceBills = [...allLiveBills, ...(State.masterSheetBills || [])];
-      extraSourceBills.forEach(b => {
-        if (!isSameAgent(b.agent, agent.name)) return;
-        let rawName = String(b.beatName || b.beat || '').trim();
-        rawName = rawName.replace(/\s*\((Mon|Tue|Wed|Thu|Fri|Sat)[^)]*\)/gi, '').replace(/\s*\(Week\s*\d+[^)]*\)/gi, '').trim();
+      // Also pick up any additional beats present in live bills or pre-indexed Master Sheet beats for this agent
+      const agentLiveBills = allLiveBills.filter(b => isSameAgent(b.agent, agent.name));
+      const candidateBeatNames = new Set();
+      agentLiveBills.forEach(b => {
+        const bn = String(b.beatName || b.beat || '').trim();
+        if (bn) candidateBeatNames.add(bn);
+      });
+      if (State.masterAgentBeatsMap && State.masterAgentBeatsMap[agent.name]) {
+        State.masterAgentBeatsMap[agent.name].forEach(bn => candidateBeatNames.add(bn));
+      }
+
+      candidateBeatNames.forEach(rawVal => {
+        let rawName = rawVal.replace(/\s*\((Mon|Tue|Wed|Thu|Fri|Sat)[^)]*\)/gi, '').replace(/\s*\(Week\s*\d+[^)]*\)/gi, '').trim();
         if (rawName && rawName.length > 1) {
           const alreadyExists = beatsList.some(bt => isSameBeat(bt.beatName, rawName));
           if (!alreadyExists && !seenBeatKeys.has(rawName.toLowerCase())) {
@@ -6254,7 +6353,6 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       });
 
       // Check if any live bills for this agent still have no matching beat in beatsList
-      const agentLiveBills = allLiveBills.filter(b => isSameAgent(b.agent, agent.name));
       const unmatchedLiveBills = agentLiveBills.filter(b => {
         const bBeat = b.beat || b.beatName || '';
         return !bBeat || !beatsList.some(bt => isSameBeat(bt.beatName, bBeat));
@@ -6340,10 +6438,18 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
           clearanceRate = 100;
         }
 
-        // Master sheet metrics
-        const sheetBills = (State.masterSheetBills || []).filter(b => isSameAgent(b.agent, agent.name) && isSameBeat(b.beat, bt.beatName));
-        const sheetTotalCount = sheetBills.length;
-        const sheetPaidCount = sheetBills.filter(b => isBillPaidInFull(b)).length;
+        // Master sheet metrics from pre-aggregated map (fast O(K) over unique beats instead of O(15000))
+        let sheetTotalCount = 0;
+        let sheetPaidCount = 0;
+        if (!bt.isUnassignedBucket) {
+          for (let sIdx = 0; sIdx < sheetBeatEntries.length; sIdx++) {
+            const sb = sheetBeatEntries[sIdx];
+            if (isSameAgent(sb.agent, agent.name) && isSameBeat(sb.beat, bt.beatName)) {
+              sheetTotalCount += sb.total;
+              sheetPaidCount += sb.paid;
+            }
+          }
+        }
         const sheetDueCount = Math.max(0, sheetTotalCount - sheetPaidCount);
 
         agentDispatchedCount += dispatchedCount;
@@ -6757,23 +6863,17 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
   function getAvailableBeats(agentName = '') {
     const beatsSet = new Set();
     const agentLower = (agentName || '').toLowerCase().trim();
+    let canonKey = 'ALL';
+    if (agentLower.includes('shivam')) canonKey = 'Shivam';
+    else if (agentLower.includes('self')) canonKey = 'Self';
+    else if (agentLower.includes('rajesh')) canonKey = 'Rajesh';
 
-    // 1. Beats specifically mapped to this agent in Master Sheet
-    if (agentLower && State.masterSheetBills && State.masterSheetBills.length > 0) {
-      State.masterSheetBills.forEach(b => {
-        if (b.beat && b.agent && b.agent.toLowerCase().includes(agentLower)) {
-          beatsSet.add(b.beat.trim());
-        }
-      });
-    }
-
-    // 2. If fewer than 4 beats found for this agent, include all beats from Master Sheet
-    if (beatsSet.size < 4 && State.masterSheetBills && State.masterSheetBills.length > 0) {
-      State.masterSheetBills.forEach(b => {
-        if (b.beat && b.beat.trim().length > 1) {
-          beatsSet.add(b.beat.trim());
-        }
-      });
+    if (State.masterAgentBeatsMap) {
+      const agentBeats = State.masterAgentBeatsMap[canonKey];
+      if (agentBeats) agentBeats.forEach(b => beatsSet.add(b));
+      if (beatsSet.size < 4 && State.masterAgentBeatsMap.ALL) {
+        State.masterAgentBeatsMap.ALL.forEach(b => beatsSet.add(b));
+      }
     }
 
     // 3. Fallback standard routes if Master Sheet hasn't loaded yet
@@ -7764,7 +7864,9 @@ _BillAudit Pro_`;
     updateGlobalStats();
     updateOfflineQueueBadge();
     updateMasterSheetUI();
-    renderLeftOutTab();
+    if (State.activeTab === 'tab-leftout') {
+      renderLeftOutTab();
+    }
 
     const scriptInput = document.getElementById('googleScriptUrl');
     if (scriptInput) scriptInput.value = State.settings.mainSheetScriptUrl || State.settings.scriptUrl || '';
