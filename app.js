@@ -411,7 +411,17 @@
 
   function saveState(key) {
     try {
-      if (!key || key === 'bills') localStorage.setItem(STORAGE_KEYS.BILLS, JSON.stringify(State.bills));
+      if (!key || key === 'bills') {
+        const billsJson = JSON.stringify(State.bills);
+        localStorage.setItem(STORAGE_KEYS.BILLS, billsJson);
+        // When running inside the Native Rust (Tauri) Windows Desktop App, mirror custody bills to Windows AppData disk
+        if (typeof window !== 'undefined' && window.__TAURI__ && window.__TAURI__.invoke) {
+          window.__TAURI__.invoke('save_local_backup', {
+            filename: 'custody_bills_backup.json',
+            content: billsJson
+          }).catch(() => {});
+        }
+      }
       if (!key || key === 'agents') localStorage.setItem(STORAGE_KEYS.AGENTS, JSON.stringify(State.agents));
       if (!key || key === 'basket') localStorage.setItem(STORAGE_KEYS.BASKET, JSON.stringify(State.dispatchBasket));
       if (!key || key === 'master') {

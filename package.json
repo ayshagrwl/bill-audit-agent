@@ -1,0 +1,16 @@
+{
+  "name": "billaudit-pro-desktop",
+  "version": "1.0.0",
+  "description": "BillAudit Pro - Native Rust (Tauri) Windows Desktop Application for Sales Agent Custody & 2D Scanner",
+  "private": true,
+  "scripts": {
+    "prepare-dist": "node scripts/prepare-dist.js",
+    "dev": "node scripts/prepare-dist.js && tauri dev",
+    "build": "node scripts/prepare-dist.js && tauri build",
+    "build:windows": "node scripts/prepare-dist.js && tauri build --target x86_64-pc-windows-msvc",
+    "test": "node test_suite.js"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^1.6.0"
+  }
+}
