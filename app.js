@@ -103,6 +103,7 @@
     homeCustomDate: null,
     homeDecisionTab: 'UNRETURNED', // 'UNRETURNED', 'OVERDUE', 'PARTIAL', 'MISSED_SHEET'
     homeDecisionAgent: 'ALL',
+    homeDecisionAging: null, // aging bucket id from the dashboard chart, filters the action table
     homeDecisionSearch: '',
     activeTab: 'tab-home',
     lastScannedCode: null,
@@ -1493,71 +1494,405 @@
     requestAnimationFrame(step);
   }
 
-  function renderHomeCharts(outCount, inCount, diffCount, outAmt, inAmt, diffAmt) {
-    const total = outCount || 0;
-    const receivedPct = total > 0 ? Math.min(1, inCount / total) : 0;
-    const pendingPct = total > 0 ? Math.min(1, diffCount / total) : 0;
+  // ========================================================
+  // DASHBOARD CHARTS: daily trend, agent recovery, aging & routes
+  // ========================================================
 
-    const circumference = 389.56;
-    const receivedLength = receivedPct * circumference;
-    const pendingLength = pendingPct * circumference;
+  // Fixed status order for every stacked chart: the actionable part sits on the baseline.
+  const VIZ_STATUS = [
+    { key: 'out', label: 'Not returned yet', cls: 'viz-crit', icon: 'fa-person-walking-luggage' },
+    { key: 'partial', label: 'Part-paid, balance due', cls: 'viz-warn', icon: 'fa-scale-unbalanced-flip' },
+    { key: 'accounted', label: 'Accounted (paid / returned)', cls: 'viz-good', icon: 'fa-circle-check' }
+  ];
 
-    const segReceived = document.getElementById('donutSegReceived');
-    const segPending = document.getElementById('donutSegPending');
-    const centerTotal = document.getElementById('donutCenterTotal');
-    const overallRecBadge = document.getElementById('decisionOverallRecoveryBadge');
+  const AGING_BUCKETS = [
+    { id: 'FRESH', label: '0–1 day', min: 0, max: 1 },
+    { id: 'ACTIVE', label: '2–3 days', min: 2, max: 3 },
+    { id: 'WARN', label: '4–7 days', min: 4, max: 7 },
+    { id: 'CRIT', label: '8+ days', min: 8, max: Infinity }
+  ];
 
-    if (centerTotal) centerTotal.textContent = total;
-    if (overallRecBadge) {
-      const valPct = outAmt > 0 ? Math.min(100, Math.round((inAmt / outAmt) * 100)) : (total > 0 ? Math.round(receivedPct * 100) : 0);
-      overallRecBadge.textContent = `${valPct}% Value Accounted`;
-    }
+  const vizTips = new Map();
+  let vizTipSeq = 0;
 
-    if (segReceived) {
-      segReceived.style.strokeDasharray = `${receivedLength} ${circumference}`;
-      segReceived.style.strokeDashoffset = '0';
-    }
+  function formatINRCompact(val) {
+    const n = Number(val) || 0;
+    const abs = Math.abs(n);
+    const fmt = (v, digits) => v.toFixed(digits).replace(/\.0$/, '');
+    if (abs >= 10000000) return `₹${fmt(n / 10000000, abs >= 100000000 ? 0 : 1)}Cr`;
+    if (abs >= 100000) return `₹${fmt(n / 100000, abs >= 1000000 ? 0 : 1)}L`;
+    if (abs >= 1000) return `₹${fmt(n / 1000, abs >= 10000 ? 0 : 1)}k`;
+    return `₹${Math.round(n)}`;
+  }
 
-    if (segPending) {
-      segPending.style.strokeDasharray = `${pendingLength} ${circumference}`;
-      segPending.style.strokeDashoffset = `${-receivedLength}`;
-    }
+  function niceCeil(val) {
+    if (val <= 0) return 1;
+    const pow = Math.pow(10, Math.floor(Math.log10(val)));
+    const f = val / pow;
+    const step = f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10;
+    return step * pow;
+  }
 
-    const legRec = document.getElementById('chartLegendReceived');
-    const legPend = document.getElementById('chartLegendPending');
-    const legTot = document.getElementById('chartLegendTotal');
+  /**
+   * Splits a bill's value into mutually exclusive parts so stacks always add up:
+   * accounted (collected / returned), part-paid balance due, and not-returned due.
+   */
+  function splitBillValue(b) {
+    const accounted = getBillCollectedAmount(b);
+    const pending = getBillPendingAmount(b);
+    if (isBillUnreturnedInField(b)) return { accounted, partial: 0, out: pending };
+    return { accounted, partial: pending, out: 0 };
+  }
 
-    if (legRec) legRec.textContent = `${inCount} (${Math.round(receivedPct * 100)}%) • ${formatINR(inAmt)}`;
-    if (legPend) legPend.textContent = `${diffCount} (${Math.round(pendingPct * 100)}%) • ${formatINR(diffAmt)}`;
-    if (legTot) legTot.textContent = `${total} bills (${formatINR(outAmt)})`;
+  function sumBillValues(bills) {
+    const t = { accounted: 0, partial: 0, out: 0, total: 0, count: 0, outCount: 0, partialCount: 0 };
+    bills.forEach(b => {
+      const v = splitBillValue(b);
+      t.accounted += v.accounted;
+      t.partial += v.partial;
+      t.out += v.out;
+      t.count++;
+      if (v.out > 0) t.outCount++;
+      else if (v.partial > 0) t.partialCount++;
+    });
+    t.total = t.accounted + t.partial + t.out;
+    return t;
+  }
 
-    const container = document.getElementById('agentBarsContainer');
-    if (container) {
-      container.innerHTML = '';
-      const filterMode = State.homeDateFilter || 'ALL';
-      const customDate = State.homeCustomDate;
-      State.agents.forEach(agent => {
-        const stats = getAgentLeftOutStats(agent.name, filterMode, null, customDate);
-        const agTotal = stats.totalCount || 0;
-        const agRec = stats.checkedInCount || 0;
-        const agPct = agTotal > 0 ? Math.round((agRec / agTotal) * 100) : 0;
+  function registerVizTip(title, rows) {
+    const id = `vt${++vizTipSeq}`;
+    vizTips.set(id, { title, rows });
+    return id;
+  }
 
+  function statusTipRows(t) {
+    return [
+      ...VIZ_STATUS.map(st => ({ cls: st.cls, label: st.label, value: formatINR(t[st.key]) })),
+      { label: `Total · ${t.count} bill${t.count === 1 ? '' : 's'}`, value: formatINR(t.total), strong: true }
+    ];
+  }
+
+  function renderStatusLegends() {
+    const html = VIZ_STATUS.map(st => `
+      <span class="viz-legend-item"><span class="viz-swatch ${st.cls}"></span><i class="fa-solid ${st.icon}"></i> ${st.label}</span>
+    `).join('');
+    document.querySelectorAll('[data-viz-legend="status"]').forEach(el => { el.innerHTML = html; });
+  }
+
+  function stackSegmentsHtml(t, scaleMax, vertical) {
+    if (scaleMax <= 0) return '';
+    return VIZ_STATUS.map(st => {
+      const v = t[st.key];
+      if (v <= 0) return '';
+      const pct = (v / scaleMax) * 100;
+      return `<span class="viz-seg ${st.cls}" style="${vertical ? 'height' : 'width'}:${pct}%"></span>`;
+    }).join('');
+  }
+
+  function ensureVizTooltip() {
+    let tip = document.getElementById('vizTooltip');
+    if (tip) return tip;
+    tip = document.createElement('div');
+    tip.id = 'vizTooltip';
+    tip.className = 'viz-tooltip';
+    tip.setAttribute('role', 'tooltip');
+    document.body.appendChild(tip);
+
+    const show = (mark, x, y) => {
+      const data = vizTips.get(mark.dataset.vizTip);
+      if (!data) return;
+      tip.textContent = '';
+      const title = document.createElement('div');
+      title.className = 'viz-tooltip-title';
+      title.textContent = data.title;
+      tip.appendChild(title);
+      data.rows.forEach(r => {
         const row = document.createElement('div');
-        row.className = 'agent-bar-row';
-        row.style.cursor = 'pointer';
-        row.title = `Click to inspect ${agent.name}'s bills`;
-        row.innerHTML = `
-          <div class="agent-bar-info">
-            <span><i class="fa-solid fa-user-tie"></i> ${agent.name}</span>
-            <span class="font-mono">${agRec}/${agTotal} cleared (${agPct}%) &bull; <strong class="${stats.leftOutCount > 0 ? 'text-danger' : 'text-success'}">${stats.leftOutCount} pending (${formatINR(stats.leftOutAmt)})</strong></span>
-          </div>
-          <div class="agent-bar-track">
-            <div class="agent-bar-fill" style="width: ${agPct}%;"></div>
-          </div>
-        `;
-        row.addEventListener('click', () => openDashboardBreakdown('AGENT', agent.name));
-        container.appendChild(row);
+        row.className = 'viz-tooltip-row' + (r.strong ? ' is-total' : '');
+        const key = document.createElement('span');
+        key.className = 'viz-tooltip-key ' + (r.cls || '');
+        const label = document.createElement('span');
+        label.className = 'viz-tooltip-label';
+        label.textContent = r.label;
+        const value = document.createElement('strong');
+        value.textContent = r.value;
+        row.append(key, value, label);
+        tip.appendChild(row);
       });
+      tip.style.display = 'block';
+      const w = tip.offsetWidth;
+      const h = tip.offsetHeight;
+      let left = x + 14;
+      let top = y + 14;
+      if (left + w > window.innerWidth - 8) left = x - w - 14;
+      if (top + h > window.innerHeight - 8) top = y - h - 14;
+      tip.style.left = `${Math.max(8, left)}px`;
+      tip.style.top = `${Math.max(8, top)}px`;
+    };
+    const hide = () => { tip.style.display = 'none'; };
+
+    document.addEventListener('pointermove', e => {
+      const mark = e.target.closest && e.target.closest('[data-viz-tip]');
+      if (mark) show(mark, e.clientX, e.clientY);
+      else if (tip.style.display === 'block') hide();
+    });
+    document.addEventListener('focusin', e => {
+      const mark = e.target.closest && e.target.closest('[data-viz-tip]');
+      if (!mark) return hide();
+      const r = mark.getBoundingClientRect();
+      show(mark, r.left + r.width / 2, r.top);
+    });
+    document.addEventListener('scroll', hide, true);
+    return tip;
+  }
+
+  /**
+   * Daily stacked columns: value dispatched per day, split by recovery status.
+   * Clicking a day applies it as the dashboard's custom date filter (click again to clear).
+   */
+  function renderTrendChart(custodyBills) {
+    const el = document.getElementById('vizTrendChart');
+    if (!el) return;
+
+    const days = [];
+    const byDate = new Map();
+    const now = new Date();
+    for (let i = 13; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      days.push({ key, date: d, bills: [] });
+      byDate.set(key, days[days.length - 1]);
+    }
+    custodyBills.forEach(b => {
+      const day = byDate.get(normalizeDateString(b.dispatchDate) || (b.status === 'IN_BASKET' ? getTodayDateString() : ''));
+      if (day) day.bills.push(b);
+    });
+    days.forEach(d => { d.t = sumBillValues(d.bills); });
+
+    const maxTotal = Math.max(0, ...days.map(d => d.t.total));
+    const scaleMax = niceCeil(maxTotal);
+    const stillOut = days.reduce((s, d) => s + d.t.out + d.t.partial, 0);
+    const headline = document.getElementById('vizTrendHeadline');
+    if (headline) {
+      headline.textContent = stillOut > 0 ? `${formatINR(stillOut)} still due from these 14 days` : 'Everything from these 14 days is accounted';
+      headline.classList.toggle('text-danger', stillOut > 0);
+      headline.classList.toggle('text-success', stillOut <= 0);
+    }
+
+    if (maxTotal <= 0) {
+      el.innerHTML = `<div class="viz-empty">No bills dispatched in the last 14 days.</div>`;
+      return;
+    }
+
+    const filterMode = State.homeDateFilter || 'ALL';
+    const selectedKey = filterMode === 'TODAY' ? getTodayDateString()
+      : filterMode === 'YESTERDAY' ? getYesterdayDateString()
+      : (filterMode === 'CUSTOM' && State.homeCustomDate) ? normalizeDateString(State.homeCustomDate) : '';
+
+    // Direct label only on the day with the most value still due
+    let worstKey = '';
+    let worstDue = 0;
+    days.forEach(d => {
+      const due = d.t.out + d.t.partial;
+      if (due > worstDue) { worstDue = due; worstKey = d.key; }
+    });
+
+    const gridSteps = [1, 0.5, 0];
+    const gridHtml = gridSteps.map(f => `
+      <div class="viz-grid-line" style="bottom:${f * 100}%"><span>${formatINRCompact(scaleMax * f)}</span></div>
+    `).join('');
+
+    const colsHtml = days.map(d => {
+      const weekday = d.date.toLocaleDateString('en-IN', { weekday: 'short' });
+      const dayLabel = d.date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+      const tipId = registerVizTip(`${weekday}, ${dayLabel}`, statusTipRows(d.t));
+      const due = d.t.out + d.t.partial;
+      const isSel = d.key === selectedKey;
+      const aria = `${weekday} ${dayLabel}: ${formatINR(d.t.total)} dispatched, ${formatINR(due)} still due`;
+      return `
+        <button type="button" class="viz-col${isSel ? ' is-selected' : ''}${selectedKey && !isSel ? ' is-dimmed' : ''}" data-viz-tip="${tipId}" data-viz-day="${d.key}" aria-label="${escapeHtml(aria)}" aria-pressed="${isSel}">
+          <span class="viz-col-plot">
+            <span class="viz-col-stack" style="height:${(d.t.total / scaleMax) * 100}%">
+              ${d.key === worstKey && worstDue > 0 ? `<span class="viz-col-label">${formatINRCompact(worstDue)} due</span>` : ''}
+              ${stackSegmentsHtml(d.t, d.t.total, true)}
+            </span>
+          </span>
+          <span class="viz-col-x"><strong>${d.date.getDate()}</strong><small>${weekday}</small></span>
+        </button>
+      `;
+    }).join('');
+
+    el.innerHTML = `<div class="viz-trend-plot"><div class="viz-grid-lines">${gridHtml}</div><div class="viz-cols">${colsHtml}</div></div>`;
+
+    el.querySelectorAll('[data-viz-day]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const key = btn.dataset.vizDay;
+        const picker = document.getElementById('homeCustomDatePicker');
+        if (key === selectedKey) {
+          State.homeDateFilter = 'ALL';
+          State.homeCustomDate = null;
+          if (picker) picker.value = '';
+        } else if (key === getTodayDateString()) {
+          State.homeDateFilter = 'TODAY';
+          if (picker) picker.value = '';
+        } else {
+          State.homeDateFilter = 'CUSTOM';
+          State.homeCustomDate = key;
+          if (picker) picker.value = key;
+        }
+        updateHomeStats();
+      });
+    });
+  }
+
+  /**
+   * One stacked bar per agent (plus an all-agents total) for the active date filter.
+   * Bar length is the agent's dispatched value, so agents compare at a glance.
+   */
+  function renderAgentRecoveryChart(custodyBills) {
+    const el = document.getElementById('vizAgentChart');
+    const badge = document.getElementById('decisionOverallRecoveryBadge');
+    if (!el) return;
+
+    const overall = sumBillValues(custodyBills);
+    if (badge) {
+      const pct = overall.total > 0 ? Math.round((overall.accounted / overall.total) * 100) : 0;
+      badge.textContent = `${pct}% accounted`;
+      badge.classList.toggle('text-success', pct >= 80);
+      badge.classList.toggle('text-danger', overall.total > 0 && pct < 50);
+    }
+
+    const rows = State.agents.map(agent => ({
+      name: agent.name,
+      t: sumBillValues(custodyBills.filter(b => isSameAgent(b.agent, agent.name)))
+    }));
+    const assigned = new Set();
+    custodyBills.forEach(b => { if (State.agents.some(a => isSameAgent(b.agent, a.name))) assigned.add(b); });
+    const unassigned = custodyBills.filter(b => !assigned.has(b));
+    if (unassigned.length > 0) rows.push({ name: 'Unassigned', t: sumBillValues(unassigned), noClick: true });
+
+    if (overall.total <= 0) {
+      el.innerHTML = `<div class="viz-empty">No dispatched bills for this date filter.</div>`;
+      return;
+    }
+
+    const scaleMax = Math.max(...rows.map(r => r.t.total), 1);
+    const rowHtml = (r, isTotal) => {
+      const due = r.t.out + r.t.partial;
+      const pct = r.t.total > 0 ? Math.round((r.t.accounted / r.t.total) * 100) : 0;
+      const tipId = registerVizTip(isTotal ? 'All agents' : r.name, statusTipRows(r.t));
+      const tag = r.noClick || isTotal ? 'div' : 'button';
+      return `
+        <${tag} ${tag === 'button' ? 'type="button"' : 'tabindex="0"'} class="viz-hbar-row${isTotal ? ' is-total' : ''}" data-viz-tip="${tipId}" ${tag === 'button' ? `data-viz-agent="${escapeHtml(r.name)}"` : ''} aria-label="${escapeHtml(`${isTotal ? 'All agents' : r.name}: ${formatINR(r.t.total)} dispatched, ${formatINR(due)} due, ${pct}% accounted`)}">
+          <span class="viz-hbar-head">
+            <span class="viz-hbar-name">${isTotal ? 'All agents' : escapeHtml(r.name)}</span>
+            <span class="viz-hbar-value font-mono">${due > 0 ? `<strong>${formatINR(due)}</strong> due` : '<strong>Nothing due</strong>'} · ${pct}% of ${formatINRCompact(r.t.total)}</span>
+          </span>
+          <span class="viz-hbar-track">${stackSegmentsHtml(r.t, isTotal ? r.t.total : scaleMax, false)}</span>
+        </${tag}>
+      `;
+    };
+
+    el.innerHTML = rowHtml({ t: overall }, true) + rows.filter(r => r.t.count > 0).map(r => rowHtml(r, false)).join('');
+    el.querySelectorAll('[data-viz-agent]').forEach(btn => {
+      btn.addEventListener('click', () => openDashboardBreakdown('AGENT', btn.dataset.vizAgent));
+    });
+  }
+
+  /**
+   * Pending value by days in field (ordinal single-hue ramp: older = stronger) and the
+   * routes holding the most pending value. Both use all missing/pending custody bills.
+   */
+  function renderAgingAndRouteCharts(missingBills) {
+    const agingEl = document.getElementById('agingBucketsContainer');
+    const beatsEl = document.getElementById('topRiskBeatsContainer');
+    const avgBadge = document.getElementById('decisionAvgAgingBadge');
+
+    const buckets = AGING_BUCKETS.map(bk => ({ ...bk, count: 0, amt: 0 }));
+    let totalAge = 0;
+    missingBills.forEach(b => {
+      const age = getBillAgingDays(b);
+      totalAge += age;
+      const bk = buckets.find(x => age >= x.min && age <= x.max) || buckets[buckets.length - 1];
+      bk.count++;
+      bk.amt += getBillPendingAmount(b);
+    });
+    if (avgBadge) {
+      const avg = missingBills.length > 0 ? (totalAge / missingBills.length).toFixed(1) : '0';
+      avgBadge.textContent = `Avg ${avg}d in field`;
+    }
+
+    if (agingEl) {
+      if (missingBills.length === 0) {
+        agingEl.innerHTML = `<div class="viz-empty">✓ No unreturned or part-paid bills.</div>`;
+      } else {
+        const max = Math.max(...buckets.map(b => b.amt), 1);
+        const active = State.homeDecisionAging;
+        agingEl.innerHTML = buckets.map((bk, i) => {
+          const tipId = registerVizTip(`${bk.label} in field`, [
+            { cls: `viz-age-${i + 1}`, label: 'Pending value', value: formatINR(bk.amt), strong: true },
+            { label: 'Bills', value: String(bk.count) }
+          ]);
+          return `
+            <button type="button" class="viz-hbar-row viz-hbar-inline${active === bk.id ? ' is-selected' : ''}${active && active !== bk.id ? ' is-dimmed' : ''}" data-viz-tip="${tipId}" data-viz-aging="${bk.id}" aria-pressed="${active === bk.id}" aria-label="${escapeHtml(`${bk.label} in field: ${formatINR(bk.amt)} pending across ${bk.count} bills`)}">
+              <span class="viz-hbar-name">${bk.label}</span>
+              <span class="viz-hbar-track"><span class="viz-seg viz-age-${i + 1}" style="width:${(bk.amt / max) * 100}%"></span></span>
+              <span class="viz-hbar-value font-mono"><strong>${formatINRCompact(bk.amt)}</strong> · ${bk.count}</span>
+            </button>
+          `;
+        }).join('');
+        agingEl.querySelectorAll('[data-viz-aging]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const id = btn.dataset.vizAging;
+            State.homeDecisionAging = State.homeDecisionAging === id ? null : id;
+            renderDecisionAnalysisCenter();
+            if (State.homeDecisionAging) {
+              document.getElementById('homeDecisionActionCard')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+          });
+        });
+      }
+    }
+
+    if (beatsEl) {
+      const beatMap = new Map();
+      missingBills.forEach(b => {
+        const beat = b.beat || b.beatName || inferBillBeat(b) || 'Unassigned route';
+        const agent = b.agent || 'Unassigned';
+        const key = `${agent}___${beat}`;
+        if (!beatMap.has(key)) beatMap.set(key, { agent, beat, count: 0, amt: 0 });
+        const e = beatMap.get(key);
+        e.count++;
+        e.amt += getBillPendingAmount(b);
+      });
+      const top = Array.from(beatMap.values()).filter(x => x.amt > 0).sort((a, b) => b.amt - a.amt).slice(0, 5);
+      if (top.length === 0) {
+        beatsEl.innerHTML = `<div class="viz-empty">✓ No stuck route balances — all beats cleared!</div>`;
+      } else {
+        const max = top[0].amt;
+        beatsEl.innerHTML = top.map(tb => {
+          const tipId = registerVizTip(tb.beat, [
+            { cls: 'viz-route', label: 'Pending value', value: formatINR(tb.amt), strong: true },
+            { label: 'Bills', value: String(tb.count) },
+            { label: 'Agent', value: tb.agent }
+          ]);
+          return `
+            <button type="button" class="viz-hbar-row" data-viz-tip="${tipId}" data-risk-agent="${escapeHtml(tb.agent)}" data-risk-beat="${escapeHtml(tb.beat)}" aria-label="${escapeHtml(`${tb.beat} (${tb.agent}): ${formatINR(tb.amt)} pending across ${tb.count} bills`)}">
+              <span class="viz-hbar-head">
+                <span class="viz-hbar-name">${escapeHtml(tb.beat)} <small class="text-muted"><i class="fa-solid fa-user-tie"></i> ${escapeHtml(tb.agent)}</small></span>
+                <span class="viz-hbar-value font-mono"><strong>${formatINR(tb.amt)}</strong> · ${tb.count} bill${tb.count === 1 ? '' : 's'}</span>
+              </span>
+              <span class="viz-hbar-track"><span class="viz-seg viz-route" style="width:${(tb.amt / max) * 100}%"></span></span>
+            </button>
+          `;
+        }).join('');
+        beatsEl.querySelectorAll('[data-risk-agent]').forEach(row => {
+          row.addEventListener('click', () => {
+            const agent = row.dataset.riskAgent;
+            openDashboardBreakdown('AGENT', agent === 'Unassigned' ? 'ALL' : agent, row.dataset.riskBeat);
+          });
+        });
+      }
     }
   }
 
@@ -5434,6 +5769,13 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       }
     }
     if (elInAmt) elInAmt.textContent = `${formatINR(inAmt)} accounted`;
+    const partialBackCount = inBills.filter(b => isBillMissingOrPending(b)).length;
+    const inFooter = document.querySelector('#homeInCardPro .card-pro-footer');
+    if (inFooter && inFooter.firstChild) {
+      inFooter.firstChild.textContent = partialBackCount > 0
+        ? `Bills returned or collected — ${partialBackCount} part-paid still counted in Difference `
+        : 'Bills returned or collected safely ';
+    }
     if (elLeftAmt) {
       if (basketCount > 0 && diffBills.length === 0) {
         elLeftAmt.textContent = `${formatINR(diffAmt)} in basket ready`;
@@ -5483,7 +5825,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     } else if (filterMode === 'OVERDUE') {
       if (titleEl) titleEl.innerHTML = `<i class="fa-solid fa-fire-flame-curved text-danger"></i> Overdue Custody Status (&gt;3 Days)`;
       if (hintEl) hintEl.textContent = `Bills dispatched more than 3 days ago`;
-      if (dateBadge) dateBadge.textContent = `Overdue (&gt;3d)`;
+      if (dateBadge) dateBadge.textContent = 'Overdue (>3d)';
     } else if (filterMode === 'ALL') {
       if (titleEl) titleEl.innerHTML = `<i class="fa-solid fa-layer-group"></i> All Active Custody Status`;
       if (hintEl) hintEl.textContent = `Cumulative totals across all recorded dates`;
@@ -5507,7 +5849,14 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       }
     }
 
-    renderHomeCharts(outCount, inCount, diffCount, outAmt, inAmt, diffAmt);
+    vizTips.clear();
+    ensureVizTooltip();
+    renderStatusLegends();
+    const basketAsCustody = uniqueBasketBills.map(b => ({ ...b, status: 'IN_BASKET' }));
+    renderAgentRecoveryChart([...filteredBills, ...basketAsCustody]);
+    const custodyNorms = new Set(State.bills.map(b => normalizeInvoiceNumber(b.billNo)));
+    const trendBasket = (State.dispatchBasket || []).filter(b => b && b.billNo && !custodyNorms.has(normalizeInvoiceNumber(b.billNo)));
+    renderTrendChart([...State.bills, ...trendBasket.map(b => ({ ...b, status: 'IN_BASKET' }))]);
 
     // Render Home Agent Difference Cards
     const diffGrid = document.getElementById('homeAgentDiffGrid');
@@ -5522,7 +5871,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
         card.title = `Click to view breakdown for ${agent.name}`;
         card.innerHTML = `
           <div class="agent-diff-header">
-            <span><i class="fa-solid fa-user-tie"></i> ${agent.name}</span>
+            <span><i class="fa-solid fa-user-tie"></i> ${escapeHtml(agent.name)}</span>
             <span class="count-pill ${stats.leftOutCount > 0 ? 'bg-danger text-white' : ''}" style="font-size:0.75rem;">
               ${stats.leftOutCount} Missing / Due
             </span>
@@ -5535,7 +5884,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
           </div>
           <div class="card-click-hint" style="display: flex; justify-content: space-between; align-items: center;">
             <span><i class="fa-solid fa-list"></i> Bills List</span>
-            <button type="button" class="btn btn-xs btn-outline-primary agent-beat-analysis-btn" data-beat-agent="${agent.name}" style="padding: 2px 8px; font-weight: 700;">
+            <button type="button" class="btn btn-xs btn-outline-primary agent-beat-analysis-btn" data-beat-agent="${escapeHtml(agent.name)}" style="padding: 2px 8px; font-weight: 700;">
               <i class="fa-solid fa-chart-pie"></i> Beat Analysis
             </button>
           </div>
@@ -5559,7 +5908,11 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
 
   function renderDecisionAnalysisCenter() {
     const allBills = State.bills || [];
-    const basketItems = (State.dispatchBasket || []).map(b => ({ ...b, isBasket: true, status: 'IN_BASKET' }));
+    // Basket items already locked into custody must not be counted twice
+    const custodyNorms = new Set(allBills.map(b => normalizeInvoiceNumber(b.billNo)));
+    const basketItems = (State.dispatchBasket || [])
+      .filter(b => b && b.billNo && !custodyNorms.has(normalizeInvoiceNumber(b.billNo)))
+      .map(b => ({ ...b, isBasket: true, status: 'IN_BASKET' }));
     const combinedCustody = [...allBills, ...basketItems];
 
     // 1. Unreturned in field (WITH_AGENT, MISSING_ALERT, LEFT_OUT_ALERT, IN_BASKET)
@@ -5626,88 +5979,9 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       btn.classList.toggle('active', btn.dataset.decTab === activeTab);
     });
 
-    // Compute Aging Buckets across all missing/pending custody bills
+    // Aging & bottleneck-route charts across all missing/pending custody bills
     const allMissingCustody = combinedCustody.filter(b => isBillMissingOrPending(b));
-    const buckets = [
-      { id: 'FRESH', label: '0–1 Day (Fresh)', min: 0, max: 1, count: 0, amt: 0, color: '#10b981' },
-      { id: 'ACTIVE', label: '2–3 Days (In Field)', min: 2, max: 3, count: 0, amt: 0, color: '#3b82f6' },
-      { id: 'WARN', label: '4–7 Days (Overdue)', min: 4, max: 7, count: 0, amt: 0, color: '#f59e0b' },
-      { id: 'CRIT', label: '8+ Days (Critical)', min: 8, max: 99999, count: 0, amt: 0, color: '#ef4444' }
-    ];
-
-    let totalAgeDays = 0;
-    allMissingCustody.forEach(b => {
-      const age = getBillAgingDays(b);
-      const due = getBillPendingAmount(b);
-      totalAgeDays += age;
-      const bucket = buckets.find(bk => age >= bk.min && age <= bk.max) || buckets[3];
-      bucket.count++;
-      bucket.amt += due;
-    });
-
-    const avgAgeBadge = document.getElementById('decisionAvgAgingBadge');
-    if (avgAgeBadge) {
-      const avg = allMissingCustody.length > 0 ? (totalAgeDays / allMissingCustody.length).toFixed(1) : '0';
-      avgAgeBadge.textContent = `Avg Field Age: ${avg}d`;
-    }
-
-    const agingContainer = document.getElementById('agingBucketsContainer');
-    if (agingContainer) {
-      agingContainer.innerHTML = buckets.map(bk => `
-        <div class="aging-bucket-box" data-aging-min="${bk.min}" title="Click to filter bills in this aging range">
-          <div class="aging-bucket-title">${bk.label}</div>
-          <div class="aging-bucket-count font-mono" style="color:${bk.color};">${bk.count} <small style="font-size:0.68rem;font-weight:600;">bills</small></div>
-          <div class="aging-bucket-amt font-mono">${formatINR(bk.amt)}</div>
-        </div>
-      `).join('');
-      agingContainer.querySelectorAll('.aging-bucket-box').forEach(box => {
-        box.addEventListener('click', () => {
-          const min = Number(box.dataset.agingMin) || 0;
-          State.homeDecisionTab = min >= 4 ? 'OVERDUE' : 'UNRETURNED';
-          renderDecisionAnalysisCenter();
-        });
-      });
-    }
-
-    // Compute Top Bottleneck Beats (Highest Pending / Missing Value)
-    const beatRiskMap = new Map();
-    allMissingCustody.forEach(b => {
-      const beatName = b.beat || b.beatName || inferBillBeat(b) || 'Unassigned Route';
-      const agentName = b.agent || 'Rajesh';
-      const key = `${agentName}___${beatName}`;
-      if (!beatRiskMap.has(key)) {
-        beatRiskMap.set(key, { agent: agentName, beat: beatName, count: 0, amt: 0 });
-      }
-      const entry = beatRiskMap.get(key);
-      entry.count++;
-      entry.amt += getBillPendingAmount(b);
-    });
-
-    const topBeats = Array.from(beatRiskMap.values()).sort((a, b) => b.amt - a.amt).slice(0, 3);
-    const topBeatsContainer = document.getElementById('topRiskBeatsContainer');
-    if (topBeatsContainer) {
-      if (topBeats.length === 0) {
-        topBeatsContainer.innerHTML = `<div class="text-muted" style="font-size:0.8rem; padding:8px 0;">✓ No stuck route balances — all beats cleared!</div>`;
-      } else {
-        topBeatsContainer.innerHTML = topBeats.map((tb, idx) => `
-          <div class="bottleneck-beat-row" data-risk-agent="${escapeHtml(tb.agent)}" data-risk-beat="${escapeHtml(tb.beat)}">
-            <div>
-              <strong>#${idx + 1} ${escapeHtml(tb.beat)}</strong>
-              <span class="text-muted" style="font-size:0.75rem; margin-left:6px;"><i class="fa-solid fa-user-tie"></i> ${escapeHtml(tb.agent)}</span>
-            </div>
-            <div class="font-mono">
-              <span class="text-danger font-bold">${formatINR(tb.amt)}</span>
-              <small class="text-muted">(${tb.count} bills)</small>
-            </div>
-          </div>
-        `).join('');
-        topBeatsContainer.querySelectorAll('.bottleneck-beat-row').forEach(row => {
-          row.addEventListener('click', () => {
-            openDashboardBreakdown('AGENT', row.dataset.riskAgent, row.dataset.riskBeat);
-          });
-        });
-      }
-    }
+    renderAgingAndRouteCharts(allMissingCustody);
 
     // Render the Interactive Decision Action Table
     const tbody = document.getElementById('homeDecisionTbody');
@@ -5717,7 +5991,27 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     const searchQ = (State.homeDecisionSearch || '').trim().toLowerCase();
 
     let sourceRows = [];
-    if (activeTab === 'UNRETURNED') {
+    const agingBucket = AGING_BUCKETS.find(bk => bk.id === State.homeDecisionAging);
+    const agingChip = document.getElementById('homeDecisionAgingChip');
+    if (agingChip) {
+      if (agingBucket) {
+        agingChip.style.display = 'flex';
+        agingChip.innerHTML = `<span><i class="fa-solid fa-filter"></i> Showing all unreturned &amp; part-paid bills <strong>${agingBucket.label}</strong> in field</span>
+          <button type="button" class="btn btn-xs btn-outline-secondary" id="homeDecisionAgingClear"><i class="fa-solid fa-xmark"></i> Clear</button>`;
+        agingChip.querySelector('#homeDecisionAgingClear')?.addEventListener('click', () => {
+          State.homeDecisionAging = null;
+          renderDecisionAnalysisCenter();
+        });
+      } else {
+        agingChip.style.display = 'none';
+      }
+    }
+    if (agingBucket) {
+      document.querySelectorAll('#homeDecisionTabs .decision-tab-btn, .decision-kpi-card').forEach(el => el.classList.remove('active'));
+      sourceRows = allMissingCustody
+        .filter(b => { const age = getBillAgingDays(b); return age >= agingBucket.min && age <= agingBucket.max; })
+        .map(b => ({ type: 'CUSTODY', bill: b }));
+    } else if (activeTab === 'UNRETURNED') {
       sourceRows = unreturnedBills.map(b => ({ type: 'CUSTODY', bill: b }));
     } else if (activeTab === 'OVERDUE') {
       sourceRows = overdueBills.map(b => ({ type: 'CUSTODY', bill: b }));
@@ -7279,12 +7573,14 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     document.querySelectorAll('.decision-kpi-card').forEach(card => {
       card.addEventListener('click', () => {
         State.homeDecisionTab = card.dataset.decisionTab || 'UNRETURNED';
+        State.homeDecisionAging = null;
         renderDecisionAnalysisCenter();
       });
     });
     document.querySelectorAll('#homeDecisionTabs .decision-tab-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         State.homeDecisionTab = btn.dataset.decTab || 'UNRETURNED';
+        State.homeDecisionAging = null;
         renderDecisionAnalysisCenter();
       });
     });

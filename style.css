@@ -3435,3 +3435,410 @@ kbd {
 }
 
 
+
+/* ========================================================
+   DASHBOARD CHARTS (trend columns, stacked bars, aging, routes)
+   Status steps are fixed; the aging ramp is one hue, older = stronger.
+   ======================================================== */
+:root {
+  --viz-good: #0ca30c;
+  --viz-warn: #fab219;
+  --viz-crit: #d03b3b;
+  --viz-age-1: #86b6ef;
+  --viz-age-2: #3987e5;
+  --viz-age-3: #1c5cab;
+  --viz-age-4: #0d366b;
+  --viz-route: #2a78d6;
+  --viz-grid: #e8ecf1;
+  --viz-gap: var(--bg-card);
+}
+
+[data-theme="dark"] {
+  --viz-age-1: #184f95;
+  --viz-age-2: #256abf;
+  --viz-age-3: #5598e7;
+  --viz-age-4: #9ec5f4;
+  --viz-route: #3987e5;
+  --viz-grid: #222d42;
+}
+
+.viz-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.viz-card-wide {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 980px) {
+  .viz-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.decision-card-head > span {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.viz-headline {
+  white-space: normal !important;
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-align: right;
+}
+
+.viz-good { background: var(--viz-good); }
+.viz-warn { background: var(--viz-warn); }
+.viz-crit { background: var(--viz-crit); }
+.viz-age-1 { background: var(--viz-age-1); }
+.viz-age-2 { background: var(--viz-age-2); }
+.viz-age-3 { background: var(--viz-age-3); }
+.viz-age-4 { background: var(--viz-age-4); }
+.viz-route { background: var(--viz-route); }
+
+.viz-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.viz-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.viz-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  display: inline-block;
+}
+
+.viz-empty {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  padding: 14px 0;
+}
+
+/* Daily trend columns */
+.viz-trend-plot {
+  position: relative;
+  height: 210px;
+  padding-left: 44px;
+}
+
+.viz-grid-lines {
+  position: absolute;
+  left: 44px;
+  right: 0;
+  top: 18px;
+  bottom: 34px;
+  pointer-events: none;
+}
+
+.viz-grid-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 1px solid var(--viz-grid);
+}
+
+.viz-grid-line span {
+  position: absolute;
+  right: calc(100% + 6px);
+  top: -0.55em;
+  font-size: 0.66rem;
+  font-family: var(--font-mono);
+  color: var(--text-soft);
+  white-space: nowrap;
+}
+
+.viz-cols {
+  position: relative;
+  display: flex;
+  height: 100%;
+  gap: 2px;
+}
+
+.viz-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  border-radius: 6px;
+  color: inherit;
+  font: inherit;
+}
+
+.viz-col:hover,
+.viz-col:focus-visible {
+  background: var(--bg-subtle);
+  outline: none;
+}
+
+.viz-col-plot {
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-top: 18px;
+}
+
+.viz-col-stack {
+  position: relative;
+  width: min(70%, 28px);
+  display: flex;
+  flex-direction: column-reverse;
+  min-height: 0;
+}
+
+.viz-col-stack .viz-seg {
+  display: block;
+  width: 100%;
+  min-height: 2px;
+  box-sizing: border-box;
+}
+
+/* 2px surface gap between stacked segments, inside the segment so stacks stay exact */
+.viz-col-stack .viz-seg + .viz-seg {
+  border-bottom: 2px solid var(--viz-gap);
+}
+
+/* Rounded data-end only (top of the stack); the baseline stays square */
+.viz-col-stack .viz-seg:last-of-type {
+  border-radius: 4px 4px 0 0;
+}
+
+.viz-col-label {
+  position: absolute;
+  bottom: calc(100% + 3px);
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 0.66rem;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  color: var(--text-main);
+  white-space: nowrap;
+}
+
+.viz-col-x {
+  height: 34px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.1;
+  border-top: 1px solid var(--border-light);
+}
+
+.viz-col-x strong {
+  font-size: 0.74rem;
+  color: var(--text-main);
+}
+
+.viz-col-x small {
+  font-size: 0.62rem;
+  color: var(--text-soft);
+}
+
+.viz-col.is-selected .viz-col-x strong {
+  color: var(--primary);
+}
+
+.viz-col.is-selected {
+  background: var(--primary-light);
+}
+
+.viz-col.is-dimmed .viz-col-stack,
+.viz-hbar-row.is-dimmed .viz-hbar-track {
+  opacity: 0.4;
+}
+
+@media (max-width: 600px) {
+  .viz-col:nth-child(even) .viz-col-x small {
+    visibility: hidden;
+  }
+  .viz-trend-plot {
+    padding-left: 38px;
+  }
+  .viz-grid-lines {
+    left: 38px;
+  }
+}
+
+/* Horizontal bars (agents, aging, routes) */
+.viz-hbars {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.viz-hbar-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+div.viz-hbar-row {
+  cursor: default;
+}
+
+.viz-hbar-row:hover,
+.viz-hbar-row:focus-visible {
+  background: var(--bg-subtle);
+  outline: none;
+}
+
+.viz-hbar-row.is-selected {
+  background: var(--primary-light);
+}
+
+.viz-hbar-row.is-total {
+  border-bottom: 1px solid var(--border-light);
+  border-radius: 8px 8px 0 0;
+  padding-bottom: 10px;
+  margin-bottom: 2px;
+}
+
+.viz-hbar-inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+.viz-hbar-inline .viz-hbar-name {
+  width: 64px;
+  flex-shrink: 0;
+}
+
+.viz-hbar-inline .viz-hbar-track {
+  flex: 1;
+}
+
+.viz-hbar-inline .viz-hbar-value {
+  width: 82px;
+  flex-shrink: 0;
+  text-align: right;
+}
+
+.viz-hbar-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.viz-hbar-name {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.viz-hbar-value {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.viz-hbar-value strong {
+  color: var(--text-main);
+}
+
+.viz-hbar-track {
+  display: flex;
+  height: 10px;
+}
+
+.viz-hbar-track .viz-seg {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  box-sizing: border-box;
+}
+
+.viz-hbar-track .viz-seg + .viz-seg {
+  border-left: 2px solid var(--viz-gap);
+}
+
+.viz-hbar-track .viz-seg:last-child {
+  border-radius: 0 4px 4px 0;
+}
+
+/* Tooltip */
+.viz-tooltip {
+  position: fixed;
+  z-index: 10000;
+  display: none;
+  min-width: 190px;
+  max-width: 280px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  box-shadow: var(--shadow-hover);
+  font-size: 0.76rem;
+  color: var(--text-main);
+  pointer-events: none;
+}
+
+.viz-tooltip-title {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.viz-tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 0;
+}
+
+.viz-tooltip-row.is-total {
+  border-top: 1px solid var(--border-light);
+  margin-top: 3px;
+  padding-top: 4px;
+}
+
+.viz-tooltip-key {
+  width: 10px;
+  height: 2px;
+  flex-shrink: 0;
+}
+
+.viz-tooltip-row strong {
+  font-family: var(--font-mono);
+}
+
+.viz-tooltip-label {
+  color: var(--text-muted);
+}
+
+.viz-filter-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--primary-light);
+  font-size: 0.8rem;
+}
