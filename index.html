@@ -389,73 +389,44 @@
           </div>
         </div>
 
-        <!-- 2-COLUMN VISUAL ANALYTICS: RECOVERY DONUT + AGING & ROUTE BOTTLENECKS -->
-        <div class="decision-analytics-grid mt-3">
-          <!-- LEFT PANEL: CUSTODY RECOVERY DONUT & AGENT CLEARANCE BARS -->
-          <div class="clean-card decision-chart-card">
+        <!-- VISUAL ANALYTICS: DAILY TREND, AGENT RECOVERY, AGING & ROUTES -->
+        <div class="viz-grid mt-3">
+          <div class="clean-card decision-chart-card viz-card-wide">
             <div class="decision-card-head">
               <div>
-                <h4><i class="fa-solid fa-chart-pie text-primary"></i> Custody Recovery &amp; Agent Clearance</h4>
-                <p>Proportion of dispatched bills accounted vs pending recovery</p>
+                <h4><i class="fa-solid fa-chart-column text-primary"></i> Dispatch &amp; Recovery by Day</h4>
+                <p>Bill value sent out each day (last 14 days) and how much of it is still not back. Click a day to filter the dashboard to it.</p>
               </div>
-              <span class="font-mono font-bold text-success" id="decisionOverallRecoveryBadge">0% Accounted</span>
+              <span class="viz-headline font-mono" id="vizTrendHeadline"></span>
             </div>
-
-            <div class="donut-and-legend-row mt-2">
-              <div class="donut-svg-wrap">
-                <svg width="140" height="140" viewBox="0 0 140 140" class="custody-donut-svg">
-                  <circle cx="70" cy="70" r="62" fill="none" stroke="var(--border-light)" stroke-width="14"></circle>
-                  <circle id="donutSegReceived" cx="70" cy="70" r="62" fill="none" stroke="var(--success)" stroke-width="14" stroke-dasharray="0 389.56" stroke-dashoffset="0" transform="rotate(-90 70 70)"></circle>
-                  <circle id="donutSegPending" cx="70" cy="70" r="62" fill="none" stroke="var(--danger)" stroke-width="14" stroke-dasharray="0 389.56" stroke-dashoffset="0" transform="rotate(-90 70 70)"></circle>
-                </svg>
-                <div class="donut-center-label">
-                  <span class="donut-big-num font-mono" id="donutCenterTotal">0</span>
-                  <small>BILLS</small>
-                </div>
-              </div>
-
-              <div class="donut-legend-col">
-                <div class="legend-row">
-                  <span class="legend-dot bg-success"></span>
-                  <span class="legend-name">Accounted / Paid:</span>
-                  <strong class="font-mono text-success" id="chartLegendReceived">0 (0%)</strong>
-                </div>
-                <div class="legend-row">
-                  <span class="legend-dot bg-danger"></span>
-                  <span class="legend-name">Missing / Pending:</span>
-                  <strong class="font-mono text-danger" id="chartLegendPending">0 (0%)</strong>
-                </div>
-                <div class="legend-row legend-total-row">
-                  <span class="legend-name">Total Custody Value:</span>
-                  <strong class="font-mono" id="chartLegendTotal">0 (₹0.00)</strong>
-                </div>
-              </div>
-            </div>
-
-            <div class="agent-bars-section mt-3">
-              <div class="small-caps-label">Agent Clearance Rate (Accounted / Dispatched)</div>
-              <div id="agentBarsContainer" class="agent-bars-list mt-1"></div>
-            </div>
+            <div class="viz-legend mt-2" data-viz-legend="status"></div>
+            <div class="viz-trend mt-2" id="vizTrendChart" role="group" aria-label="Daily dispatch value by recovery status"></div>
           </div>
 
-          <!-- RIGHT PANEL: MISSING BILLS AGING & TOP RISK ROUTES -->
           <div class="clean-card decision-chart-card">
             <div class="decision-card-head">
               <div>
-                <h4><i class="fa-solid fa-hourglass-half text-danger"></i> Missing Bills Aging &amp; Bottleneck Routes</h4>
-                <p>How long unreturned bills have been stuck in the field &amp; highest-risk beats</p>
+                <h4><i class="fa-solid fa-users text-primary"></i> Recovery by Agent</h4>
+                <p id="vizAgentHint">Dispatched value per agent, split by what is accounted vs still due. Click an agent for their bills.</p>
+              </div>
+              <span class="font-mono font-bold" id="decisionOverallRecoveryBadge">0% accounted</span>
+            </div>
+            <div class="viz-legend mt-2" data-viz-legend="status"></div>
+            <div class="viz-hbars mt-2" id="vizAgentChart"></div>
+          </div>
+
+          <div class="clean-card decision-chart-card">
+            <div class="decision-card-head">
+              <div>
+                <h4><i class="fa-solid fa-hourglass-half text-danger"></i> Pending Value by Days in Field</h4>
+                <p>All unreturned and part-paid custody bills, all dates. Click a bar to list those bills below.</p>
               </div>
               <span class="font-mono font-bold text-danger" id="decisionAvgAgingBadge">Avg: 0d</span>
             </div>
+            <div class="viz-hbars mt-2" id="agingBucketsContainer"></div>
 
-            <div class="aging-buckets-grid mt-2" id="agingBucketsContainer">
-              <!-- Populated dynamically with 0-1d, 2-3d, 4-7d, 8+d buckets -->
-            </div>
-
-            <div class="bottleneck-beats-section mt-3">
-              <div class="small-caps-label">Top Bottleneck Beats (Highest Pending / Missing Value)</div>
-              <div id="topRiskBeatsContainer" class="bottleneck-beats-list mt-1"></div>
-            </div>
+            <div class="small-caps-label mt-3">Routes holding the most pending value</div>
+            <div class="viz-hbars mt-1" id="topRiskBeatsContainer"></div>
           </div>
         </div>
 
@@ -491,6 +462,7 @@
             </div>
           </div>
 
+          <div class="viz-filter-chip mt-2" id="homeDecisionAgingChip" style="display: none;"></div>
           <div class="table-wrap mt-2" style="max-height: 420px; overflow-y: auto;">
             <table class="minimal-table decision-action-table">
               <thead>
