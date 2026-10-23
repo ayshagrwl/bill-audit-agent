@@ -89,6 +89,7 @@
     agents: [],
     masterSheetBills: [],
     masterSheetMap: new Map(),
+    masterSheetFuzzyMap: new Map(),
     sheetMappings: { ...DEFAULT_MAPPINGS },
     settings: { ...DEFAULT_SETTINGS },
     offlineQueue: [],
@@ -730,39 +731,68 @@
   }
 
   /**
-   * Helper to register all lookup variations of a bill in the Hash Map
+   * Add a bill to a candidate list in the fuzzy index (one entry per distinct invoice number)
+   */
+  function addFuzzyCandidate(map, key, b) {
+    if (!key) return;
+    const list = map.get(key);
+    if (!list) {
+      map.set(key, [b]);
+      return;
+    }
+    const idx = list.findIndex(x => x._normBillNo === b._normBillNo);
+    if (idx >= 0) list[idx] = b;
+    else list.push(b);
+  }
+
+  /**
+   * Helper to register all lookup variations of a bill.
+   * Exact invoice numbers go in State.masterSheetMap; loose variations (prefix-stripped,
+   * digits-only, trailing number) go in State.masterSheetFuzzyMap as candidate lists so that
+   * different invoices sharing a suffix (e.g. "IN-FY25/26-3965" and "IN-FY26/27-3965")
+   * never overwrite each other or an exact invoice number.
    */
   function registerBillInMap(map, b) {
     if (!b || !b.billNo) return;
     const exact = b.billNo.trim().toUpperCase();
     const norm = normalizeInvoiceNumber(b.billNo);
-    const digits = b.billNo.replace(/\D/g, '');
+    if (!b._normBillNo) b._normBillNo = norm;
 
     map.set(exact, b);
-    if (norm) map.set(norm, b);
+    const fuzzy = State.masterSheetFuzzyMap;
 
-    // Register without invoice prefixes (e.g. "14015503-0001", "17063-1408", "FY26/27-3921")
+    // Strong variations: normalized and without invoice prefixes (e.g. "14015503-0001", "FY26/27-3921")
+    addFuzzyCandidate(fuzzy, 'N:' + norm, b);
     const stripped = stripInvoicePrefix(b.billNo);
     if (stripped && stripped !== exact) {
-      map.set(stripped, b);
-      const normStrip = normalizeInvoiceNumber(stripped);
-      if (normStrip) map.set(normStrip, b);
+      addFuzzyCandidate(fuzzy, 'N:' + stripped, b);
+      addFuzzyCandidate(fuzzy, 'N:' + normalizeInvoiceNumber(stripped), b);
     }
 
-    if (digits.length >= 3) map.set(digits, b);
-
-    // Index trailing numeric suffix (e.g. "3965" from "IN-FY26/27-3965" or "0001" from "IN-14015503-0001")
+    // Weak variations: digits only, and trailing numeric suffix
+    // (e.g. "3965" from "IN-FY26/27-3965" or "0001" / "1" from "IN-14015503-0001")
+    const digits = b.billNo.replace(/\D/g, '');
+    if (digits.length >= 3) addFuzzyCandidate(fuzzy, 'D:' + digits, b);
     const matchTrailing = b.billNo.match(/(\d+)\s*$/);
     if (matchTrailing && matchTrailing[1]) {
       const trail = matchTrailing[1];
       if (trail.length >= 2) {
-        map.set(trail, b);
+        addFuzzyCandidate(fuzzy, 'D:' + trail, b);
         const trailNoZeros = trail.replace(/^0+/, '');
         if (trailNoZeros && trailNoZeros !== trail) {
-          map.set(trailNoZeros, b);
+          addFuzzyCandidate(fuzzy, 'D:' + trailNoZeros, b);
         }
       }
     }
+  }
+
+  /**
+   * Returns the bill for a fuzzy key only when exactly one invoice matches it.
+   * Ambiguous keys return null so a scan never silently picks the wrong party.
+   */
+  function getUniqueFuzzyMatch(key) {
+    const list = State.masterSheetFuzzyMap.get(key);
+    return list && list.length === 1 ? list[0] : null;
   }
 
   /**
@@ -771,6 +801,7 @@
    */
   function rebuildMasterSheetMap() {
     State.masterSheetMap.clear();
+    State.masterSheetFuzzyMap.clear();
     State.masterDueBills = [];
     State.masterPaidExcludedCount = 0;
     State.masterAgentBeatsMap = { ALL: new Set(), Rajesh: new Set(), Shivam: new Set(), Self: new Set() };
@@ -778,8 +809,8 @@
     for (let i = 0; i < State.masterSheetBills.length; i++) {
       const b = State.masterSheetBills[i];
       if (!b || !b.billNo) continue;
+      b._normBillNo = normalizeInvoiceNumber(b.billNo);
       registerBillInMap(State.masterSheetMap, b);
-      if (!b._normBillNo) b._normBillNo = normalizeInvoiceNumber(b.billNo);
 
       const rawAg = String(b.agent || '').trim();
       let canonAg = '';
@@ -825,8 +856,8 @@
    */
   function addBillToMasterIndex(b) {
     if (!b || !b.billNo) return;
-    registerBillInMap(State.masterSheetMap, b);
     b._normBillNo = normalizeInvoiceNumber(b.billNo);
+    registerBillInMap(State.masterSheetMap, b);
 
     const norm = b._normBillNo;
     const idx = State.masterSheetBills.findIndex(x => (x._normBillNo || normalizeInvoiceNumber(x.billNo)) === norm);
@@ -838,61 +869,58 @@
   }
 
   /**
-   * Search Master Sheet for an Invoice Number (Strictly O(1) Instant Hash Map Lookup by default).
-   * Prevents O(N*M) main-thread freezes when called across hundreds of custody bills.
+   * Search Master Sheet for an Invoice Number (O(1) Hash Map Lookup).
+   * Exact invoice numbers always win. Loose matches (prefix-stripped, digits-only, trailing
+   * number) are used only when they identify exactly one invoice.
+   * Pass { strict: true } to skip the digits/suffix tier (used when the input is a whole
+   * QR payload rather than a bare invoice number, whose digits include amounts etc.).
    */
-  function findMasterBill(invoiceInput, allowSlowScan = false) {
+  function findMasterBill(invoiceInput, options = {}) {
     if (!invoiceInput) return null;
     const cleanInput = String(invoiceInput).trim();
     if (!cleanInput) return null;
+    const strict = Boolean(options && options.strict);
 
     // Ensure map is populated if bills array has items
     if (State.masterSheetMap.size === 0 && State.masterSheetBills.length > 0) {
       rebuildMasterSheetMap();
     }
 
-    // 1. O(1) exact uppercase match (0.001ms)
+    // 1. Exact uppercase match
     const upperInput = cleanInput.toUpperCase();
     let match = State.masterSheetMap.get(upperInput);
     if (match) return match;
 
-    // 2. O(1) normalized alphanumeric match
+    // 2. Normalized alphanumeric match (ignores spaces, dashes, slashes)
     const normInput = normalizeInvoiceNumber(cleanInput);
-    match = State.masterSheetMap.get(normInput);
+    match = getUniqueFuzzyMatch('N:' + normInput);
     if (match) return match;
 
-    // 3. O(1) stripped prefix match (e.g. user/barcode scans "VCH-3965" or "14015503-0001")
+    // 3. Stripped prefix match (e.g. user/barcode scans "VCH-3965" or "14015503-0001")
     const strippedInput = stripInvoicePrefix(cleanInput);
     if (strippedInput && strippedInput !== upperInput) {
-      match = State.masterSheetMap.get(strippedInput) || State.masterSheetMap.get(normalizeInvoiceNumber(strippedInput));
+      match = getUniqueFuzzyMatch('N:' + strippedInput) || getUniqueFuzzyMatch('N:' + normalizeInvoiceNumber(strippedInput));
       if (match) return match;
     }
 
-    // 4. O(1) numeric digits match (e.g. "3965" matches "IN-FY26/27-3965")
+    if (strict) return null;
+
+    // 4. Numeric digits / trailing number match (e.g. "3965" matches "IN-FY26/27-3965"),
+    //    only when a single invoice in the sheet has that number
     const digitsOnly = cleanInput.replace(/\D/g, '');
     if (digitsOnly.length >= 2) {
-      match = State.masterSheetMap.get(digitsOnly);
+      match = getUniqueFuzzyMatch('D:' + digitsOnly);
       if (match) return match;
       const noZeros = digitsOnly.replace(/^0+/, '');
       if (noZeros && noZeros !== digitsOnly) {
-        match = State.masterSheetMap.get(noZeros);
-        if (match) return match;
-      }
-      if (digitsOnly.length > 4) {
-        const last4 = digitsOnly.slice(-4);
-        match = State.masterSheetMap.get(last4) || State.masterSheetMap.get(last4.replace(/^0+/, ''));
+        match = getUniqueFuzzyMatch('D:' + noZeros);
         if (match) return match;
       }
     }
-
-    // 5. Optional fallback scan ONLY when explicitly requested by single manual scan
-    if (allowSlowScan && State.masterSheetBills.length > 0) {
-      for (let i = 0; i < State.masterSheetBills.length; i++) {
-        const b = State.masterSheetBills[i];
-        if (b.billNo.toUpperCase().includes(upperInput) || upperInput.includes(b.billNo.toUpperCase())) {
-          return b;
-        }
-      }
+    const trailing = cleanInput.match(/(\d+)\s*$/);
+    if (trailing && trailing[1] !== digitsOnly) {
+      match = getUniqueFuzzyMatch('D:' + trailing[1]) || getUniqueFuzzyMatch('D:' + trailing[1].replace(/^0+/, ''));
+      if (match) return match;
     }
 
     return null;
@@ -1110,8 +1138,9 @@
     const text = rawText.replace(/[\x00-\x09\x0B-\x1F\x7F]/g, '').trim();
     if (!text) return null;
 
-    // 1. Check if the scanned string directly matches a bill in Master Sheet
-    const masterMatch = findMasterBill(text);
+    // 1. Check if the scanned string directly matches a bill in Master Sheet.
+    //    Strict: a multi-field QR's digits (amount, GSTIN...) must never fuzzy-match another bill.
+    const masterMatch = findMasterBill(text, { strict: true });
     if (masterMatch) {
       return buildParsedBill(masterMatch.billNo, masterMatch.party, masterMatch.amount, masterMatch, text);
     }
@@ -1177,12 +1206,16 @@
         if (parts.length >= 2) {
           const key = parts[0].toLowerCase();
           const val = parts.slice(1).join(':').trim();
-          if (key.includes('inv') || key.includes('bill') || key.includes('doc')) {
-            billNo = val;
-          } else if (key.includes('party') || key.includes('customer') || key.includes('name')) {
-            party = val;
-          } else if (key.includes('amount') || key.includes('total') || key.includes('amt')) {
-            amount = parseFloat(val.replace(/,/g, '')) || 0;
+          // Amount / date / GSTIN labels often also contain "Invoice" or "Bill" (e.g. "Bill Amount",
+          // "Invoice Date"), so classify them first and keep the first invoice-number label found.
+          if (key.includes('amount') || key.includes('total') || key.includes('amt') || key.includes('value')) {
+            if (!amount) amount = parseFloat(val.replace(/[₹,\s]/g, '')) || 0;
+          } else if (key.includes('date') || key.includes('gst') || key.includes('irn')) {
+            continue;
+          } else if (key.includes('party') || key.includes('customer') || key.includes('name') || key.includes('bill to') || key.includes('buyer')) {
+            if (!party) party = val;
+          } else if (key.includes('inv') || key.includes('bill') || key.includes('doc')) {
+            if (!billNo) billNo = val;
           }
         }
       }
@@ -1273,7 +1306,7 @@
    */
   function enrichWithMaster(parsed) {
     if (!parsed || !parsed.billNo) return parsed;
-    const mm = findMasterBill(parsed.billNo) || (parsed.raw ? findMasterBill(parsed.raw) : null);
+    const mm = findMasterBill(parsed.billNo) || (parsed.raw ? findMasterBill(parsed.raw, { strict: true }) : null);
     if (mm) {
       if (!parsed.party || parsed.party === 'Standard Account' || parsed.party === 'General Party') {
         parsed.party = mm.party;
@@ -2927,19 +2960,30 @@
       // 1. Ultra-fast direct Google Sheet BigTable Visualization query (<1 second)
       try {
         const { sheetId, gid } = getSheetCredentials();
-        const condition = digitsOnly.length >= 3
-          ? `where D contains '${cleanNo}' or D contains '${digitsOnly}'`
-          : `where D contains '${cleanNo}'`;
-        const tq = encodeURIComponent(`select D, E, F, L, M, N, O, P, I, J ${condition} limit 1`);
-        const gvizUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&tq=${tq}&gid=${gid}&t=${Date.now()}`;
-        const gResp = await fetch(gvizUrl);
-        if (gResp.ok) {
-          const gTxt = await gResp.text();
-          const rows = parseGvizResponse(gTxt);
-          if (rows && rows.length > 0) {
-            b = rows[0];
-          }
+        const q = s => String(s).replace(/['"\\]/g, '');
+        const runQuery = async (condition) => {
+          const tq = encodeURIComponent(`select D, E, F, L, M, N, O, P, I, J ${condition} limit 20`);
+          const gvizUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&tq=${tq}&gid=${gid}&t=${Date.now()}`;
+          const gResp = await fetch(gvizUrl);
+          return gResp.ok ? parseGvizResponse(await gResp.text()) : [];
+        };
+
+        // Exact invoice number first; then a suffix match ("3965" -> "...-3965"), accepted only if unique.
+        // A plain "contains ... limit 1" returned the first row containing the digits (e.g. "13965"
+        // or last year's "IN-FY25/26-3965"), which showed the wrong party for the scanned bill.
+        let rows = await runQuery(`where D = '${q(cleanNo)}'`);
+        if (!rows.length && digitsOnly.length >= 3) {
+          const suffix = q(cleanNo.match(/(\d+)\s*$/) ? cleanNo.match(/(\d+)\s*$/)[1] : digitsOnly);
+          rows = (await runQuery(`where D ends with '${suffix}'`)).filter(r => {
+            const m = String(r.billNo).match(/(\d+)\s*$/);
+            return m && m[1].replace(/^0+/, '') === suffix.replace(/^0+/, '');
+          });
         }
+        const exactRow = rows.find(r => normalizeInvoiceNumber(r.billNo) === normalizeInvoiceNumber(cleanNo));
+        const distinct = new Set(rows.map(r => normalizeInvoiceNumber(r.billNo)));
+        if (exactRow) b = exactRow;
+        else if (distinct.size === 1) b = rows[rows.length - 1];
+        else if (distinct.size > 1) console.warn(`[BillLookup] "${cleanNo}" matches ${distinct.size} invoices; skipping ambiguous match`);
       } catch (gErr) {
         console.warn('[BillLookup] Direct GViz single lookup failed:', gErr);
       }
@@ -2963,13 +3007,10 @@
 
         // Update modal in real time if currently open for this bill
         const pendingNo = State.pendingScannedBill?.billNo ? String(State.pendingScannedBill.billNo).trim() : '';
-        const pendingDigits = pendingNo.replace(/\D/g, '');
-        const billDigits = String(b.billNo || '').replace(/\D/g, '');
         const isMatch = State.isConfirmModalOpen && State.pendingScannedBill &&
           (normalizeInvoiceNumber(pendingNo) === normalizeInvoiceNumber(billNo) ||
            normalizeInvoiceNumber(pendingNo) === normalizeInvoiceNumber(b.billNo) ||
-           pendingNo === b.billNo ||
-           (pendingDigits.length >= 3 && billDigits.endsWith(pendingDigits)));
+           pendingNo === b.billNo);
 
         if (isMatch) {
           State.pendingScannedBill.party = b.party;
