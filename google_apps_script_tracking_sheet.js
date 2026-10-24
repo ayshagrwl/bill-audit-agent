@@ -642,15 +642,13 @@ function respondJSON(obj) {
 }
 
 /**
- * Normalize Invoice number by stripping common prefixes and leading zeros
+ * Normalize an invoice number for comparison: case, spaces, dashes, slashes, dots.
+ * Keeps the FULL number. Stripping the "IN-FY26/27-" prefix made different vouchers with the
+ * same trailing number (e.g. IN-FY25/26-3965 and IN-FY26/27-3965) overwrite / dedupe each other.
  */
 function normalizeInvNumber(val) {
   if (!val) return '';
-  return String(val).trim().toUpperCase()
-    .replace(/^IN-FY\d{2}\/\d{2}-/i, '')
-    .replace(/^IN-\d{2}-/i, '')
-    .replace(/^IN-/i, '')
-    .replace(/^0+/, '');
+  return String(val).trim().toUpperCase().replace(/[\s\-_/.]/g, '');
 }
 
 /**

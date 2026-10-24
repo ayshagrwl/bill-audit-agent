@@ -747,11 +747,11 @@
   }
 
   /**
-   * Helper to register all lookup variations of a bill.
-   * Exact invoice numbers go in State.masterSheetMap; loose variations (prefix-stripped,
-   * digits-only, trailing number) go in State.masterSheetFuzzyMap as candidate lists so that
-   * different invoices sharing a suffix (e.g. "IN-FY25/26-3965" and "IN-FY26/27-3965")
-   * never overwrite each other or an exact invoice number.
+   * Helper to register the lookup forms of a bill's FULL invoice number.
+   * Exact numbers go in State.masterSheetMap; formatting variants (case, spaces, dashes,
+   * slashes, an "INV"/"VCH"/"IN-" prefix) go in State.masterSheetFuzzyMap as candidate lists.
+   * There is deliberately no digits-only / last-digits key: many vouchers share the same
+   * trailing number (e.g. "IN-FY25/26-3965" and "IN-FY26/27-3965").
    */
   function registerBillInMap(map, b) {
     if (!b || !b.billNo) return;
@@ -761,29 +761,11 @@
 
     map.set(exact, b);
     const fuzzy = State.masterSheetFuzzyMap;
-
-    // Strong variations: normalized and without invoice prefixes (e.g. "14015503-0001", "FY26/27-3921")
     addFuzzyCandidate(fuzzy, 'N:' + norm, b);
     const stripped = stripInvoicePrefix(b.billNo);
     if (stripped && stripped !== exact) {
       addFuzzyCandidate(fuzzy, 'N:' + stripped, b);
       addFuzzyCandidate(fuzzy, 'N:' + normalizeInvoiceNumber(stripped), b);
-    }
-
-    // Weak variations: digits only, and trailing numeric suffix
-    // (e.g. "3965" from "IN-FY26/27-3965" or "0001" / "1" from "IN-14015503-0001")
-    const digits = b.billNo.replace(/\D/g, '');
-    if (digits.length >= 3) addFuzzyCandidate(fuzzy, 'D:' + digits, b);
-    const matchTrailing = b.billNo.match(/(\d+)\s*$/);
-    if (matchTrailing && matchTrailing[1]) {
-      const trail = matchTrailing[1];
-      if (trail.length >= 2) {
-        addFuzzyCandidate(fuzzy, 'D:' + trail, b);
-        const trailNoZeros = trail.replace(/^0+/, '');
-        if (trailNoZeros && trailNoZeros !== trail) {
-          addFuzzyCandidate(fuzzy, 'D:' + trailNoZeros, b);
-        }
-      }
     }
   }
 
@@ -871,16 +853,14 @@
 
   /**
    * Search Master Sheet for an Invoice Number (O(1) Hash Map Lookup).
-   * Exact invoice numbers always win. Loose matches (prefix-stripped, digits-only, trailing
-   * number) are used only when they identify exactly one invoice.
-   * Pass { strict: true } to skip the digits/suffix tier (used when the input is a whole
-   * QR payload rather than a bare invoice number, whose digits include amounts etc.).
+   * Matches the FULL invoice number only: exact first, then the same number written with
+   * different case / spaces / dashes / slashes or an "INV"/"VCH"/"IN-" prefix.
+   * Never matches on the last digits alone, since many vouchers share them.
    */
-  function findMasterBill(invoiceInput, options = {}) {
+  function findMasterBill(invoiceInput) {
     if (!invoiceInput) return null;
     const cleanInput = String(invoiceInput).trim();
     if (!cleanInput) return null;
-    const strict = Boolean(options && options.strict);
 
     // Ensure map is populated if bills array has items
     if (State.masterSheetMap.size === 0 && State.masterSheetBills.length > 0) {
@@ -892,35 +872,14 @@
     let match = State.masterSheetMap.get(upperInput);
     if (match) return match;
 
-    // 2. Normalized alphanumeric match (ignores spaces, dashes, slashes)
-    const normInput = normalizeInvoiceNumber(cleanInput);
-    match = getUniqueFuzzyMatch('N:' + normInput);
+    // 2. Same full number, different formatting (ignores spaces, dashes, slashes)
+    match = getUniqueFuzzyMatch('N:' + normalizeInvoiceNumber(cleanInput));
     if (match) return match;
 
-    // 3. Stripped prefix match (e.g. user/barcode scans "VCH-3965" or "14015503-0001")
+    // 3. Same full number without an invoice prefix (e.g. scanner sends "VCH-14015503-0001")
     const strippedInput = stripInvoicePrefix(cleanInput);
     if (strippedInput && strippedInput !== upperInput) {
       match = getUniqueFuzzyMatch('N:' + strippedInput) || getUniqueFuzzyMatch('N:' + normalizeInvoiceNumber(strippedInput));
-      if (match) return match;
-    }
-
-    if (strict) return null;
-
-    // 4. Numeric digits / trailing number match (e.g. "3965" matches "IN-FY26/27-3965"),
-    //    only when a single invoice in the sheet has that number
-    const digitsOnly = cleanInput.replace(/\D/g, '');
-    if (digitsOnly.length >= 2) {
-      match = getUniqueFuzzyMatch('D:' + digitsOnly);
-      if (match) return match;
-      const noZeros = digitsOnly.replace(/^0+/, '');
-      if (noZeros && noZeros !== digitsOnly) {
-        match = getUniqueFuzzyMatch('D:' + noZeros);
-        if (match) return match;
-      }
-    }
-    const trailing = cleanInput.match(/(\d+)\s*$/);
-    if (trailing && trailing[1] !== digitsOnly) {
-      match = getUniqueFuzzyMatch('D:' + trailing[1]) || getUniqueFuzzyMatch('D:' + trailing[1].replace(/^0+/, ''));
       if (match) return match;
     }
 
@@ -1139,9 +1098,8 @@
     const text = rawText.replace(/[\x00-\x09\x0B-\x1F\x7F]/g, '').trim();
     if (!text) return null;
 
-    // 1. Check if the scanned string directly matches a bill in Master Sheet.
-    //    Strict: a multi-field QR's digits (amount, GSTIN...) must never fuzzy-match another bill.
-    const masterMatch = findMasterBill(text, { strict: true });
+    // 1. Check if the scanned string directly matches a bill in Master Sheet
+    const masterMatch = findMasterBill(text);
     if (masterMatch) {
       return buildParsedBill(masterMatch.billNo, masterMatch.party, masterMatch.amount, masterMatch, text);
     }
@@ -1307,7 +1265,7 @@
    */
   function enrichWithMaster(parsed) {
     if (!parsed || !parsed.billNo) return parsed;
-    const mm = findMasterBill(parsed.billNo) || (parsed.raw ? findMasterBill(parsed.raw, { strict: true }) : null);
+    const mm = findMasterBill(parsed.billNo) || (parsed.raw ? findMasterBill(parsed.raw) : null);
     if (mm) {
       if (!parsed.party || parsed.party === 'Standard Account' || parsed.party === 'General Party') {
         parsed.party = mm.party;
@@ -3275,7 +3233,6 @@
   async function fetchSingleBillDetailsFromSheet(billNo, source) {
     if (!billNo) return;
     const cleanNo = String(billNo).trim();
-    const digitsOnly = cleanNo.replace(/\D/g, '');
 
     const receiptEl = document.getElementById('bdReceipt');
     const remainingEl = document.getElementById('bdRemaining');
@@ -3303,22 +3260,10 @@
           return gResp.ok ? parseGvizResponse(await gResp.text()) : [];
         };
 
-        // Exact invoice number first; then a suffix match ("3965" -> "...-3965"), accepted only if unique.
-        // A plain "contains ... limit 1" returned the first row containing the digits (e.g. "13965"
-        // or last year's "IN-FY25/26-3965"), which showed the wrong party for the scanned bill.
-        let rows = await runQuery(`where D = '${q(cleanNo)}'`);
-        if (!rows.length && digitsOnly.length >= 3) {
-          const suffix = q(cleanNo.match(/(\d+)\s*$/) ? cleanNo.match(/(\d+)\s*$/)[1] : digitsOnly);
-          rows = (await runQuery(`where D ends with '${suffix}'`)).filter(r => {
-            const m = String(r.billNo).match(/(\d+)\s*$/);
-            return m && m[1].replace(/^0+/, '') === suffix.replace(/^0+/, '');
-          });
-        }
-        const exactRow = rows.find(r => normalizeInvoiceNumber(r.billNo) === normalizeInvoiceNumber(cleanNo));
-        const distinct = new Set(rows.map(r => normalizeInvoiceNumber(r.billNo)));
-        if (exactRow) b = exactRow;
-        else if (distinct.size === 1) b = rows[rows.length - 1];
-        else if (distinct.size > 1) console.warn(`[BillLookup] "${cleanNo}" matches ${distinct.size} invoices; skipping ambiguous match`);
+        // Full invoice number only (case-insensitive). Never match on the trailing digits:
+        // many vouchers share them, e.g. "IN-FY25/26-3965" and "IN-FY26/27-3965".
+        const rows = await runQuery(`where upper(D) = '${q(cleanNo.toUpperCase())}'`);
+        b = rows.find(r => normalizeInvoiceNumber(r.billNo) === normalizeInvoiceNumber(cleanNo)) || null;
       } catch (gErr) {
         console.warn('[BillLookup] Direct GViz single lookup failed:', gErr);
       }
