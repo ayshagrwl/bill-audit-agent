@@ -19,9 +19,10 @@ function extract(name) {
 }
 const names = ['normalizeInvoiceNumber', 'stripInvoicePrefix', 'addFuzzyCandidate', 'getUniqueFuzzyMatch',
   'registerBillInMap', 'isBillPaidInFull', 'rebuildMasterSheetMap', 'findMasterBill', 'buildParsedBill',
-  'parseQRCodeData', 'enrichWithMaster'];
+  'parseQRCodeData', 'enrichWithMaster', 'isPlaceholderParty', 'isSameAgent', 'reconcileCustodyWithMasterSheet'];
 const L = new Function(
   'const State = { masterSheetMap: new Map(), masterSheetFuzzyMap: new Map(), masterSheetBills: [], bills: [] };\n' +
+  'const inferBillBeat = b => b.beat || "";\n' +
   names.map(extract).join('\n') + '\nreturn { State, ' + names.join(', ') + ' };'
 )();
 
@@ -83,6 +84,18 @@ test('Multi-line QR: "Bill Amount" / "Invoice Date" do not overwrite the invoice
   const r = L.parseQRCodeData('Invoice No: IN-FY26/27-3921\nInvoice Date: 12/05/2026\nBill Amount: 5,465\nParty Name: Satguru');
   assert.strictEqual(r.billNo, 'IN-FY26/27-3921');
   assert.strictEqual(r.party, 'Satguru Provision');
+});
+
+test('Sync replaces a stale saved party name with the Master Sheet name', () => {
+  load([...master, { billNo: 'IN-FY26/27-5592', party: 'BULLET TEA STALL - 187176054', amount: 840, agent: 'Shivam' }]);
+  L.State.bills = [
+    { billNo: 'IN-FY26/27-5592', party: 'Wrong Party From Old Lookup', amount: 999, agent: 'Shivam', beat: 'X', status: 'WITH_AGENT', history: [] },
+    { billNo: 'IN-FY26/27-3921', party: 'Standard Account', amount: 0, agent: 'Rajesh', beat: 'Y', status: 'WITH_AGENT', history: [] }
+  ];
+  L.reconcileCustodyWithMasterSheet();
+  assert.strictEqual(L.State.bills[0].party, 'BULLET TEA STALL - 187176054');
+  assert.strictEqual(L.State.bills[0].amount, 840);
+  assert.strictEqual(L.State.bills[1].party, 'Satguru Provision');
 });
 
 const trackingSrc = fs.readFileSync(path.join(__dirname, 'apps-script-tracking', 'Code.js'), 'utf8');

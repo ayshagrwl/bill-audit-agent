@@ -887,6 +887,15 @@
   }
 
   /**
+   * True for the generic names used when a bill's real party is not known yet.
+   */
+  function isPlaceholderParty(name) {
+    const n = String(name || '').trim().toLowerCase();
+    return !n || n === 'standard account' || n === 'standard customer' || n === 'general party' ||
+      n === 'general customer' || n === 'customer';
+  }
+
+  /**
    * Universal Payment Check: Determines if a bill is fully paid / settled.
    * Checks outstanding <= 0, status PAID/PAID_FULL, receipt remarks, or collected >= amount.
    */
@@ -4173,12 +4182,13 @@ _BillAudit Pro_`;
 
       const mm = (State.masterSheetBills && State.masterSheetBills.length > 0) ? findMasterBill(b.billNo) : null;
 
-      // Always backfill missing metadata (Beat, Party, Amount, Canonical Agent) on every bill
+      // Master Sheet is the source of truth for Party & Amount (matched on the full invoice number),
+      // so names saved from an earlier wrong lookup or a placeholder get corrected on every sync.
       if (mm) {
-        if ((!b.party || b.party === 'Standard Customer' || b.party === 'Customer') && mm.party) {
+        if (mm.party && !isPlaceholderParty(mm.party) && b.party !== mm.party) {
           b.party = mm.party;
         }
-        if ((!b.amount || Number(b.amount) === 0) && Number(mm.amount) > 0) {
+        if (Number(mm.amount) > 0 && Number(b.amount) !== Number(mm.amount)) {
           b.amount = Number(mm.amount);
         }
         if (!b.beat && !b.beatName && mm.beat) {
@@ -4303,8 +4313,8 @@ _BillAudit Pro_`;
 
           const formattedBill = {
             billNo: cb.billNo,
-            party: (cb.party && cb.party !== 'Standard Customer') ? cb.party : ((mm && mm.party) || cb.party || 'Standard Customer'),
-            amount: Number(cb.amount) || (mm ? Number(mm.amount) : 0) || 0,
+            party: (mm && mm.party && !isPlaceholderParty(mm.party)) ? mm.party : (cb.party || 'Standard Customer'),
+            amount: (mm && Number(mm.amount) > 0) ? Number(mm.amount) : (Number(cb.amount) || 0),
             agent: rawAgent,
             beat: cb.beat || (mm && mm.beat) || '',
             dispatchDate: dDate,
