@@ -179,24 +179,16 @@ function findSingleBillInSheet(sheet, billNo) {
   // 1. Exact cell match on Invoice column
   foundCell = invRange.createTextFinder(cleanInput).matchEntireCell(true).findNext();
 
-  // 2. Suffix match on the trailing invoice number (e.g. "3965" matches "IN-FY26/27-3965").
-  //    Only accepted when exactly one invoice has that number, so "3965" never returns
-  //    "IN-FY26/27-13965" or last year's "IN-FY25/26-3965" with a different party.
+  // 2. Same full number written differently (spaces, dashes, slashes). Never match on the
+  //    last digits alone: many vouchers share them (e.g. "IN-FY25/26-3965" vs "IN-FY26/27-3965").
   if (!foundCell) {
-    const trailing = cleanInput.match(/(\d+)\s*$/);
-    const num = trailing ? trailing[1].replace(/^0+/, '') : '';
-    if (num.length >= 2) {
-      const candidates = invRange.createTextFinder(num).matchEntireCell(false).findAll().filter(cell => {
-        const m = String(cell.getDisplayValue()).trim().match(/(\d+)\s*$/);
-        return m && m[1].replace(/^0+/, '') === num;
-      });
-      const distinct = {};
-      candidates.forEach(cell => { distinct[String(cell.getDisplayValue()).trim().toUpperCase()] = cell; });
-      const keys = Object.keys(distinct);
-      const normInput = cleanInput.toUpperCase().replace(/[\s\-_/.]/g, '');
-      const sameInvoice = keys.find(k => k.replace(/[\s\-_/.]/g, '') === normInput);
-      if (sameInvoice) foundCell = distinct[sameInvoice];
-      else if (keys.length === 1) foundCell = distinct[keys[0]];
+    const normInput = normalizeInvNumber(cleanInput);
+    const values = invRange.getDisplayValues();
+    for (let i = 0; i < values.length; i++) {
+      if (normalizeInvNumber(values[i][0]) === normInput) {
+        foundCell = invRange.getCell(i + 1, 1);
+        break;
+      }
     }
   }
 
@@ -355,4 +347,13 @@ function extractBillsFromSheet(sheet, limit) {
 function respondJSON(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+/**
+ * Normalize an invoice number for comparison: case, spaces, dashes, slashes, dots.
+ * Keeps the FULL number (prefix and financial year included).
+ */
+function normalizeInvNumber(val) {
+  if (!val) return '';
+  return String(val).trim().toUpperCase().replace(/[\s\-_/.]/g, '');
 }

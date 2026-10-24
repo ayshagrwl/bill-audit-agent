@@ -51,14 +51,19 @@ test('Formatting differences and missing prefix still match', () => {
   assert.strictEqual(L.findMasterBill('FY26/27-3965').party, 'Correct Store');
 });
 
-test('Unique short number still matches', () => {
-  assert.strictEqual(L.findMasterBill('3921').party, 'Satguru Provision');
-  assert.strictEqual(L.findMasterBill('0001').party, 'First Bill Store');
-});
-
-test('Ambiguous short number returns no match instead of guessing', () => {
+test('Last digits alone never match a voucher (full number required)', () => {
+  assert.strictEqual(L.findMasterBill('3921'), null);
+  assert.strictEqual(L.findMasterBill('0001'), null);
+  assert.strictEqual(L.findMasterBill('FY25/26-3921'), null);
   load(master.slice(1));
   assert.strictEqual(L.findMasterBill('3965'), null);
+});
+
+test('Prefix variants of the full number still match', () => {
+  assert.strictEqual(L.findMasterBill('VCH-IN-FY26/27-3921').party, 'Satguru Provision'); // scanner prefix + full number
+  assert.strictEqual(L.findMasterBill('IN-FY26/27-0001').party, 'First Bill Store');
+  assert.strictEqual(L.findMasterBill('in-fy26/27-0001').party, 'First Bill Store');
+  assert.strictEqual(L.findMasterBill('IN FY26 27 3921').party, 'Satguru Provision');
 });
 
 test('CSV QR digits (amount) do not match a different bill', () => {
@@ -78,6 +83,15 @@ test('Multi-line QR: "Bill Amount" / "Invoice Date" do not overwrite the invoice
   const r = L.parseQRCodeData('Invoice No: IN-FY26/27-3921\nInvoice Date: 12/05/2026\nBill Amount: 5,465\nParty Name: Satguru');
   assert.strictEqual(r.billNo, 'IN-FY26/27-3921');
   assert.strictEqual(r.party, 'Satguru Provision');
+});
+
+const trackingSrc = fs.readFileSync(path.join(__dirname, 'apps-script-tracking', 'Code.js'), 'utf8');
+const normStart = trackingSrc.indexOf('function normalizeInvNumber(');
+const normalizeInvNumber = new Function(trackingSrc.slice(normStart, trackingSrc.indexOf('\n}\n', normStart) + 2) + '\nreturn normalizeInvNumber;')();
+test('Tracking sheet keeps vouchers with the same last digits apart', () => {
+  assert.notStrictEqual(normalizeInvNumber('IN-FY25/26-3965'), normalizeInvNumber('IN-FY26/27-3965'));
+  assert.notStrictEqual(normalizeInvNumber('IN-FY26/27-3965'), normalizeInvNumber('3965'));
+  assert.strictEqual(normalizeInvNumber('in-fy26/27-3965 '), normalizeInvNumber('IN-FY26/27-3965'));
 });
 
 console.log(`\n🎉 ALL ${n} SCAN LOOKUP TESTS PASSED`);
