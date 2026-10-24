@@ -5242,9 +5242,51 @@ _BillAudit Pro_`;
       }
     }
 
-    // 2. Fallback to Apps Script if GViz query did not return rows
+    // 2. Supplement and bridge recent bills via Apps Script Web App
+    // (Google Sheets GViz caps at ~14,000 rows; fetchRecent bridges the gap up to the very latest row)
+    const targetUrl = State.settings.mainSheetScriptUrl || State.settings.scriptUrl;
+    if (targetUrl) {
+      try {
+        const recentResp = await fetch(`${targetUrl}?action=fetchRecent&limit=3000&t=${Date.now()}`);
+        if (recentResp.ok) {
+          const recentData = await recentResp.json();
+          if (recentData && Array.isArray(recentData.rows) && recentData.rows.length > 0) {
+            const billMap = new Map();
+            (incomingBills || []).forEach(b => {
+              if (b && b.billNo) billMap.set(normalizeInvoiceNumber(b.billNo), b);
+            });
+            recentData.rows.forEach(r => {
+              const billNo = String(r[2] || '').trim();
+              if (!billNo) return;
+              const party = String(r[3] || 'General Customer').trim();
+              const amt = parseFloat(String(r[4] || '0').replace(/[₹,\s]/g, '')) || 0;
+              const out = parseFloat(String(r[8] || '0').replace(/[₹,\s]/g, '')) || 0;
+              const rec = String(r[9] || '').trim();
+              const rem = String(r[10] || '').trim();
+              const beat = String(r[11] || '').trim();
+              const agent = String(r[12] || '').trim();
+              const norm = normalizeInvoiceNumber(billNo);
+              billMap.set(norm, {
+                billNo,
+                receipt: rec || rem,
+                outstanding: out,
+                party,
+                amount: amt,
+                agent,
+                beat,
+                remainingText: String(r[8] || '')
+              });
+            });
+            incomingBills = Array.from(billMap.values());
+          }
+        }
+      } catch (recentErr) {
+        console.warn('[SheetSync] Recent rows fetch failed:', recentErr);
+      }
+    }
+
+    // 3. Fallback to full Apps Script fetch if neither GViz nor fetchRecent returned bills
     if (!incomingBills || incomingBills.length === 0) {
-      const targetUrl = State.settings.mainSheetScriptUrl || State.settings.scriptUrl;
       if (targetUrl) {
         try {
           const resp = await fetch(`${targetUrl}?action=GET_DATA&t=${Date.now()}`);
