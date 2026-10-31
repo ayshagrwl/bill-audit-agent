@@ -2220,8 +2220,11 @@
       console.log(`[Dispatch] Beat mismatch bypassed for ${parsed.billNo} (Sheet: "${parsed.beat}", Session: "${State.activeBeat}")`);
     }
 
-    // Agent Mismatch Guard: Alert if bill is assigned to a different agent in Master Sheet
-    if (State.activeAgent && parsed.agent && !isSameAgent(parsed.agent, State.activeAgent.name)) {
+    // Agent Mismatch Guard: Alert only if bill is assigned to a different active designated agent in Master Sheet (e.g. Shivam vs Rajesh)
+    const isOtherDesignatedAgent = State.activeAgent && parsed.agent &&
+      State.agents.some(a => isSameAgent(a.name, parsed.agent) && !isSameAgent(a.name, State.activeAgent.name));
+
+    if (isOtherDesignatedAgent) {
       if (!silent) {
         SoundFX.playBeep('warning');
         SoundFX.vibrate(150);
@@ -3329,8 +3332,11 @@
               normalizeInvoiceNumber(item.billNo) === normalizeInvoiceNumber(b.billNo)) {
             if (b.party && b.party !== 'Customer' && b.party !== 'Standard Account') item.party = b.party;
             if (b.amount) item.amount = b.amount;
-            if (b.agent) item.agent = b.agent;
-            if (b.beat) item.beat = b.beat;
+            // Retain active dispatch session assignment (do not overwrite with historical sheet agent/beat)
+            if (!item.agent && b.agent) item.agent = b.agent;
+            if (!item.beat && b.beat) item.beat = b.beat;
+            item.sheetAgent = b.agent || item.sheetAgent || '';
+            item.sheetBeat = b.beat || item.sheetBeat || '';
             item.receipt = b.receipt || '';
             item.refNo = b.receipt || '';
             item.outstanding = b.outstanding !== undefined ? b.outstanding : 0;
@@ -3340,7 +3346,9 @@
           }
         });
         if (basketUpdated) {
+          saveState('basket');
           renderDispatchBasket();
+          updateHomeStats();
         }
 
         // 2. Update in State.bills (Active Custody / Settlement) if present
@@ -3350,8 +3358,11 @@
               normalizeInvoiceNumber(item.billNo) === normalizeInvoiceNumber(b.billNo)) {
             if (b.party && b.party !== 'Customer' && b.party !== 'Standard Account') item.party = b.party;
             if (b.amount) item.amount = b.amount;
-            if (b.agent) item.agent = b.agent;
-            if (b.beat) item.beat = b.beat;
+            // Retain custody assignment (do not overwrite active custody agent/beat)
+            if (!item.agent && b.agent) item.agent = b.agent;
+            if (!item.beat && b.beat) item.beat = b.beat;
+            item.sheetAgent = b.agent || item.sheetAgent || '';
+            item.sheetBeat = b.beat || item.sheetBeat || '';
             item.receipt = b.receipt || '';
             item.refNo = b.receipt || '';
             item.outstanding = b.outstanding !== undefined ? b.outstanding : 0;

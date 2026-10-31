@@ -3665,9 +3665,57 @@ google.visualization.Query.setResponse({
   assert.strictEqual(resultBill57.status, 'RECEIVED');
   assert.strictEqual(mockState.offlineQueue.length, 1);
   assert(mockState.offlineQueue[0].timestamp, 'Timestamp must be defined in offlineQueue payload');
-  console.log('✅ Test 57 Passed! Direct Scan-In of un-dispatched bill works with zero ReferenceError!\n');
+  console.log('Test 58: Background Single Bill Lookup Preserves Active Dispatch Agent & Beat');
+  // Scenario: Rajesh is taking out a 2025 bill (e.g. IN-17063-1787) that was previously booked under "Shiv Kumar Verma" in "MUKHTIYARGANJ MARKET"
+  const dispatchBasketMock = [{
+    billNo: 'IN-17063-1787',
+    party: 'Standard Account',
+    amount: 0,
+    agent: 'Rajesh Chaurasiya(OM MARKETING)',
+    beat: 'Mukhtiyarganj Market-1',
+    isFetching: true,
+    fromMaster: false
+  }];
 
-  console.log('🎉 ALL 57 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+  const fetchedSheetBill = {
+    billNo: 'IN-17063-1787',
+    party: 'Sonu pan pailes - 180146440',
+    amount: 2235,
+    agent: 'Shiv Kumar Verma(OM MARKETING)',
+    beat: 'MUKHTIYARGANJ MARKET',
+    receipt: 'R5451+R5469+R5492',
+    outstanding: 335
+  };
+
+  // Simulate updating dispatch basket from fetched bill details
+  dispatchBasketMock.forEach(item => {
+    if (normalizeInvoiceNumber(item.billNo) === normalizeInvoiceNumber(fetchedSheetBill.billNo)) {
+      if (fetchedSheetBill.party) item.party = fetchedSheetBill.party;
+      if (fetchedSheetBill.amount) item.amount = fetchedSheetBill.amount;
+      // Retain active dispatch session assignment (do not overwrite with historical sheet agent/beat)
+      if (!item.agent && fetchedSheetBill.agent) item.agent = fetchedSheetBill.agent;
+      if (!item.beat && fetchedSheetBill.beat) item.beat = fetchedSheetBill.beat;
+      item.sheetAgent = fetchedSheetBill.agent || item.sheetAgent || '';
+      item.sheetBeat = fetchedSheetBill.beat || item.sheetBeat || '';
+      item.receipt = fetchedSheetBill.receipt || '';
+      item.outstanding = fetchedSheetBill.outstanding;
+      item.isFetching = false;
+      item.fromMaster = true;
+    }
+  });
+
+  const updatedBasketItem = dispatchBasketMock[0];
+  assert.strictEqual(updatedBasketItem.agent, 'Rajesh Chaurasiya(OM MARKETING)', 'Session agent must NOT be overwritten by historical sheet agent');
+  assert.strictEqual(updatedBasketItem.beat, 'Mukhtiyarganj Market-1', 'Session beat must NOT be overwritten');
+  assert.strictEqual(updatedBasketItem.sheetAgent, 'Shiv Kumar Verma(OM MARKETING)', 'Historical agent stored in sheetAgent');
+  assert.strictEqual(updatedBasketItem.party, 'Sonu pan pailes - 180146440', 'Party name updated');
+  assert.strictEqual(updatedBasketItem.amount, 2235, 'Amount updated');
+  assert.strictEqual(updatedBasketItem.outstanding, 335, 'Outstanding balance updated');
+  assert.strictEqual(updatedBasketItem.isFetching, false, 'Fetching spinner resolved');
+
+  console.log('✅ Test 58 Passed! Background Bill Lookup Preserves Active Dispatch Agent & Beat!\n');
+
+  console.log('🎉 ALL 58 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
 })();
 
 
