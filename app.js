@@ -4262,112 +4262,143 @@ _BillAudit Pro_`;
 
   /**
    * Synchronize active custody bills directly from Tracking Sheet (Live_Custody tab)
+   * GUARANTEES CLOUD AS SINGLE SOURCE OF TRUTH ACROSS ALL DEVICES.
    */
   async function syncBillsFromTrackingSheet(showFeedback = false) {
-    const targetUrl = State.settings.trackingSheetScriptUrl;
-    if (!targetUrl) return;
+    let custodyBills = null;
 
+    // 1. Direct BigTable GViz query on Live_Custody tab (Ultra-fast ~300ms, public, zero login redirect, works on all devices)
+    const trackingSheetId = '1Lu1C-aX9KCRhCrcrZNal81tt4-wD_6wqHWqsI5orTrY';
     try {
-      const resp = await fetch(`${targetUrl}?action=GET_CUSTODY&t=${Date.now()}`);
-      const data = await resp.json();
-
-      if (data && data.status === 'OK' && Array.isArray(data.bills)) {
-        const custodyBills = data.bills;
-        const existingMap = new Map();
-        State.bills.forEach((b, idx) => {
-          existingMap.set(normalizeInvoiceNumber(b.billNo), idx);
-        });
-
-        let updatedCount = 0;
-        let newCount = 0;
-
-        custodyBills.forEach(cb => {
-          if (!cb || !cb.billNo) return;
-          const norm = normalizeInvoiceNumber(cb.billNo);
-          const existingIdx = existingMap.get(norm);
-
-          let dDate = cb.dispatchDate ? normalizeDateString(cb.dispatchDate) : '';
-          const todayStr = getTodayDateString();
-          if (dDate === todayStr && cb.lastActionDate) {
-            const actionDay = normalizeDateString(cb.lastActionDate);
-            if (actionDay && actionDay !== todayStr) {
-              dDate = actionDay;
-            }
-          }
-
-          const mm = findMasterBill(cb.billNo);
-          let rawAgent = cb.agent || (mm && mm.agent) || 'Rajesh';
-          if (isSameAgent(rawAgent, 'Shivam')) rawAgent = 'Shivam';
-          else if (isSameAgent(rawAgent, 'Self')) rawAgent = 'Self';
-          else rawAgent = 'Rajesh';
-
-          const formattedBill = {
-            billNo: cb.billNo,
-            party: (cb.party && cb.party !== 'Standard Customer') ? cb.party : ((mm && mm.party) || cb.party || 'Standard Customer'),
-            amount: Number(cb.amount) || (mm ? Number(mm.amount) : 0) || 0,
-            agent: rawAgent,
-            beat: cb.beat || (mm && mm.beat) || '',
-            dispatchDate: dDate,
-            status: cb.status || 'WITH_AGENT',
-            collectedAmt: Number(cb.collectedAmt) || 0,
-            outstanding: cb.outstanding !== undefined ? Number(cb.outstanding) : (Number(cb.amount) || 0),
-            paymentMode: cb.paymentMode || '',
-            refNo: cb.refNo || (mm && mm.receipt) || '',
-            receipt: (mm && mm.receipt) || cb.refNo || '',
-            returnReason: cb.returnReason || '',
-            remarks: cb.remarks || '',
-            lastActionDate: cb.lastActionDate || new Date().toISOString(),
-            history: []
-          };
-          if (!formattedBill.beat) {
-            formattedBill.beat = inferBillBeat(formattedBill);
-          }
-
-          if (existingIdx !== undefined) {
-            const b = State.bills[existingIdx];
-            b.party = formattedBill.party || b.party;
-            b.amount = formattedBill.amount || b.amount;
-            b.agent = formattedBill.agent || b.agent;
-            b.beat = formattedBill.beat || b.beat;
-            b.status = formattedBill.status;
-            b.collectedAmt = formattedBill.collectedAmt;
-            b.outstanding = formattedBill.outstanding;
-            b.paymentMode = formattedBill.paymentMode;
-            b.refNo = formattedBill.refNo || b.refNo;
-            b.receipt = formattedBill.receipt || b.receipt;
-            b.remarks = formattedBill.remarks;
-            b.lastActionDate = formattedBill.lastActionDate;
-            if (dDate) b.dispatchDate = dDate;
-            updatedCount++;
-          } else {
-            State.bills.push(formattedBill);
-            existingMap.set(norm, State.bills.length - 1);
-            newCount++;
-          }
-        });
-
-        const reconcileRes = reconcileCustodyWithMasterSheet();
-        saveState('bills');
-        updateGlobalStats();
-        if (State.activeTab === 'tab-leftout') renderLeftOutTab();
-        else if (State.activeTab === 'tab-ledger') renderMasterLedger();
-        else if (State.activeTab === 'tab-settlement') loadSettlementForSelectedAgent();
-        updateHomeStats();
-
-        if (showFeedback) {
-          SoundFX.playBeep('success');
-          let toastMsg = `Synced ${custodyBills.length} custody bills from Tracking Sheet!`;
-          if (reconcileRes.healedCount > 0) {
-            toastMsg += ` (${reconcileRes.healedCount} paid bills auto-cleared)`;
-          }
-          showToast(toastMsg, 'success');
+      const gvizUrl = `https://docs.google.com/spreadsheets/d/${trackingSheetId}/gviz/tq?tqx=out:json&sheet=Live_Custody&t=${Date.now()}`;
+      const gvizResp = await fetch(gvizUrl);
+      if (gvizResp.ok) {
+        const text = await gvizResp.text();
+        const start = text.indexOf('{');
+        const end = text.lastIndexOf('}') + 1;
+        if (start >= 0 && end > start) {
+          const json = JSON.parse(text.slice(start, end));
+          const rows = (json && json.table && Array.isArray(json.table.rows)) ? json.table.rows : [];
+          custodyBills = [];
+          rows.forEach(r => {
+            if (!r || !r.c) return;
+            const getVal = (idx) => {
+              const cell = r.c[idx];
+              if (!cell) return '';
+              return (cell.f !== undefined && cell.f !== null) ? String(cell.f).trim() : (cell.v !== undefined && cell.v !== null ? String(cell.v).trim() : '');
+            };
+            const billNo = getVal(0);
+            if (!billNo) return;
+            custodyBills.push({
+              billNo,
+              party: getVal(1) || 'Customer',
+              amount: Number(getVal(2)) || 0,
+              agent: getVal(3) || 'Rajesh',
+              dispatchDate: getVal(4) || getTodayDateString(),
+              status: getVal(5) || 'WITH_AGENT',
+              collectedAmt: Number(getVal(6)) || 0,
+              outstanding: (getVal(7) !== '') ? Number(getVal(7)) : (Number(getVal(2)) || 0),
+              paymentMode: getVal(8) || '',
+              refNo: getVal(9) || '',
+              receipt: getVal(9) || '',
+              returnReason: getVal(10) || '',
+              remarks: getVal(11) || '',
+              lastActionDate: getVal(12) || new Date().toISOString()
+            });
+          });
         }
       }
-    } catch (err) {
-      console.warn('Failed to sync custody bills from Tracking Sheet:', err);
+    } catch (gvizErr) {
+      console.warn('Direct GViz custody fetch warning:', gvizErr);
+    }
+
+    // 2. Fallback to Web App endpoint if GViz failed
+    if (!custodyBills && State.settings.trackingSheetScriptUrl) {
+      try {
+        const resp = await fetch(`${State.settings.trackingSheetScriptUrl}?action=GET_CUSTODY&t=${Date.now()}`);
+        const data = await resp.json();
+        if (data && data.status === 'OK' && Array.isArray(data.bills)) {
+          custodyBills = data.bills;
+        }
+      } catch (scriptErr) {
+        console.warn('Apps Script custody fetch warning:', scriptErr);
+      }
+    }
+
+    if (Array.isArray(custodyBills)) {
+      // Map cloud custody bills
+      const cloudFormattedBills = custodyBills.map(cb => {
+        let dDate = cb.dispatchDate ? normalizeDateString(cb.dispatchDate) : '';
+        const todayStr = getTodayDateString();
+        if (dDate === todayStr && cb.lastActionDate) {
+          const actionDay = normalizeDateString(cb.lastActionDate);
+          if (actionDay && actionDay !== todayStr) {
+            dDate = actionDay;
+          }
+        }
+
+        const mm = findMasterBill(cb.billNo);
+        let rawAgent = cb.agent || (mm && mm.agent) || 'Rajesh';
+        if (isSameAgent(rawAgent, 'Shivam')) rawAgent = 'Shivam';
+        else if (isSameAgent(rawAgent, 'Self')) rawAgent = 'Self';
+        else rawAgent = cb.agent || 'Rajesh';
+
+        const formattedBill = {
+          billNo: cb.billNo,
+          party: (cb.party && cb.party !== 'Standard Customer') ? cb.party : ((mm && mm.party) || cb.party || 'Standard Customer'),
+          amount: Number(cb.amount) || (mm ? Number(mm.amount) : 0) || 0,
+          agent: rawAgent,
+          beat: cb.beat || (mm && mm.beat) || '',
+          dispatchDate: dDate,
+          status: cb.status || 'WITH_AGENT',
+          collectedAmt: Number(cb.collectedAmt) || 0,
+          outstanding: cb.outstanding !== undefined ? Number(cb.outstanding) : (Number(cb.amount) || 0),
+          paymentMode: cb.paymentMode || '',
+          refNo: cb.refNo || (mm && mm.receipt) || '',
+          receipt: (mm && mm.receipt) || cb.refNo || '',
+          returnReason: cb.returnReason || '',
+          remarks: cb.remarks || '',
+          lastActionDate: cb.lastActionDate || new Date().toISOString(),
+          history: []
+        };
+        if (!formattedBill.beat) {
+          formattedBill.beat = inferBillBeat(formattedBill);
+        }
+        return formattedBill;
+      });
+
+      // Strict Cloud Authority:
+      // Replace State.bills with cloud bills so all devices mirror the cloud sheet 1-to-1!
+      // (Retain any locally scanned bills that haven't been pushed to the cloud yet)
+      const cloudNorms = new Set(cloudFormattedBills.map(b => normalizeInvoiceNumber(b.billNo)));
+      const pendingLocalUnsynced = State.bills.filter(b => {
+        const norm = normalizeInvoiceNumber(b.billNo);
+        return !cloudNorms.has(norm) && State.offlineQueue.some(q => {
+          const payload = q.payload || {};
+          const bills = payload.bills || [];
+          return bills.some(pb => normalizeInvoiceNumber(pb.billNo) === norm);
+        });
+      });
+
+      State.bills = [...cloudFormattedBills, ...pendingLocalUnsynced];
+      reconcileCustodyWithMasterSheet();
+      saveState('bills');
+      updateGlobalStats();
+      if (State.activeTab === 'tab-leftout') renderLeftOutTab();
+      else if (State.activeTab === 'tab-ledger') renderMasterLedger();
+      else if (State.activeTab === 'tab-settlement') loadSettlementForSelectedAgent();
+      updateHomeStats();
+
+      if (showFeedback) {
+        SoundFX.playBeep('success');
+        showToast(`Synced ${cloudFormattedBills.length} custody bills from Cloud Tracking Sheet!`, 'success');
+      }
+      return true;
+    } else {
       if (showFeedback) {
         showToast('Could not fetch tracking bills. Check connection.', 'warning');
       }
+      return false;
     }
   }
 
@@ -7526,6 +7557,15 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     // HOME TAB: basket pending handover banner actions
     document.getElementById('bannerConfirmHandoverBtn')?.addEventListener('click', confirmDispatchHandover);
     document.getElementById('bannerViewBasketBtn')?.addEventListener('click', () => switchTab('tab-dispatch'));
+    document.getElementById('bannerClearBasketBtn')?.addEventListener('click', () => {
+      if (confirm('Discard the unconfirmed bills currently in your handover basket?')) {
+        State.dispatchBasket = [];
+        saveState('basket');
+        renderDispatchBasket();
+        updateHomeStats();
+        showToast('Handover basket cleared', 'info');
+      }
+    });
 
     // HOME TAB: date filter chips (All Active Custody, Today, Yesterday, Overdue)
     document.querySelectorAll('#homeDateFilters .home-date-chip').forEach(chip => {
