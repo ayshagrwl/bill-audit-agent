@@ -271,9 +271,20 @@
     try {
       const storedBills = localStorage.getItem(STORAGE_KEYS.BILLS);
       State.bills = storedBills ? JSON.parse(storedBills) : [];
+      // Cleanse any mistaken header rows from stored bills
+      State.bills = State.bills.filter(b => {
+        if (!b || !b.billNo) return false;
+        const norm = b.billNo.toLowerCase().trim();
+        return !norm.includes('invoice / bill') && !norm.includes('bill no') && norm !== 'invoice no';
+      });
 
       const storedBasket = localStorage.getItem(STORAGE_KEYS.BASKET);
       State.dispatchBasket = storedBasket ? JSON.parse(storedBasket) : [];
+      State.dispatchBasket = State.dispatchBasket.filter(b => {
+        if (!b || !b.billNo) return false;
+        const norm = b.billNo.toLowerCase().trim();
+        return !norm.includes('invoice / bill') && !norm.includes('bill no') && norm !== 'invoice no';
+      });
 
       // Strictly enforce the 3 designated agents only: Rajesh Chaurasiya, Shivam Dwivedi, Self
       State.agents = [...DEFAULT_AGENTS];
@@ -4289,6 +4300,8 @@ _BillAudit Pro_`;
             };
             const billNo = getVal(0);
             if (!billNo) return;
+            const normLower = billNo.toLowerCase().trim();
+            if (normLower.includes('invoice / bill') || normLower.includes('bill no') || normLower === 'invoice no') return;
             custodyBills.push({
               billNo,
               party: getVal(1) || 'Customer',
@@ -4326,8 +4339,12 @@ _BillAudit Pro_`;
     }
 
     if (Array.isArray(custodyBills)) {
-      // Map cloud custody bills
-      const cloudFormattedBills = custodyBills.map(cb => {
+      // Map cloud custody bills (strictly excluding any header text)
+      const cloudFormattedBills = custodyBills.filter(cb => {
+        if (!cb || !cb.billNo) return false;
+        const normLower = cb.billNo.toLowerCase().trim();
+        return !normLower.includes('invoice / bill') && !normLower.includes('bill no') && normLower !== 'invoice no';
+      }).map(cb => {
         let dDate = cb.dispatchDate ? normalizeDateString(cb.dispatchDate) : '';
         const todayStr = getTodayDateString();
         if (dDate === todayStr && cb.lastActionDate) {
