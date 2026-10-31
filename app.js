@@ -32,7 +32,7 @@
   const DEFAULT_SETTINGS = {
     scriptUrl: 'https://script.google.com/macros/s/AKfycbxIDIzSZzSkZwB4nuMrOkVFHNNY56ad_KVZqt8n3zZ2bEA8FR13hhxQ1xz4kZP_O4NBNA/exec',
     mainSheetScriptUrl: 'https://script.google.com/macros/s/AKfycbxIDIzSZzSkZwB4nuMrOkVFHNNY56ad_KVZqt8n3zZ2bEA8FR13hhxQ1xz4kZP_O4NBNA/exec',
-    trackingSheetScriptUrl: 'https://script.google.com/macros/s/AKfycbxZ9jDxeFTNXH5hdvN_PsuWH76iOJkZ4JZFKEgIAVFzjonrpJyRt783HZLucXdhlZcr/exec',
+    trackingSheetScriptUrl: 'https://script.google.com/macros/s/AKfycbxJalJR_irwQbAtp8mAovrmAt_7zOh7fX-xGSyIuRiYRzQWEEi5hb7K-Z9wZ8j7-tTT/exec',
     sheetCsvUrl: 'https://docs.google.com/spreadsheets/d/11J3WSXNFfu5aARNMBX3HQazajsfzBjj7wX9MWyVVBRk/export?format=csv&gid=1608276684',
     theme: 'light',
     audioSound: true,
@@ -388,8 +388,9 @@
         State.settings.mainSheetScriptUrl = DEFAULT_SETTINGS.mainSheetScriptUrl;
         State.settings.scriptUrl = DEFAULT_SETTINGS.scriptUrl;
       }
-      if (!State.settings.trackingSheetScriptUrl) {
+      if (!State.settings.trackingSheetScriptUrl || State.settings.trackingSheetScriptUrl.includes('AKfycbxZ9jDxeFTNXH5hdvN')) {
         State.settings.trackingSheetScriptUrl = DEFAULT_SETTINGS.trackingSheetScriptUrl;
+        saveState('settings');
       }
       if (!State.settings.scriptUrl) {
         State.settings.scriptUrl = DEFAULT_SETTINGS.scriptUrl;
