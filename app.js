@@ -2907,6 +2907,7 @@
       return;
     }
 
+    const timestamp = new Date().toISOString();
     const billAmt = parseFloat(parsed.amount) || 0;
     const outstanding = (parsed.outstanding !== undefined && parsed.outstanding !== null)
       ? parseFloat(parsed.outstanding)
@@ -2932,8 +2933,8 @@
         fromMaster: !!parsed.fromMaster,
         returnReason: '',
         remarks: 'Scanned at Check-IN',
-        lastActionDate: new Date().toISOString(),
-        history: []
+        lastActionDate: timestamp,
+        history: [{ action: 'RECEIVED', agent: targetAgent, timestamp }]
       };
       State.bills.unshift(bill);
     } else {
@@ -2956,7 +2957,6 @@
       bill.isFetching = !!parsed.isFetching;
       bill.fromMaster = parsed.fromMaster || bill.fromMaster;
       bill.remarks = 'Received back from agent';
-      const timestamp = new Date().toISOString();
       bill.lastActionDate = timestamp;
       bill.history.push({ action: 'RECEIVED', agent: bill.agent, timestamp });
     }

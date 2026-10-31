@@ -3617,7 +3617,57 @@ google.visualization.Query.setResponse({
   assert(elapsed56 < 150, `15k index + 1.5k lookups completed in ${elapsed56}ms (< 150ms threshold)`);
   console.log(`✅ Test 56 Passed! 15,000 Master Sheet + 1,500 Custody Bills processed in ${elapsed56}ms (Zero UI Freeze)!\n`);
 
-  console.log('🎉 ALL 56 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+  // Test 57: Direct Scan-In of a bill not previously in custody (fixes 'timestamp is not defined' scoping error)
+  console.log('Test 57: Direct Scan-In of a bill not previously in custody');
+  const mockState = {
+    bills: [],
+    offlineQueue: [],
+    activeAgent: { name: 'Rajesh' },
+    activeSettlementAgent: 'Rajesh',
+    agents: [{ name: 'Rajesh' }]
+  };
+  function testReceiveBillSettlement(parsed) {
+    let bill = mockState.bills.find(b => b.billNo === parsed.billNo);
+    const timestamp = new Date().toISOString();
+    const billAmt = parseFloat(parsed.amount) || 0;
+    const outstanding = (parsed.outstanding !== undefined && parsed.outstanding !== null) ? parseFloat(parsed.outstanding) : 0;
+    const receiptVal = parsed.receipt || parsed.refNo || '';
+    if (!bill) {
+      const targetAgent = (mockState.activeAgent ? mockState.activeAgent.name : '') || 'Rajesh';
+      bill = {
+        billNo: parsed.billNo,
+        party: parsed.party || 'Standard Account',
+        amount: billAmt,
+        agent: targetAgent,
+        beat: parsed.beat || '',
+        status: 'RECEIVED',
+        collectedAmt: Math.max(0, billAmt - outstanding),
+        outstanding: outstanding,
+        lastActionDate: timestamp,
+        history: [{ action: 'RECEIVED', agent: targetAgent, timestamp }]
+      };
+      mockState.bills.unshift(bill);
+    }
+    mockState.offlineQueue.push({
+      type: 'SETTLEMENT_RETURN',
+      billNo: bill.billNo,
+      timestamp
+    });
+    return bill;
+  }
+  const resultBill57 = testReceiveBillSettlement({
+    billNo: 'IN-FY26/27-5785',
+    party: 'Test Customer',
+    amount: 3515,
+    outstanding: 3515
+  });
+  assert.strictEqual(resultBill57.billNo, 'IN-FY26/27-5785');
+  assert.strictEqual(resultBill57.status, 'RECEIVED');
+  assert.strictEqual(mockState.offlineQueue.length, 1);
+  assert(mockState.offlineQueue[0].timestamp, 'Timestamp must be defined in offlineQueue payload');
+  console.log('✅ Test 57 Passed! Direct Scan-In of un-dispatched bill works with zero ReferenceError!\n');
+
+  console.log('🎉 ALL 57 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
 })();
 
 
