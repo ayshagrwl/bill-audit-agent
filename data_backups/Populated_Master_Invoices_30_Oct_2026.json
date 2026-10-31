@@ -1,0 +1,355 @@
+{
+  "headers": [
+    "Invoice No",
+    "Party Name",
+    "Total Amount (\u20b9)",
+    "Assigned Agent",
+    "Dispatch Date",
+    "Status",
+    "Beat"
+  ],
+  "rows": [
+    [
+      "IN-FY26/27-5748",
+      "Ashish kirana - 179794122",
+      1600.0,
+      "SHIVAM",
+      "2026-10-30",
+      "WITH_AGENT",
+      "KOTHI ROAD, PANNA NAKA (2)"
+    ],
+    [
+      "IN-FY26/27-5749",
+      "Aditya Kirana - 142284152",
+      4301.0,
+      "SHIVAM",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD (2)"
+    ],
+    [
+      "IN-FY26/27-5750",
+      "R.s kirana - 177732019",
+      13374.0,
+      "Rajesh Chaurasiya(OM MARKETING)",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD"
+    ],
+    [
+      "IN-FY26/27-5751",
+      "Pradeep kirana mahagi lala road - 186993203",
+      2202.0,
+      "Rajesh Chaurasiya(OM MARKETING)",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD"
+    ],
+    [
+      "IN-FY26/27-5752",
+      "Ashok kirana - 181749291",
+      5170.0,
+      "Rajesh Chaurasiya(OM MARKETING)",
+      "2026-10-30",
+      "WITH_AGENT",
+      "KOTHI ROAD, PANNA NAKA (2)"
+    ],
+    [
+      "IN-FY26/27-5753",
+      "Sheetal Provision - 12301790",
+      18235.0,
+      "SHIVAM",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD (2)"
+    ],
+    [
+      "IN-FY26/27-5754",
+      "Vikas Kirana - 12420107",
+      1151.0,
+      "SHIVAM",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD (2)"
+    ],
+    [
+      "IN-FY26/27-5755",
+      "Heera kirana - 187077559",
+      711.0,
+      "Rajesh Chaurasiya(OM MARKETING)",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD (2)"
+    ],
+    [
+      "IN-FY26/27-5756",
+      "ANKIT AGENCY - 9914004",
+      37103.0,
+      "Unassigned",
+      "2026-10-30",
+      "WITH_AGENT",
+      "dhawari mahadeva_OM MARKETING_"
+    ],
+    [
+      "IN-FY26/27-5757",
+      "Anurag kirana - 164172565",
+      5633.0,
+      "Rajesh Chaurasiya(OM MARKETING)",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD"
+    ],
+    [
+      "IN-FY26/27-5758",
+      "Agrwal Provision - 12302134",
+      2196.0,
+      "SHIVAM",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD (2)"
+    ],
+    [
+      "IN-FY26/27-5759",
+      "Suresh Kirana - 12254545",
+      2709.0,
+      "Unassigned",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD (2)"
+    ],
+    [
+      "IN-FY26/27-5760",
+      "Deepak kirana - 164171403",
+      3872.0,
+      "Rajesh Chaurasiya(OM MARKETING)",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD (2)"
+    ],
+    [
+      "IN-FY26/27-5761",
+      "Vishnu Kirana & General - 145548623",
+      3004.0,
+      "Rajesh Chaurasiya(OM MARKETING)",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD (2)"
+    ],
+    [
+      "IN-FY26/27-5762",
+      "Balaji kirana - 12301888",
+      1016.0,
+      "Rajesh Chaurasiya(OM MARKETING)",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD (2)"
+    ],
+    [
+      "IN-FY26/27-5763",
+      "Om sai ram kirana - 177358734",
+      16366.0,
+      "Rajesh Chaurasiya(OM MARKETING)",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD"
+    ],
+    [
+      "IN-FY26/27-5764",
+      "Ramchandra kirana - 181853434",
+      1982.0,
+      "SHIVAM",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD (2)"
+    ],
+    [
+      "IN-FY26/27-5765",
+      "Mateshwari General And Provision Store - 12311372",
+      3037.0,
+      "SHIVAM",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD"
+    ],
+    [
+      "IN-FY26/27-5766",
+      "Mahgilal Gupta - 12313332",
+      2195.0,
+      "SHIVAM",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD"
+    ],
+    [
+      "IN-FY26/27-5767",
+      "Ma Sharda pan masala - 176314936",
+      2111.0,
+      "SHIVAM",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD"
+    ],
+    [
+      "IN-FY26/27-5768",
+      "Narendr Kirana Stor - 12504210",
+      6571.0,
+      "Rajesh Chaurasiya(OM MARKETING)",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD"
+    ],
+    [
+      "IN-FY26/27-5769",
+      "Shivam kirana PN - 177727841",
+      3011.0,
+      "Rajesh Chaurasiya(OM MARKETING)",
+      "2026-10-30",
+      "WITH_AGENT",
+      "dhawari mahadeva_OM MARKETING_"
+    ],
+    [
+      "IN-FY26/27-5770",
+      "Vineet kirana Store - 141263224",
+      4076.0,
+      "SHIVAM",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD (2)"
+    ],
+    [
+      "IN-FY26/27-5771",
+      "Raja Kirana - 12254558",
+      1715.0,
+      "SHIVAM",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD (2)"
+    ],
+    [
+      "IN-FY26/27-5772",
+      "Ujwal provision - 163607161",
+      4293.0,
+      "SHIVAM",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD (2)"
+    ],
+    [
+      "IN-FY26/27-5773",
+      "Ritu Dary - 12254556",
+      3236.0,
+      "SHIVAM",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD (2)"
+    ],
+    [
+      "IN-FY26/27-5774",
+      "SHRIVASTAVA JI -",
+      560.0,
+      "SHIVAM",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR DHAWARI_OM MARKETIN"
+    ],
+    [
+      "IN-FY26/27-5775",
+      "Goyal gift and general store - 187084564",
+      9579.0,
+      "SHIVAM",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD (2)"
+    ],
+    [
+      "IN-FY26/27-5776",
+      "Om Provision - 12254552",
+      1205.0,
+      "Unassigned",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD (2)"
+    ],
+    [
+      "IN-FY26/27-5777",
+      "Rishika patanjali - 150663201",
+      798.0,
+      "SHIVAM",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD (2)"
+    ],
+    [
+      "IN-FY26/27-5778",
+      "bala ji shop - 187804291",
+      610.0,
+      "SHIVAM",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD (2)"
+    ],
+    [
+      "IN-FY26/27-5779",
+      "Anshaj stationary - 187014001",
+      1519.0,
+      "SHIVAM",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD (2)"
+    ],
+    [
+      "IN-FY26/27-5780",
+      "Ankush kirana - 12254547",
+      1375.0,
+      "SHIVAM",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD (2)"
+    ],
+    [
+      "IN-FY26/27-5781",
+      "Sri Ram agency - 183770516",
+      358.0,
+      "SHIVAM",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD (2)"
+    ],
+    [
+      "IN-FY26/27-5782",
+      "Subhi kirana - 175855065",
+      2296.0,
+      "Rajesh Chaurasiya(OM MARKETING)",
+      "2026-10-30",
+      "WITH_AGENT",
+      "PREM NAGAR, DHAWARI, MAHADEVA ROAD"
+    ],
+    [
+      "IN-FY26/27-5783",
+      "Cash -",
+      8322.0,
+      "Counter Sale",
+      "2026-10-30",
+      "WITH_AGENT",
+      "KOTHI ROAD BAGHA_OM MARKETING_"
+    ],
+    [
+      "IN-FY26/27-5784",
+      "Cash -",
+      203.0,
+      "Counter Sale",
+      "2026-10-30",
+      "WITH_AGENT",
+      "KOTHI ROAD BAGHA_OM MARKETING_"
+    ],
+    [
+      "IN-FY26/27-5785",
+      "Cash -",
+      256.0,
+      "Counter Sale",
+      "2026-10-30",
+      "WITH_AGENT",
+      "KOTHI ROAD BAGHA_OM MARKETING_"
+    ]
+  ]
+}
