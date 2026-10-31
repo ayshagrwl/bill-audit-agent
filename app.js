@@ -2215,29 +2215,13 @@
       }
     }
 
-    // Beat Mismatch Guard: Alert if bill is assigned to a different beat in Master Sheet
+    // Beat Mismatch Guard: Ignored per user request to allow rapid, uninterrupted barcode scanning.
     if (State.activeBeat && parsed.beat && !isSameBeat(parsed.beat, State.activeBeat)) {
-      if (!silent) {
-        SoundFX.playBeep('warning');
-        SoundFX.vibrate(150);
-      }
-      const allowOverride = confirm(
-        `⚠️ BEAT MISMATCH DETECTED!\n\n` +
-        `Invoice: ${parsed.billNo}\n` +
-        `Customer: ${parsed.party || 'Customer'}\n` +
-        `Master Sheet Beat: ${parsed.beat}\n` +
-        `Master Sheet Agent: ${parsed.agent || 'Not specified'}\n\n` +
-        `Current Morning Dispatch Session is for:\n` +
-        `📍 Beat: ${State.activeBeat}\n` +
-        `👤 Agent: ${assignedAgent}\n\n` +
-        `Do you want to dispatch this bill under ${State.activeBeat} anyway?\n` +
-        `Click CANCEL to skip, or OK to add to this beat.`
-      );
-      if (!allowOverride) {
-        if (!silent) showToast(`Skipped ${parsed.billNo} — assigned to ${parsed.beat}`, 'warning', 3000);
-        return;
-      }
-    } else if (State.activeAgent && parsed.agent && !isSameAgent(parsed.agent, State.activeAgent.name)) {
+      console.log(`[Dispatch] Beat mismatch bypassed for ${parsed.billNo} (Sheet: "${parsed.beat}", Session: "${State.activeBeat}")`);
+    }
+
+    // Agent Mismatch Guard: Alert if bill is assigned to a different agent in Master Sheet
+    if (State.activeAgent && parsed.agent && !isSameAgent(parsed.agent, State.activeAgent.name)) {
       if (!silent) {
         SoundFX.playBeep('warning');
         SoundFX.vibrate(150);
