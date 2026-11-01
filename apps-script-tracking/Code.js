@@ -89,6 +89,25 @@ function doGet(e) {
       });
     }
 
+    if (action === 'BACKFILL_BEAT_WEEK' || action === 'UPDATE_BEAT_WEEK') {
+      const targetAgent = e.parameter.agent || '';
+      const targetDate = e.parameter.date || '';
+      const targetBeat = e.parameter.beat || '';
+      const targetWeek = e.parameter.week || 'Week 1';
+      const updatedCount = backfillBeatAndWeek(ss, targetAgent, targetDate, targetBeat, targetWeek);
+      return respondJSON({
+        status: 'OK',
+        action: 'BACKFILL_BEAT_WEEK',
+        message: `Successfully updated Beat ("${targetBeat}") and Week ("${targetWeek}") for ${updatedCount} bills`,
+        updatedCount: updatedCount,
+        agent: targetAgent,
+        date: targetDate,
+        beat: targetBeat,
+        week: targetWeek,
+        timestamp: getFormattedTimestamp()
+      });
+    }
+
     return respondJSON({ status: 'ERROR', message: 'Unknown action: ' + action });
   } catch (err) {
     return respondJSON({ status: 'ERROR', message: err.toString() });
@@ -160,6 +179,27 @@ function doPost(e) {
       });
     }
 
+    // 4. Backfill / Update Beat & Week
+    if (action === 'BACKFILL_BEAT_WEEK' || action === 'UPDATE_BEAT_WEEK') {
+      const p = data.payload || data;
+      const targetAgent = p.agent || '';
+      const targetDate = p.date || '';
+      const targetBeat = p.beat || '';
+      const targetWeek = p.week || 'Week 1';
+      const updatedCount = backfillBeatAndWeek(ss, targetAgent, targetDate, targetBeat, targetWeek);
+      return respondJSON({
+        success: true,
+        action: 'BACKFILL_BEAT_WEEK',
+        message: `Successfully updated Beat ("${targetBeat}") and Week ("${targetWeek}") for ${updatedCount} bills`,
+        updatedCount: updatedCount,
+        agent: targetAgent,
+        date: targetDate,
+        beat: targetBeat,
+        week: targetWeek,
+        timestamp: nowIST
+      });
+    }
+
     return respondJSON({ success: false, error: 'Unknown action: ' + action });
   } catch (err) {
     return respondJSON({ success: false, error: err.toString() });
@@ -183,6 +223,8 @@ function recordScanOut(ss, bills, dispatchDate, defaultAgent, timestamp) {
     const remainingDue = b.outstanding !== undefined ? Number(b.outstanding) : amount;
     const receipt = String(b.receipt || b.refNo || '').trim();
     const notes = b.remarks || `Dispatched for route ${dispatchDate}`;
+    const beat = String(b.beat || b.beatName || '').trim();
+    const week = String(b.week || '').trim();
 
     outRows.push([
       timestamp,
@@ -194,7 +236,9 @@ function recordScanOut(ss, bills, dispatchDate, defaultAgent, timestamp) {
       remainingDue,
       receipt,
       'WITH_AGENT',
-      notes
+      notes,
+      beat,
+      week
     ]);
   });
 
@@ -226,6 +270,8 @@ function recordScanIn(ss, p, timestamp) {
   const status = String(p.status || (collectedAmt >= totalAmt && totalAmt > 0 ? 'PAID_FULL' : 'PAID_PARTIAL')).trim();
   const returnReason = String(p.returnReason || '').trim();
   const remarks = String(p.remarks || (status === 'RETURNED_IN_HAND' ? 'Verified Return' : 'Checked IN')).trim();
+  const beat = String(p.beat || p.beatName || '').trim();
+  const week = String(p.week || '').trim();
 
   // Guard: If this was an automated reconciliation/heal, do NOT create rows in Scan_In_Log!
   if (remarks.indexOf('Auto-Healed') !== -1 || remarks.indexOf('Verified Paid on Master Sheet') !== -1) {
@@ -241,7 +287,9 @@ function recordScanIn(ss, p, timestamp) {
       refNo,
       returnReason,
       remarks,
-      lastActionDate: timestamp
+      lastActionDate: timestamp,
+      beat,
+      week
     };
     syncCustodyBills(ss, [custodyBill], timestamp);
     return;
@@ -259,7 +307,9 @@ function recordScanIn(ss, p, timestamp) {
     refNo,
     status,
     returnReason,
-    remarks
+    remarks,
+    beat,
+    week
   ];
 
   // Anti-duplication check: if bill was already recorded today in Scan_In_Log, update that row instead of appending duplicate rows
@@ -304,7 +354,9 @@ function recordScanIn(ss, p, timestamp) {
     refNo,
     returnReason,
     remarks,
-    lastActionDate: timestamp
+    lastActionDate: timestamp,
+    beat,
+    week
   };
 
   syncCustodyBills(ss, [custodyBill], timestamp);
@@ -394,6 +446,8 @@ function syncCustodyBills(ss, bills, timestamp, defaultStatus, defaultDispatchDa
     const reason = String(b.returnReason || '').trim();
     const remarks = String(b.remarks || '').trim();
     const updated = String(b.lastActionDate || timestamp).trim();
+    const beat = String(b.beat || b.beatName || '').trim();
+    const week = String(b.week || '').trim();
 
     const rowValues = [
       billNo,
@@ -408,11 +462,18 @@ function syncCustodyBills(ss, bills, timestamp, defaultStatus, defaultDispatchDa
       ref,
       reason,
       remarks,
-      updated
+      updated,
+      beat,
+      week
     ];
 
     const existingIdx = billRowMap[billNo] || billRowMap[normalizeInvNumber(billNo)];
     if (existingIdx) {
+      if (!beat || !week) {
+        const existingRowVals = sheet.getRange(existingIdx, 14, 1, 2).getValues()[0];
+        if (!beat && existingRowVals[0]) rowValues[13] = existingRowVals[0];
+        if (!week && existingRowVals[1]) rowValues[14] = existingRowVals[1];
+      }
       sheet.getRange(existingIdx, 1, 1, rowValues.length).setValues([rowValues]);
     } else {
       newRows.push(rowValues);
@@ -514,7 +575,8 @@ function getCustodyBills(ss) {
   const lastRow = sheet.getLastRow();
   if (lastRow <= 1) return [];
 
-  const values = sheet.getRange(2, 1, lastRow - 1, 13).getValues();
+  const lastCol = Math.max(15, sheet.getLastColumn());
+  const values = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
   return values.map(r => ({
     billNo: String(r[0]),
     party: String(r[1]),
@@ -528,7 +590,9 @@ function getCustodyBills(ss) {
     refNo: String(r[9]),
     returnReason: String(r[10]),
     remarks: String(r[11]),
-    lastActionDate: String(r[12])
+    lastActionDate: String(r[12]),
+    beat: String(r[13] || '').trim(),
+    week: String(r[14] || '').trim()
   }));
 }
 
@@ -536,12 +600,20 @@ function getCustodyBills(ss) {
  * Initialize and style the 4 database tabs
  */
 function ensureDatabaseSetup(ss) {
+  if (!ss) {
+    try {
+      ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById('1Lu1C-aX9KCRhCrcrZNal81tt4-wD_6wqHWqsI5orTrY');
+    } catch (e) {
+      ss = SpreadsheetApp.openById('1Lu1C-aX9KCRhCrcrZNal81tt4-wD_6wqHWqsI5orTrY');
+    }
+  }
+
   // 1. Scan_Out_Log
   let outSheet = ss.getSheetByName(TRACKING_TABS.SCAN_OUT);
   if (!outSheet) {
     outSheet = ss.insertSheet(TRACKING_TABS.SCAN_OUT);
     const headers = [
-      ['Timestamp (IST)', 'Invoice / Bill No', 'Sales Agent', 'Party Name', 'Bill Amount (₹)', 'Dispatch Date', 'Remaining Due at Out (₹)', 'Receipt Info', 'Status', 'Notes']
+      ['Timestamp (IST)', 'Invoice / Bill No', 'Sales Agent', 'Party Name', 'Bill Amount (₹)', 'Dispatch Date', 'Remaining Due at Out (₹)', 'Receipt Info', 'Status', 'Notes', 'Beat Route', 'Week']
     ];
     styleHeaderRow(outSheet, headers, '#1e3a8a'); // Navy Blue
     outSheet.setColumnWidth(1, 160);
@@ -550,6 +622,18 @@ function ensureDatabaseSetup(ss) {
     outSheet.setColumnWidth(4, 200);
     outSheet.setColumnWidth(5, 120);
     outSheet.setColumnWidth(7, 140);
+    outSheet.setColumnWidth(11, 160);
+    outSheet.setColumnWidth(12, 100);
+  } else {
+    const colCount = outSheet.getLastColumn();
+    if (colCount < 11 || !outSheet.getRange(1, 11).getValue()) {
+      outSheet.getRange(1, 11).setValue('Beat Route').setBackground('#1e3a8a').setFontColor('#ffffff').setFontWeight('bold');
+      outSheet.setColumnWidth(11, 160);
+    }
+    if (colCount < 12 || !outSheet.getRange(1, 12).getValue()) {
+      outSheet.getRange(1, 12).setValue('Week').setBackground('#1e3a8a').setFontColor('#ffffff').setFontWeight('bold');
+      outSheet.setColumnWidth(12, 100);
+    }
   }
 
   // 2. Scan_In_Log
@@ -557,7 +641,7 @@ function ensureDatabaseSetup(ss) {
   if (!inSheet) {
     inSheet = ss.insertSheet(TRACKING_TABS.SCAN_IN);
     const headers = [
-      ['Timestamp (IST)', 'Invoice / Bill No', 'Sales Agent', 'Party Name', 'Total Bill Amt (₹)', 'Collected Amt (₹)', 'Remaining Due Left (₹)', 'Payment Mode', 'Receipt / Ref No', 'Settlement Status', 'Return Reason', 'Remarks']
+      ['Timestamp (IST)', 'Invoice / Bill No', 'Sales Agent', 'Party Name', 'Total Bill Amt (₹)', 'Collected Amt (₹)', 'Remaining Due Left (₹)', 'Payment Mode', 'Receipt / Ref No', 'Settlement Status', 'Return Reason', 'Remarks', 'Beat Route', 'Week']
     ];
     styleHeaderRow(inSheet, headers, '#065f46'); // Emerald Green
     inSheet.setColumnWidth(1, 160);
@@ -567,6 +651,18 @@ function ensureDatabaseSetup(ss) {
     inSheet.setColumnWidth(5, 120);
     inSheet.setColumnWidth(6, 120);
     inSheet.setColumnWidth(7, 140);
+    inSheet.setColumnWidth(13, 160);
+    inSheet.setColumnWidth(14, 100);
+  } else {
+    const colCount = inSheet.getLastColumn();
+    if (colCount < 13 || !inSheet.getRange(1, 13).getValue()) {
+      inSheet.getRange(1, 13).setValue('Beat Route').setBackground('#065f46').setFontColor('#ffffff').setFontWeight('bold');
+      inSheet.setColumnWidth(13, 160);
+    }
+    if (colCount < 14 || !inSheet.getRange(1, 14).getValue()) {
+      inSheet.getRange(1, 14).setValue('Week').setBackground('#065f46').setFontColor('#ffffff').setFontWeight('bold');
+      inSheet.setColumnWidth(14, 100);
+    }
   }
 
   // 3. Live_Custody
@@ -574,7 +670,7 @@ function ensureDatabaseSetup(ss) {
   if (!custodySheet) {
     custodySheet = ss.insertSheet(TRACKING_TABS.CUSTODY);
     const headers = [
-      ['Invoice / Bill No', 'Party Name', 'Total Amount (₹)', 'Assigned Agent', 'Dispatch Date', 'Current Status', 'Collected Amt (₹)', 'Remaining Due (₹)', 'Payment Mode', 'Receipt / Ref No', 'Return Reason', 'Remarks', 'Last Updated (IST)']
+      ['Invoice / Bill No', 'Party Name', 'Total Amount (₹)', 'Assigned Agent', 'Dispatch Date', 'Current Status', 'Collected Amt (₹)', 'Remaining Due (₹)', 'Payment Mode', 'Receipt / Ref No', 'Return Reason', 'Remarks', 'Last Updated (IST)', 'Beat Route', 'Week']
     ];
     styleHeaderRow(custodySheet, headers, '#312e81'); // Indigo
     custodySheet.setColumnWidth(1, 140);
@@ -584,6 +680,18 @@ function ensureDatabaseSetup(ss) {
     custodySheet.setColumnWidth(7, 120);
     custodySheet.setColumnWidth(8, 130);
     custodySheet.setColumnWidth(13, 160);
+    custodySheet.setColumnWidth(14, 160);
+    custodySheet.setColumnWidth(15, 100);
+  } else {
+    const colCount = custodySheet.getLastColumn();
+    if (colCount < 14 || !custodySheet.getRange(1, 14).getValue()) {
+      custodySheet.getRange(1, 14).setValue('Beat Route').setBackground('#312e81').setFontColor('#ffffff').setFontWeight('bold');
+      custodySheet.setColumnWidth(14, 160);
+    }
+    if (colCount < 15 || !custodySheet.getRange(1, 15).getValue()) {
+      custodySheet.getRange(1, 15).setValue('Week').setBackground('#312e81').setFontColor('#ffffff').setFontWeight('bold');
+      custodySheet.setColumnWidth(15, 100);
+    }
   }
 
   // 4. Daily_Summary
@@ -663,7 +771,8 @@ function cleanDuplicateScanInRows(ss) {
   const lastRow = sheet.getLastRow();
   if (lastRow <= 1) return { removedCount: 0, keptCount: 0 };
 
-  const data = sheet.getRange(2, 1, lastRow - 1, 12).getValues();
+  const numCols = Math.max(14, sheet.getLastColumn());
+  const data = sheet.getRange(2, 1, lastRow - 1, numCols).getValues();
   const seen = new Map();
   let removedCount = 0;
 
@@ -695,10 +804,87 @@ function cleanDuplicateScanInRows(ss) {
 
   const cleanRows = Array.from(seen.values());
 
-  sheet.getRange(2, 1, Math.max(1, lastRow - 1), 12).clearContent();
+  sheet.getRange(2, 1, Math.max(1, lastRow - 1), numCols).clearContent();
   if (cleanRows.length > 0) {
-    sheet.getRange(2, 1, cleanRows.length, 12).setValues(cleanRows);
+    sheet.getRange(2, 1, cleanRows.length, cleanRows[0].length).setValues(cleanRows);
   }
 
   return { removedCount, keptCount: cleanRows.length };
+}
+
+function isSameAgent(a, b) {
+  if (!a || !b) return false;
+  const sA = String(a).toLowerCase().trim();
+  const sB = String(b).toLowerCase().trim();
+  if (sA === sB) return true;
+  if (sA.indexOf('shivam') !== -1 && sB.indexOf('shivam') !== -1) return true;
+  if (sA.indexOf('rajesh') !== -1 && sB.indexOf('rajesh') !== -1) return true;
+  if (sA.indexOf('self') !== -1 && sB.indexOf('self') !== -1) return true;
+  return false;
+}
+
+/**
+ * Backfill Beat Route and Week for existing bills in Live_Custody and Scan_Out_Log
+ */
+function backfillBeatAndWeek(ss, targetAgent, targetDate, targetBeat, targetWeek) {
+  if (!ss) {
+    try {
+      ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById('1Lu1C-aX9KCRhCrcrZNal81tt4-wD_6wqHWqsI5orTrY');
+    } catch (e) {
+      ss = SpreadsheetApp.openById('1Lu1C-aX9KCRhCrcrZNal81tt4-wD_6wqHWqsI5orTrY');
+    }
+  }
+
+  const custodySheet = ss.getSheetByName(TRACKING_TABS.CUSTODY);
+  const outSheet = ss.getSheetByName(TRACKING_TABS.SCAN_OUT);
+  let updatedCount = 0;
+
+  // 1. Update Live_Custody
+  if (custodySheet) {
+    const lastRow = custodySheet.getLastRow();
+    if (lastRow > 1) {
+      const colCount = Math.max(15, custodySheet.getLastColumn());
+      const values = custodySheet.getRange(2, 1, lastRow - 1, colCount).getValues();
+      for (let i = 0; i < values.length; i++) {
+        const row = values[i];
+        const agent = String(row[3] || '').trim();
+        const dDate = String(row[4] || '').trim();
+        const lastAction = String(row[12] || '').trim();
+
+        const agentMatch = !targetAgent || targetAgent === 'ALL' || isSameAgent(agent, targetAgent);
+        const dateMatch = !targetDate || targetDate === 'ALL' || dDate.indexOf(targetDate) !== -1 || lastAction.indexOf(targetDate) !== -1;
+
+        if (agentMatch && dateMatch) {
+          if (targetBeat) custodySheet.getRange(i + 2, 14).setValue(targetBeat);
+          if (targetWeek) custodySheet.getRange(i + 2, 15).setValue(targetWeek);
+          updatedCount++;
+        }
+      }
+    }
+  }
+
+  // 2. Update Scan_Out_Log
+  if (outSheet) {
+    const lastRow = outSheet.getLastRow();
+    if (lastRow > 1) {
+      const colCount = Math.max(12, outSheet.getLastColumn());
+      const values = outSheet.getRange(2, 1, lastRow - 1, colCount).getValues();
+      for (let i = 0; i < values.length; i++) {
+        const row = values[i];
+        const ts = String(row[0] || '').trim();
+        const agent = String(row[2] || '').trim();
+        const dDate = String(row[5] || '').trim();
+
+        const agentMatch = !targetAgent || targetAgent === 'ALL' || isSameAgent(agent, targetAgent);
+        const dateMatch = !targetDate || targetDate === 'ALL' || ts.indexOf(targetDate) !== -1 || dDate.indexOf(targetDate) !== -1;
+
+        if (agentMatch && dateMatch) {
+          if (targetBeat) outSheet.getRange(i + 2, 11).setValue(targetBeat);
+          if (targetWeek) outSheet.getRange(i + 2, 12).setValue(targetWeek);
+        }
+      }
+    }
+  }
+
+  return updatedCount;
 }

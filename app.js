@@ -4312,7 +4312,9 @@ _BillAudit Pro_`;
               receipt: getVal(9) || '',
               returnReason: getVal(10) || '',
               remarks: getVal(11) || '',
-              lastActionDate: getVal(12) || new Date().toISOString()
+              lastActionDate: getVal(12) || new Date().toISOString(),
+              beat: getVal(13) || '',
+              week: getVal(14) || ''
             });
           });
         }
@@ -4362,6 +4364,7 @@ _BillAudit Pro_`;
           amount: Number(cb.amount) || (mm ? Number(mm.amount) : 0) || 0,
           agent: rawAgent,
           beat: cb.beat || (mm && mm.beat) || '',
+          week: cb.week || '',
           dispatchDate: dDate,
           status: cb.status || 'WITH_AGENT',
           collectedAmt: Number(cb.collectedAmt) || 0,
