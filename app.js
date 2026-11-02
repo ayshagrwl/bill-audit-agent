@@ -3380,7 +3380,7 @@
           if (amountEl) amountEl.textContent = formatINR(b.amount);
           if (receiptEl) {
             if (b.receipt && b.receipt.trim()) {
-              receiptEl.innerHTML = `<span class="badge-receipt" style="background:#e0f2fe;color:#0284c7;font-weight:700;padding:2px 8px;border-radius:6px;font-size:0.92rem;"><i class="fa-solid fa-receipt"></i> ${b.receipt.trim()}</span>`;
+              receiptEl.innerHTML = `<span class="badge-receipt" style="background:#e0f2fe;color:#0284c7;font-weight:700;padding:2px 8px;border-radius:6px;font-size:0.92rem;"><i class="fa-solid fa-receipt"></i> ${escapeHtml(b.receipt.trim())}</span>`;
             } else {
               receiptEl.textContent = '-';
             }
@@ -3938,7 +3938,7 @@
       card.className = 'leftout-agent-card';
       card.innerHTML = `
         <div class="leftout-agent-head">
-          <span class="leftout-agent-name"><i class="fa-solid fa-user"></i> ${agent.name}</span>
+          <span class="leftout-agent-name"><i class="fa-solid fa-user"></i> ${escapeHtml(agent.name)}</span>
           <span class="leftout-count-tag ${stats.leftOutCount > 0 ? 'bg-danger text-white' : ''}">${stats.leftOutCount} Missing / Due</span>
         </div>
         <div class="leftout-amount-row">
@@ -3946,10 +3946,10 @@
           <span class="leftout-amt-val font-mono ${stats.leftOutCount > 0 ? 'text-danger' : ''}">${formatINR(stats.leftOutAmt)}</span>
         </div>
         <div style="display: flex; gap: 6px; margin-top: 4px;">
-          <button class="btn btn-outline-whatsapp btn-sm flex-1" data-wa-agent="${agent.name}">
+          <button class="btn btn-outline-whatsapp btn-sm flex-1" data-wa-agent="${escapeHtml(agent.name)}">
             <i class="fa-brands fa-whatsapp"></i> Alert Agent
           </button>
-          <button class="btn btn-dark btn-sm" data-goto-settle="${agent.name}">
+          <button class="btn btn-dark btn-sm" data-goto-settle="${escapeHtml(agent.name)}">
             Receive
           </button>
         </div>
@@ -4001,7 +4001,7 @@
           <td>${escapeHtml(b.party)}</td>
           <td class="font-mono">${formatINR(b.amount)}</td>
           <td class="font-mono font-bold text-danger">${formatINR(pendingDue)}</td>
-          <td><div>${b.dispatchDate || '-'}</div><div style="margin-top:2px;">${ageBadgeHtml}</div></td>
+          <td><div>${escapeHtml(b.dispatchDate || '-')}</div><div style="margin-top:2px;">${ageBadgeHtml}</div></td>
           <td>${receiptBadge}</td>
           <td>${paymentBadge}</td>
           <td>
@@ -5659,7 +5659,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       row.innerHTML = `
         <div style="display: flex; align-items: center; gap: 8px;">
           <i class="fa-solid fa-circle-check text-success"></i>
-          <strong>${ag.name}</strong>
+          <strong>${escapeHtml(ag.name)}</strong>
           <span class="badge-count-pill" style="display: inline-block;">Active</span>
         </div>
       `;
@@ -5715,10 +5715,10 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       card.className = 'qr-card-item';
       const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(s.text)}`;
       card.innerHTML = `
-        <img src="${qrUrl}" alt="QR ${s.bill}" />
-        <div class="bill-no">${s.bill}</div>
-        <div class="party">${s.party}</div>
-        <div class="amt">${s.amt}</div>
+        <img src="${qrUrl}" alt="QR ${escapeHtml(s.bill)}" />
+        <div class="bill-no">${escapeHtml(s.bill)}</div>
+        <div class="party">${escapeHtml(s.party)}</div>
+        <div class="amt">${escapeHtml(s.amt)}</div>
       `;
       grid.appendChild(card);
     });

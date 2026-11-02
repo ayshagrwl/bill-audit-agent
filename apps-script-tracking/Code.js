@@ -439,7 +439,7 @@ function processSyncQueue(ss, queue, timestamp) {
 /**
  * Upsert rows into Live_Custody tab
  */
-function syncCustodyBills(ss, bills, timestamp, defaultStatus, defaultDispatchDate) {
+function syncCustodyBills(ss, bills, timestamp, defaultStatus, defaultDispatchDate, skipMirror) {
   const sheet = ss.getSheetByName(TRACKING_TABS.CUSTODY);
   if (!sheet || !bills || bills.length === 0) return;
 
@@ -515,6 +515,18 @@ function syncCustodyBills(ss, bills, timestamp, defaultStatus, defaultDispatchDa
 
   if (newRows.length > 0) {
     sheet.getRange(sheet.getLastRow() + 1, 1, newRows.length, newRows[0].length).setValues(newRows);
+  }
+
+  // Mirror custody changes to Master Sheet (ALL INVOICE PARTY) Live_Custody tab
+  if (!skipMirror) {
+    try {
+      const masterSS = SpreadsheetApp.openById('1aNzEsD0v92fVZtklSj79ZxDtXCkySQxw63HVlydg88g');
+      if (masterSS && masterSS.getSheetByName(TRACKING_TABS.CUSTODY)) {
+        syncCustodyBills(masterSS, bills, timestamp, defaultStatus, defaultDispatchDate, true);
+      }
+    } catch (mirrorErr) {
+      console.warn('mirrorCustodyToMaster skipped or error:', mirrorErr);
+    }
   }
 
   updateDailySummary(ss);

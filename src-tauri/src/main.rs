@@ -35,7 +35,7 @@ fn save_local_backup(app_handle: AppHandle, filename: String, content: String) -
         .chars()
         .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-' || *c == '.')
         .collect();
-    if safe_name.is_empty() {
+    if safe_name.is_empty() || safe_name.starts_with('.') || safe_name.contains("..") {
         return Err("Invalid backup filename".to_string());
     }
     let dir = resolve_backup_dir(&app_handle)?;
@@ -52,6 +52,9 @@ fn load_local_backup(app_handle: AppHandle, filename: String) -> Result<String, 
         .chars()
         .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-' || *c == '.')
         .collect();
+    if safe_name.is_empty() || safe_name.starts_with('.') || safe_name.contains("..") {
+        return Err("Invalid backup filename".to_string());
+    }
     let dir = resolve_backup_dir(&app_handle)?;
     let file_path = dir.join(safe_name);
     if !file_path.exists() {
