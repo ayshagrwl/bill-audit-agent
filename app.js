@@ -4294,6 +4294,12 @@ _BillAudit Pro_`;
               if (!cell) return '';
               return (cell.f !== undefined && cell.f !== null) ? String(cell.f).trim() : (cell.v !== undefined && cell.v !== null ? String(cell.v).trim() : '');
             };
+            const getNum = (idx) => {
+              const cell = r.c[idx];
+              if (!cell) return 0;
+              if (typeof cell.v === 'number') return cell.v;
+              return parseFloat(String(cell.v || cell.f || 0).replace(/[₹,\s]/g, '')) || 0;
+            };
             const billNo = getVal(0);
             if (!billNo) return;
             const normLower = billNo.toLowerCase().trim();
@@ -4301,12 +4307,12 @@ _BillAudit Pro_`;
             custodyBills.push({
               billNo,
               party: getVal(1) || 'Customer',
-              amount: Number(getVal(2)) || 0,
+              amount: getNum(2),
               agent: getVal(3) || 'Rajesh',
               dispatchDate: getVal(4) || getTodayDateString(),
               status: getVal(5) || 'WITH_AGENT',
-              collectedAmt: Number(getVal(6)) || 0,
-              outstanding: (getVal(7) !== '') ? Number(getVal(7)) : (Number(getVal(2)) || 0),
+              collectedAmt: getNum(6),
+              outstanding: (r.c[7] && (r.c[7].v !== undefined || r.c[7].f !== undefined) && String(r.c[7].v || r.c[7].f).trim() !== '') ? getNum(7) : getNum(2),
               paymentMode: getVal(8) || '',
               refNo: getVal(9) || '',
               receipt: getVal(9) || '',

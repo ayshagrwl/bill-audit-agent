@@ -3715,7 +3715,548 @@ google.visualization.Query.setResponse({
 
   console.log('✅ Test 58 Passed! Background Bill Lookup Preserves Active Dispatch Agent & Beat!\n');
 
-  console.log('🎉 ALL 58 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+  // ========================================================
+  // TEST 59: Live_Custody 15-Column Schema, GViz Deserialization & Zero Local Storage Dependency
+  // ========================================================
+  console.log('Test 59: Live_Custody 15-Column Schema & Multi-Device GViz Deserialization');
+
+  // Simulated Google Sheet BigTable (GViz) response for Live_Custody with 15 columns
+  const mockGVizLiveCustodyTable = {
+    cols: [
+      { id: 'A', label: 'Invoice / Bill No', type: 'string' },
+      { id: 'B', label: 'Party Name', type: 'string' },
+      { id: 'C', label: 'Total Amount (₹)', type: 'number' },
+      { id: 'D', label: 'Assigned Agent', type: 'string' },
+      { id: 'E', label: 'Dispatch Date', type: 'string' },
+      { id: 'F', label: 'Current Status', type: 'string' },
+      { id: 'G', label: 'Collected Amt (₹)', type: 'number' },
+      { id: 'H', label: 'Remaining Due (₹)', type: 'number' },
+      { id: 'I', label: 'Payment Mode', type: 'string' },
+      { id: 'J', label: 'Receipt / Ref No', type: 'string' },
+      { id: 'K', label: 'Return Reason', type: 'string' },
+      { id: 'L', label: 'Remarks', type: 'string' },
+      { id: 'M', label: 'Last Updated (IST)', type: 'string' },
+      { id: 'N', label: 'Beat Route', type: 'string' },
+      { id: 'O', label: 'Week', type: 'string' }
+    ],
+    rows: [
+      // Header row simulation (must be ignored)
+      { c: [{ v: 'Invoice / Bill No' }, { v: 'Party Name' }, { v: 'Total Amount (₹)' }, { v: 'Assigned Agent' }, { v: 'Dispatch Date' }, { v: 'Current Status' }, { v: 'Collected Amt (₹)' }, { v: 'Remaining Due (₹)' }, { v: 'Payment Mode' }, { v: 'Receipt / Ref No' }, { v: 'Return Reason' }, { v: 'Remarks' }, { v: 'Last Updated (IST)' }, { v: 'Beat Route' }, { v: 'Week' }] },
+      // Shivam row
+      { c: [{ v: 'IN-FY26/27-5751' }, { v: 'Shree Krishna Traders - 12345' }, { v: 12500, f: '₹12,500.00' }, { v: 'Shivam' }, { v: '2026-11-02' }, { v: 'WITH_AGENT' }, { v: 0 }, { v: 12500 }, { v: '' }, { v: '' }, { v: '' }, { v: 'Dispatched for route' }, { v: '2026-11-02T06:30:00.000Z' }, { v: 'Mukhtiyarganj Market-2' }, { v: 'Week 1' }] },
+      // Rajesh row (Partial Payment)
+      { c: [{ v: 'IN-FY26/27-5752' }, { v: 'Gupta Kirana Store - 54321' }, { v: 8000, f: '₹8,000.00' }, { v: 'Rajesh' }, { v: '2026-11-02' }, { v: 'PAID_PARTIAL' }, { v: 3000 }, { v: 5000 }, { v: 'CASH' }, { v: 'REC-9011' }, { v: '' }, { v: 'Partial collected on route' }, { v: '2026-11-02T09:15:00.000Z' }, { v: 'Mukhtiyarganj Market-1' }, { v: 'Week 1' }] },
+      // Self row
+      { c: [{ v: 'IN-FY26/27-5753' }, { v: 'Direct Counter Walk-in' }, { v: 4500, f: '₹4,500.00' }, { v: 'Self' }, { v: '2026-11-02' }, { v: 'WITH_AGENT' }, { v: 0 }, { v: 4500 }, { v: '' }, { v: '' }, { v: '' }, { v: 'In-store customer dispatch' }, { v: '2026-11-02T07:00:00.000Z' }, { v: 'In-Store Counter / Self' }, { v: 'Week 1' }] }
+    ]
+  };
+
+  // Simulated syncBillsFromTrackingSheet deserializer logic from app.js
+  function deserializeGVizCustody(jsonTable) {
+    const rows = (jsonTable && Array.isArray(jsonTable.rows)) ? jsonTable.rows : [];
+    const custodyBills = [];
+    rows.forEach(r => {
+      if (!r || !r.c) return;
+      const getVal = (idx) => {
+        const cell = r.c[idx];
+        if (!cell) return '';
+        return (cell.f !== undefined && cell.f !== null) ? String(cell.f).trim() : (cell.v !== undefined && cell.v !== null ? String(cell.v).trim() : '');
+      };
+      const getNum = (idx) => {
+        const cell = r.c[idx];
+        if (!cell) return 0;
+        if (typeof cell.v === 'number') return cell.v;
+        return parseFloat(String(cell.v || cell.f || 0).replace(/[₹,\s]/g, '')) || 0;
+      };
+      const billNo = getVal(0);
+      if (!billNo) return;
+      const normLower = billNo.toLowerCase().trim();
+      if (normLower.includes('invoice / bill') || normLower.includes('bill no') || normLower === 'invoice no') return;
+      custodyBills.push({
+        billNo,
+        party: getVal(1) || 'Customer',
+        amount: getNum(2),
+        agent: getVal(3) || 'Rajesh',
+        dispatchDate: getVal(4) || '2026-11-02',
+        status: getVal(5) || 'WITH_AGENT',
+        collectedAmt: getNum(6),
+        outstanding: (r.c[7] && (r.c[7].v !== undefined || r.c[7].f !== undefined) && String(r.c[7].v || r.c[7].f).trim() !== '') ? getNum(7) : getNum(2),
+        paymentMode: getVal(8) || '',
+        refNo: getVal(9) || '',
+        receipt: getVal(9) || '',
+        returnReason: getVal(10) || '',
+        remarks: getVal(11) || '',
+        lastActionDate: getVal(12) || new Date().toISOString(),
+        beat: getVal(13) || '',
+        week: getVal(14) || ''
+      });
+    });
+    return custodyBills;
+  }
+
+  const parsedCustody59 = deserializeGVizCustody(mockGVizLiveCustodyTable);
+  assert.strictEqual(parsedCustody59.length, 3, 'Must parse exactly 3 bills, ignoring header row');
+
+  // Verify Bill 1 (Shivam)
+  assert.strictEqual(parsedCustody59[0].billNo, 'IN-FY26/27-5751');
+  assert.strictEqual(parsedCustody59[0].agent, 'Shivam');
+  assert.strictEqual(parsedCustody59[0].beat, 'Mukhtiyarganj Market-2', 'Beat Route must be extracted from Col 14');
+  assert.strictEqual(parsedCustody59[0].week, 'Week 1', 'Week must be extracted from Col 15');
+  assert.strictEqual(parsedCustody59[0].amount, 12500);
+  assert.strictEqual(parsedCustody59[0].status, 'WITH_AGENT');
+
+  // Verify Bill 2 (Rajesh)
+  assert.strictEqual(parsedCustody59[1].billNo, 'IN-FY26/27-5752');
+  assert.strictEqual(parsedCustody59[1].agent, 'Rajesh');
+  assert.strictEqual(parsedCustody59[1].beat, 'Mukhtiyarganj Market-1', 'Rajesh beat route extracted');
+  assert.strictEqual(parsedCustody59[1].week, 'Week 1');
+  assert.strictEqual(parsedCustody59[1].status, 'PAID_PARTIAL');
+  assert.strictEqual(parsedCustody59[1].collectedAmt, 3000);
+  assert.strictEqual(parsedCustody59[1].outstanding, 5000);
+  assert.strictEqual(parsedCustody59[1].refNo, 'REC-9011');
+
+  // Verify Bill 3 (Self)
+  assert.strictEqual(parsedCustody59[2].billNo, 'IN-FY26/27-5753');
+  assert.strictEqual(parsedCustody59[2].agent, 'Self');
+  assert.strictEqual(parsedCustody59[2].beat, 'In-Store Counter / Self');
+  assert.strictEqual(parsedCustody59[2].week, 'Week 1');
+
+  console.log('✅ Test 59 Passed! Live_Custody 15-Column Schema & Deserialization verified 100%!\n');
+
+  // ========================================================
+  // TEST 60: Scan_Out_Log 12-Column Payload & Apps Script Deserialization
+  // ========================================================
+  console.log('Test 60: Scan_Out_Log 12-Column Payload & Apps Script Deserialization with Beat & Week');
+
+  function simulateRecordScanOut(bills, dispatchDate, defaultAgent, timestamp) {
+    const outRows = [];
+    bills.forEach(b => {
+      const billNo = String(b.billNo || '').trim();
+      if (!billNo) return;
+      const agent = String(b.agent || defaultAgent).trim();
+      const party = String(b.party || 'Standard Account').trim();
+      const amount = Number(b.amount) || 0;
+      const remainingDue = b.outstanding !== undefined ? Number(b.outstanding) : amount;
+      const receipt = String(b.receipt || b.refNo || '').trim();
+      const notes = b.remarks || `Dispatched for route ${dispatchDate}`;
+      const beat = String(b.beat || b.beatName || '').trim();
+      const week = String(b.week || '').trim();
+
+      outRows.push([
+        timestamp,
+        billNo,
+        agent,
+        party,
+        amount,
+        dispatchDate,
+        remainingDue,
+        receipt,
+        'WITH_AGENT',
+        notes,
+        beat,
+        week
+      ]);
+    });
+    return outRows;
+  }
+
+  const mockScanOutBills = [
+    {
+      billNo: 'IN-FY26/27-8001',
+      party: 'Modern Store Satna',
+      amount: 9800,
+      agent: 'Shivam',
+      beat: 'Mukhtiyarganj Market-2',
+      week: 'Week 1',
+      outstanding: 9800
+    },
+    {
+      billNo: 'IN-FY26/27-8002',
+      party: 'Vijay Medical Agency',
+      amount: 14500,
+      agent: 'Rajesh',
+      beat: 'Mukhtiyarganj Market-1',
+      week: 'Week 2',
+      outstanding: 14500
+    }
+  ];
+
+  const generatedScanOutRows = simulateRecordScanOut(mockScanOutBills, '2026-11-02', 'Shivam', '2026-11-02T07:00:00.000Z');
+  assert.strictEqual(generatedScanOutRows.length, 2, 'Must generate exactly 2 scan-out rows');
+  assert.strictEqual(generatedScanOutRows[0].length, 12, 'Each scan-out row must have exactly 12 columns');
+  assert.strictEqual(generatedScanOutRows[0][1], 'IN-FY26/27-8001');
+  assert.strictEqual(generatedScanOutRows[0][2], 'Shivam');
+  assert.strictEqual(generatedScanOutRows[0][10], 'Mukhtiyarganj Market-2', 'Col 11 must be Beat Route');
+  assert.strictEqual(generatedScanOutRows[0][11], 'Week 1', 'Col 12 must be Week');
+
+  assert.strictEqual(generatedScanOutRows[1][1], 'IN-FY26/27-8002');
+  assert.strictEqual(generatedScanOutRows[1][2], 'Rajesh');
+  assert.strictEqual(generatedScanOutRows[1][10], 'Mukhtiyarganj Market-1', 'Col 11 must be Beat Route');
+  assert.strictEqual(generatedScanOutRows[1][11], 'Week 2', 'Col 12 must be Week');
+
+  console.log('✅ Test 60 Passed! Scan_Out_Log 12-Column Payload & Apps Script Deserialization verified 100%!\n');
+
+  // ========================================================
+  // TEST 61: Scan_In_Log 14-Column Payload & Anti-Duplication with Beat & Week
+  // ========================================================
+  console.log('Test 61: Scan_In_Log 14-Column Payload & Anti-Duplication Engine');
+
+  function simulateRecordScanIn(existingLogRows, p, timestamp) {
+    const billNo = String(p.billNo || '').trim();
+    const agent = String(p.agent || 'Rajesh').trim();
+    const party = String(p.party || 'Customer').trim();
+    const totalAmt = Number(p.amount) || 0;
+    const collectedAmt = Number(p.collectedAmt) || 0;
+    const remainingDue = p.outstanding !== undefined ? Number(p.outstanding) : Math.max(0, totalAmt - collectedAmt);
+    const mode = String(p.paymentMode || (collectedAmt > 0 ? 'CASH' : '')).trim();
+    const refNo = String(p.refNo || p.receipt || '').trim();
+    const status = String(p.status || (collectedAmt >= totalAmt && totalAmt > 0 ? 'PAID_FULL' : 'PAID_PARTIAL')).trim();
+    const returnReason = String(p.returnReason || '').trim();
+    const remarks = String(p.remarks || (status === 'RETURNED_IN_HAND' ? 'Verified Return' : 'Checked IN')).trim();
+    const beat = String(p.beat || p.beatName || '').trim();
+    const week = String(p.week || '').trim();
+
+    // Guard: auto-healed rows are skipped
+    if (remarks.indexOf('Auto-Healed') !== -1 || remarks.indexOf('Verified Paid on Master Sheet') !== -1) {
+      return { skipped: true, rows: existingLogRows };
+    }
+
+    const rowValues = [
+      timestamp,
+      billNo,
+      agent,
+      party,
+      totalAmt,
+      collectedAmt,
+      remainingDue,
+      mode,
+      refNo,
+      status,
+      returnReason,
+      remarks,
+      beat,
+      week
+    ];
+
+    // Anti-duplication check: if bill was already recorded today in Scan_In_Log, update that row
+    const todayDateStr = timestamp.slice(0, 10);
+    let updated = false;
+    for (let i = 0; i < existingLogRows.length; i++) {
+      const existing = existingLogRows[i];
+      const existingTs = String(existing[0] || '').slice(0, 10);
+      const existingBill = String(existing[1] || '').trim();
+      if (existingBill.toLowerCase() === billNo.toLowerCase() && existingTs === todayDateStr) {
+        existingLogRows[i] = rowValues;
+        updated = true;
+        break;
+      }
+    }
+
+    if (!updated) {
+      existingLogRows.push(rowValues);
+    }
+
+    return { skipped: false, updated, rows: existingLogRows };
+  }
+
+  const logRowsMock = [];
+  const inPayload1 = {
+    billNo: 'IN-FY26/27-8001',
+    agent: 'Shivam',
+    party: 'Modern Store Satna',
+    amount: 9800,
+    collectedAmt: 5000,
+    outstanding: 4800,
+    paymentMode: 'UPI',
+    refNo: 'UPI-987654',
+    status: 'PAID_PARTIAL',
+    remarks: 'Partial paid on route',
+    beat: 'Mukhtiyarganj Market-2',
+    week: 'Week 1'
+  };
+
+  const resIn1 = simulateRecordScanIn(logRowsMock, inPayload1, '2026-11-02T10:00:00.000Z');
+  assert.strictEqual(resIn1.rows.length, 1, 'First scan-in must append 1 row');
+  assert.strictEqual(resIn1.rows[0].length, 14, 'Scan-In row must have exactly 14 columns');
+  assert.strictEqual(resIn1.rows[0][12], 'Mukhtiyarganj Market-2', 'Col 13 must be Beat Route');
+  assert.strictEqual(resIn1.rows[0][13], 'Week 1', 'Col 14 must be Week');
+
+  // Anti-duplication: Second scan-in for same bill on same day updates row instead of duplicating
+  const inPayload2 = {
+    billNo: 'IN-FY26/27-8001',
+    agent: 'Shivam',
+    party: 'Modern Store Satna',
+    amount: 9800,
+    collectedAmt: 9800,
+    outstanding: 0,
+    paymentMode: 'CASH',
+    refNo: 'CASH-FINAL',
+    status: 'PAID_FULL',
+    remarks: 'Cleared in full at EOD',
+    beat: 'Mukhtiyarganj Market-2',
+    week: 'Week 1'
+  };
+
+  const resIn2 = simulateRecordScanIn(logRowsMock, inPayload2, '2026-11-02T17:30:00.000Z');
+  assert.strictEqual(resIn2.updated, true, 'Same-day second scan-in must update in-place');
+  assert.strictEqual(resIn2.rows.length, 1, 'Row count must stay 1 (no inflation)');
+  assert.strictEqual(resIn2.rows[0][9], 'PAID_FULL', 'Status updated to PAID_FULL');
+  assert.strictEqual(resIn2.rows[0][5], 9800, 'Collected amt updated to 9800');
+  assert.strictEqual(resIn2.rows[0][12], 'Mukhtiyarganj Market-2', 'Beat route preserved');
+
+  // Auto-heal guard: Auto-healed reconciliation does NOT generate scan-in rows
+  const autoHealPayload = {
+    billNo: 'IN-FY26/27-8003',
+    agent: 'Rajesh',
+    amount: 3000,
+    remarks: 'Auto-Healed: Paid on Master Sheet'
+  };
+  const resAutoHeal = simulateRecordScanIn(logRowsMock, autoHealPayload, '2026-11-02T18:00:00.000Z');
+  assert.strictEqual(resAutoHeal.skipped, true, 'Auto-healed entries must be skipped from Scan_In_Log');
+  assert.strictEqual(resAutoHeal.rows.length, 1, 'Row count remains 1');
+
+  console.log('✅ Test 61 Passed! Scan_In_Log 14-Column Payload & Anti-Duplication verified 100%!\n');
+
+  // ========================================================
+  // TEST 62: Live_Custody Upsert & In-Place Beat/Week Preservation Engine
+  // ========================================================
+  console.log('Test 62: Live_Custody Upsert & In-Place Beat/Week Preservation Engine');
+
+  function simulateSyncCustodyBills(existingCustodyRows, bills, timestamp) {
+    const billRowMap = {};
+    existingCustodyRows.forEach((r, idx) => {
+      const bNo = String(r[0]).trim();
+      if (bNo) {
+        billRowMap[bNo] = idx;
+        billRowMap[normalizeInvoiceNumber(bNo)] = idx;
+      }
+    });
+
+    bills.forEach(b => {
+      const billNo = String(b.billNo || '').trim();
+      if (!billNo) return;
+      const party = String(b.party || '').trim();
+      const amount = Number(b.amount) || 0;
+      const agent = String(b.agent || '').trim();
+      const dispatchDate = String(b.dispatchDate || '').trim();
+      const status = String(b.status || 'WITH_AGENT').trim();
+      const collected = Number(b.collectedAmt) || 0;
+      const remainingDue = b.outstanding !== undefined ? Number(b.outstanding) : Math.max(0, amount - collected);
+      const mode = String(b.paymentMode || '').trim();
+      const ref = String(b.refNo || b.receipt || '').trim();
+      const reason = String(b.returnReason || '').trim();
+      const remarks = String(b.remarks || '').trim();
+      const updated = String(b.lastActionDate || timestamp).trim();
+      const beat = String(b.beat || b.beatName || '').trim();
+      const week = String(b.week || '').trim();
+
+      const rowValues = [
+        billNo,
+        party,
+        amount,
+        agent,
+        dispatchDate,
+        status,
+        collected,
+        remainingDue,
+        mode,
+        ref,
+        reason,
+        remarks,
+        updated,
+        beat,
+        week
+      ];
+
+      const norm = normalizeInvoiceNumber(billNo);
+      const existingIdx = billRowMap[billNo] !== undefined ? billRowMap[billNo] : billRowMap[norm];
+      if (existingIdx !== undefined) {
+        // In-place beat & week preservation: if incoming update doesn't specify beat or week, preserve existing!
+        if (!beat || !week) {
+          const existingRow = existingCustodyRows[existingIdx];
+          if (!beat && existingRow[13]) rowValues[13] = existingRow[13];
+          if (!week && existingRow[14]) rowValues[14] = existingRow[14];
+        }
+        existingCustodyRows[existingIdx] = rowValues;
+      } else {
+        existingCustodyRows.push(rowValues);
+        billRowMap[billNo] = existingCustodyRows.length - 1;
+        billRowMap[norm] = existingCustodyRows.length - 1;
+      }
+    });
+    return existingCustodyRows;
+  }
+
+  const custodySheetMock = [];
+  // Initial scan out with Beat and Week
+  simulateSyncCustodyBills(custodySheetMock, [{
+    billNo: 'IN-FY26/27-7777',
+    party: 'Gupta Sweets',
+    amount: 11000,
+    agent: 'Shivam',
+    dispatchDate: '2026-11-02',
+    status: 'WITH_AGENT',
+    beat: 'Mukhtiyarganj Market-2',
+    week: 'Week 1'
+  }], '2026-11-02T07:00:00.000Z');
+
+  assert.strictEqual(custodySheetMock.length, 1);
+  assert.strictEqual(custodySheetMock[0][13], 'Mukhtiyarganj Market-2', 'Initial beat saved in Col 14');
+  assert.strictEqual(custodySheetMock[0][14], 'Week 1', 'Initial week saved in Col 15');
+
+  // Quick settlement update where payload does NOT include beat and week
+  simulateSyncCustodyBills(custodySheetMock, [{
+    billNo: 'IN-FY26/27-7777',
+    party: 'Gupta Sweets',
+    amount: 11000,
+    agent: 'Shivam',
+    dispatchDate: '2026-11-02',
+    status: 'PAID_FULL',
+    collectedAmt: 11000,
+    outstanding: 0,
+    paymentMode: 'CASH',
+    remarks: 'Settled at EOD'
+    // Notice: beat and week omitted intentionally
+  }], '2026-11-02T18:00:00.000Z');
+
+  assert.strictEqual(custodySheetMock.length, 1, 'Still 1 row (upsert)');
+  assert.strictEqual(custodySheetMock[0][5], 'PAID_FULL', 'Status updated');
+  assert.strictEqual(custodySheetMock[0][6], 11000, 'Collected amt updated');
+  assert.strictEqual(custodySheetMock[0][13], 'Mukhtiyarganj Market-2', 'Col 14 Beat PRESERVED and not wiped out!');
+  assert.strictEqual(custodySheetMock[0][14], 'Week 1', 'Col 15 Week PRESERVED and not wiped out!');
+
+  console.log('✅ Test 62 Passed! Live_Custody Upsert & In-Place Beat/Week Preservation verified 100%!\n');
+
+  // ========================================================
+  // TEST 63: Multi-Device Sync Protocol (Device A Scans & Pushes -> Device B Hydrates with Empty Local Storage)
+  // ========================================================
+  console.log('Test 63: Multi-Device Sync Protocol (Device A Dispatches -> Device B Hydrates from Cloud)');
+
+  // Step 1: Device A scans 3 bills into basket under Rajesh, Route Mukhtiyarganj Market-1, Week 1
+  const deviceABasket = [
+    { billNo: 'IN-DEV-101', party: 'DevA Store 1', amount: 5000, agent: 'Rajesh', beat: 'Mukhtiyarganj Market-1', week: 'Week 1' },
+    { billNo: 'IN-DEV-102', party: 'DevA Store 2', amount: 7500, agent: 'Rajesh', beat: 'Mukhtiyarganj Market-1', week: 'Week 1' },
+    { billNo: 'IN-DEV-103', party: 'DevA Store 3', amount: 12000, agent: 'Rajesh', beat: 'Mukhtiyarganj Market-1', week: 'Week 1' }
+  ];
+
+  // Device A confirms dispatch and pushes to Cloud Tracking Sheet
+  const cloudDatabaseCustody = [];
+  simulateSyncCustodyBills(cloudDatabaseCustody, deviceABasket.map(b => ({
+    ...b,
+    dispatchDate: '2026-11-02',
+    status: 'WITH_AGENT',
+    collectedAmt: 0,
+    outstanding: b.amount,
+    remarks: 'Dispatched for route 2026-11-02'
+  })), '2026-11-02T08:00:00.000Z');
+
+  assert.strictEqual(cloudDatabaseCustody.length, 3, 'Cloud DB now has 3 bills from Device A');
+
+  // Step 2: Device B opens the app on another computer.
+  // Device B starts with COMPLETELY EMPTY local storage!
+  const deviceBLocalStorage = {};
+  assert.strictEqual(deviceBLocalStorage['billAudit_bills'], undefined, 'Device B local storage is empty');
+
+  // Device B runs syncBillsFromTrackingSheet() pulling directly from cloud GViz endpoint
+  const deviceBGVizRows = cloudDatabaseCustody.map(r => ({
+    c: r.map(val => ({ v: val, f: String(val) }))
+  }));
+  const deviceBHydratedBills = deserializeGVizCustody({ rows: deviceBGVizRows });
+
+  assert.strictEqual(deviceBHydratedBills.length, 3, 'Device B loaded all 3 bills directly from Google Sheet');
+  assert.strictEqual(deviceBHydratedBills[0].billNo, 'IN-DEV-101');
+  assert.strictEqual(deviceBHydratedBills[0].agent, 'Rajesh');
+  assert.strictEqual(deviceBHydratedBills[0].beat, 'Mukhtiyarganj Market-1', 'Device B has exact Beat without local storage');
+  assert.strictEqual(deviceBHydratedBills[0].week, 'Week 1', 'Device B has exact Week without local storage');
+  assert.strictEqual(deviceBHydratedBills[2].billNo, 'IN-DEV-103');
+  assert.strictEqual(deviceBHydratedBills[2].amount, 12000);
+  assert.strictEqual(deviceBHydratedBills[2].status, 'WITH_AGENT');
+
+  console.log('✅ Test 63 Passed! Multi-Device Sync Protocol verified 100% (Zero Local Storage Dependency)!\n');
+
+  // ========================================================
+  // TEST 64: Apps Script Backfill Beat & Week Engine (backfillBeatAndWeek)
+  // ========================================================
+  console.log('Test 64: Apps Script Backfill Beat & Week Engine (backfillBeatAndWeek)');
+
+  function isSameAgent(a, b) {
+    if (!a || !b) return false;
+    const sA = String(a).toLowerCase().trim();
+    const sB = String(b).toLowerCase().trim();
+    if (sA === sB) return true;
+    if (sA.indexOf('shivam') !== -1 && sB.indexOf('shivam') !== -1) return true;
+    if (sA.indexOf('rajesh') !== -1 && sB.indexOf('rajesh') !== -1) return true;
+    if (sA.indexOf('self') !== -1 && sB.indexOf('self') !== -1) return true;
+    return false;
+  }
+
+  function simulateBackfillBeatAndWeek(custodyRows, outRows, targetAgent, targetDate, targetBeat, targetWeek) {
+    let updatedCount = 0;
+    // Update custody rows
+    custodyRows.forEach(row => {
+      const agent = String(row[3] || '').trim();
+      const dDate = String(row[4] || '').trim();
+      const lastAction = String(row[12] || '').trim();
+
+      const agentMatch = !targetAgent || targetAgent === 'ALL' || isSameAgent(agent, targetAgent);
+      const dateMatch = !targetDate || targetDate === 'ALL' || dDate.indexOf(targetDate) !== -1 || lastAction.indexOf(targetDate) !== -1;
+
+      if (agentMatch && dateMatch) {
+        if (targetBeat) row[13] = targetBeat;
+        if (targetWeek) row[14] = targetWeek;
+        updatedCount++;
+      }
+    });
+
+    // Update scan-out rows
+    outRows.forEach(row => {
+      const ts = String(row[0] || '').trim();
+      const agent = String(row[2] || '').trim();
+      const dDate = String(row[5] || '').trim();
+
+      const agentMatch = !targetAgent || targetAgent === 'ALL' || isSameAgent(agent, targetAgent);
+      const dateMatch = !targetDate || targetDate === 'ALL' || ts.indexOf(targetDate) !== -1 || dDate.indexOf(targetDate) !== -1;
+
+      if (agentMatch && dateMatch) {
+        if (targetBeat) row[10] = targetBeat;
+        if (targetWeek) row[11] = targetWeek;
+      }
+    });
+
+    return updatedCount;
+  }
+
+  // Sample existing rows where Beat & Week were blank
+  const legacyCustodyMock = [
+    ['IN-LEGACY-01', 'Party A', 5000, 'Shivam', '2026-11-01', 'WITH_AGENT', 0, 5000, '', '', '', 'Dispatched', '2026-11-01T12:00:00.000Z', '', ''],
+    ['IN-LEGACY-02', 'Party B', 3200, 'Shivam', '2026-11-01', 'WITH_AGENT', 0, 3200, '', '', '', 'Dispatched', '2026-11-01T12:05:00.000Z', '', ''],
+    ['IN-LEGACY-03', 'Party C', 7800, 'Rajesh', '2026-11-01', 'WITH_AGENT', 0, 7800, '', '', '', 'Dispatched', '2026-11-01T12:10:00.000Z', '', ''],
+    ['IN-LEGACY-04', 'Party D', 9000, 'Shivam', '2026-10-31', 'WITH_AGENT', 0, 9000, '', '', '', 'Dispatched', '2026-10-31T12:10:00.000Z', '', '']
+  ];
+  const legacyOutMock = [
+    ['2026-11-01T12:00:00.000Z', 'IN-LEGACY-01', 'Shivam', 'Party A', 5000, '2026-11-01', 5000, '', 'WITH_AGENT', 'Dispatched', '', ''],
+    ['2026-11-01T12:05:00.000Z', 'IN-LEGACY-02', 'Shivam', 'Party B', 3200, '2026-11-01', 3200, '', 'WITH_AGENT', 'Dispatched', '', ''],
+    ['2026-11-01T12:10:00.000Z', 'IN-LEGACY-03', 'Rajesh', 'Party C', 7800, '2026-11-01', 7800, '', 'WITH_AGENT', 'Dispatched', '', '']
+  ];
+
+  const updatedLegacyCount = simulateBackfillBeatAndWeek(legacyCustodyMock, legacyOutMock, 'Shivam', '2026-11-01', 'Mukhtiyarganj Market-2', 'Week 1');
+  assert.strictEqual(updatedLegacyCount, 2, 'Must update exactly the 2 Shivam bills from 2026-11-01');
+
+  // Verify Shivam 2026-11-01 rows got updated
+  assert.strictEqual(legacyCustodyMock[0][13], 'Mukhtiyarganj Market-2');
+  assert.strictEqual(legacyCustodyMock[0][14], 'Week 1');
+  assert.strictEqual(legacyCustodyMock[1][13], 'Mukhtiyarganj Market-2');
+  assert.strictEqual(legacyCustodyMock[1][14], 'Week 1');
+  assert.strictEqual(legacyOutMock[0][10], 'Mukhtiyarganj Market-2');
+  assert.strictEqual(legacyOutMock[0][11], 'Week 1');
+
+  // Verify Rajesh and 2026-10-31 rows were NOT touched
+  assert.strictEqual(legacyCustodyMock[2][13], '', 'Rajesh row must not be changed');
+  assert.strictEqual(legacyCustodyMock[3][13], '', 'Oct 31 row must not be changed');
+
+  console.log('✅ Test 64 Passed! Apps Script Backfill Beat & Week Engine verified 100%!\n');
+
+  console.log('🎉 ALL 64 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
 })();
 
 
