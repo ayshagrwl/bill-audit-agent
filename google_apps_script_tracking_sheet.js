@@ -255,17 +255,17 @@ function recordScanOut(ss, bills, dispatchDate, defaultAgent, timestamp) {
 
     outRows.push([
       timestamp,
-      billNo,
-      agent,
-      party,
+      sanitizeCellForSheet(billNo),
+      sanitizeCellForSheet(agent),
+      sanitizeCellForSheet(party),
       amount,
       dispatchDate,
       remainingDue,
-      receipt,
+      sanitizeCellForSheet(receipt),
       'WITH_AGENT',
-      notes,
-      beat,
-      week
+      sanitizeCellForSheet(notes),
+      sanitizeCellForSheet(beat),
+      sanitizeCellForSheet(week)
     ]);
   });
 
@@ -324,19 +324,19 @@ function recordScanIn(ss, p, timestamp) {
 
   const row = [
     timestamp,
-    billNo,
-    agent,
-    party,
+    sanitizeCellForSheet(billNo),
+    sanitizeCellForSheet(agent),
+    sanitizeCellForSheet(party),
     totalAmt,
     collectedAmt,
     remainingDue,
-    paymentMode,
-    refNo,
+    sanitizeCellForSheet(paymentMode),
+    sanitizeCellForSheet(refNo),
     status,
-    returnReason,
-    remarks,
-    beat,
-    week
+    sanitizeCellForSheet(returnReason),
+    sanitizeCellForSheet(remarks),
+    sanitizeCellForSheet(beat),
+    sanitizeCellForSheet(week)
   ];
 
   // Anti-duplication check: if bill was already recorded today in Scan_In_Log, update that row instead of appending duplicate rows
@@ -480,21 +480,21 @@ function syncCustodyBills(ss, bills, timestamp, defaultStatus, defaultDispatchDa
     const week = String(b.week || '').trim();
 
     const rowValues = [
-      billNo,
-      party,
+      sanitizeCellForSheet(billNo),
+      sanitizeCellForSheet(party),
       amount,
-      agent,
+      sanitizeCellForSheet(agent),
       dispatchDate,
       status,
       collected,
       remainingDue,
-      mode,
-      ref,
-      reason,
-      remarks,
+      sanitizeCellForSheet(mode),
+      sanitizeCellForSheet(ref),
+      sanitizeCellForSheet(reason),
+      sanitizeCellForSheet(remarks),
       updated,
-      beat,
-      week
+      sanitizeCellForSheet(beat),
+      sanitizeCellForSheet(week)
     ];
 
     const existingIdx = billRowMap[billNo] || billRowMap[normalizeInvNumber(billNo)] || billRowMap[normalizeInvNumber(expandCanonicalInvoiceNumber(billNo))];
@@ -786,7 +786,22 @@ function respondJSON(obj) {
  */
 function normalizeInvNumber(val) {
   if (!val) return '';
-  return String(val).trim().toUpperCase().replace(/[\s\-_/.]/g, '');
+  return String(val).trim().toUpperCase().replace(/[\s\-_/.'"`]/g, '');
+}
+
+/**
+ * Neutralize CSV / Spreadsheet formula injection (CWE-1236).
+ * Prepends a single quote (') if a string begins with formula triggers (=, +, -, @, \t, \r)
+ * so Google Sheets safely treats it as a plain-text literal rather than an executable formula.
+ */
+function sanitizeCellForSheet(val) {
+  if (val === null || val === undefined) return '';
+  if (typeof val === 'number' || typeof val === 'boolean') return val;
+  const s = String(val).trim();
+  if (/^[=+\-@\t\r]/.test(s)) {
+    return "'" + s;
+  }
+  return s;
 }
 
 /**

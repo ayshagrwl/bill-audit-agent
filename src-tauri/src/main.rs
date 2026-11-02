@@ -61,16 +61,34 @@ fn load_local_backup(app_handle: AppHandle, filename: String) -> Result<String, 
 }
 
 /// Native Rust HTTP GET command to fetch Google Sheets GViz / Apps Script data directly from Rust
-/// without browser CORS restrictions.
+/// without browser CORS restrictions. Protected against SSRF and unauthorized local/remote endpoints.
 #[tauri::command]
 fn fetch_url_native(url: String) -> Result<String, String> {
+    let parsed = reqwest::Url::parse(&url).map_err(|e| format!("Invalid URL: {}", e))?;
+    if parsed.scheme() != "https" {
+        return Err("Only secure HTTPS requests are permitted".to_string());
+    }
+
+    let host = parsed.host_str().unwrap_or("").to_lowercase();
+    let allowed_hosts = [
+        "docs.google.com",
+        "script.google.com",
+        "script.googleusercontent.com",
+        "sheets.googleapis.com",
+    ];
+
+    let is_allowed = allowed_hosts.iter().any(|&h| host == h || host.ends_with(&format!(".{}", h)));
+    if !is_allowed {
+        return Err(format!("Access to host '{}' is not permitted", host));
+    }
+
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|e| format!("HTTP client init error: {}", e))?;
 
     let resp = client
-        .get(&url)
+        .get(parsed)
         .header("User-Agent", "BillAuditPro-RustDesktop/1.0")
         .send()
         .map_err(|e| format!("Network request failed: {}", e))?;

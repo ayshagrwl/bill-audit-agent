@@ -487,7 +487,12 @@
     if (type === 'danger') icon = 'fa-circle-exclamation';
     if (type === 'warning') icon = 'fa-triangle-exclamation';
 
-    toast.innerHTML = `<i class="fa-solid ${icon}"></i><span>${message}</span>`;
+    const iconEl = document.createElement('i');
+    iconEl.className = `fa-solid ${icon}`;
+    const spanEl = document.createElement('span');
+    spanEl.textContent = String(message || '');
+    toast.appendChild(iconEl);
+    toast.appendChild(spanEl);
     container.appendChild(toast);
 
     setTimeout(() => {
@@ -1962,7 +1967,7 @@
         p.classList.add('active-flash');
         const origHtml = p.innerHTML;
         const displayTxt = text.length > 12 ? text.slice(0, 10) + '…' : text;
-        p.innerHTML = `<i class="fa-solid fa-check"></i> Scanned: ${displayTxt}`;
+        p.innerHTML = `<i class="fa-solid fa-check"></i> Scanned: ${escapeHtml(displayTxt)}`;
         setTimeout(() => {
           p.classList.remove('active-flash');
           p.innerHTML = origHtml;
@@ -3131,7 +3136,7 @@
       banner.style.display = 'flex';
       banner.innerHTML = `
         <div class="bd-fraud-head"><i class="fa-solid fa-triangle-exclamation"></i> ❌ NOT IN MASTER SHEET</div>
-        <div class="bd-fraud-sub">Bill ${billNo} not found in sales records. Verify physical bill authenticity!${custodyNote ? '<br>' + custodyNote : ''}</div>
+        <div class="bd-fraud-sub">Bill ${escapeHtml(billNo)} not found in sales records. Verify physical bill authenticity!${custodyNote ? '<br>' + escapeHtml(custodyNote) : ''}</div>
       `;
       return;
     }
@@ -3150,11 +3155,11 @@
     if (outstanding <= 0 || (receipt && outstanding === 0)) {
       statusClass = 'bd-fraud-paid';
       headHtml = `<i class="fa-solid fa-circle-check"></i> ✅ FULLY PAID (NO DUES)`;
-      subHtml = `Receipt: ${receipt || 'Paid in Full'} &bull; Balance Due: ₹0.00`;
+      subHtml = `Receipt: ${escapeHtml(receipt || 'Paid in Full')} &bull; Balance Due: ₹0.00`;
     } else if (outstanding > 0 && receipt) {
       statusClass = 'bd-fraud-partial';
       headHtml = `<i class="fa-solid fa-circle-exclamation"></i> ⚠️ PARTIAL PAYMENT (DUE: ${formatINR(outstanding)})`;
-      subHtml = `Receipt: ${receipt} &bull; Remaining Due: ${formatINR(outstanding)}`;
+      subHtml = `Receipt: ${escapeHtml(receipt)} &bull; Remaining Due: ${formatINR(outstanding)}`;
     } else if (outstanding > 0) {
       statusClass = 'bd-fraud-pending';
       headHtml = `<i class="fa-solid fa-triangle-exclamation"></i> 🔴 PENDING PAYMENT (DUE: ${formatINR(outstanding)})`;
@@ -3169,17 +3174,17 @@
     if (isMismatch) {
       if (outstanding <= 0 || (receipt && outstanding === 0)) {
         statusClass = 'bd-fraud-paid';
-        headHtml = `<i class="fa-solid fa-circle-check"></i> ✅ ALREADY PAID (Sheet Agent: ${sheetAgent})`;
-        subHtml = `Receipt: ${receipt || 'Paid in Full'} &bull; Due: ₹0.00 &bull; <span style="color:#b91c1c;font-weight:700;">No agent collection needed!</span>`;
+        headHtml = `<i class="fa-solid fa-circle-check"></i> ✅ ALREADY PAID (Sheet Agent: ${escapeHtml(sheetAgent)})`;
+        subHtml = `Receipt: ${escapeHtml(receipt || 'Paid in Full')} &bull; Due: ₹0.00 &bull; <span style="color:#b91c1c;font-weight:700;">No agent collection needed!</span>`;
       } else {
         statusClass = 'bd-fraud-mismatch';
         headHtml = `<i class="fa-solid fa-user-xmark"></i> ⚠️ AGENT MISMATCH &bull; ` + (receipt ? 'PARTIAL DUE' : 'PENDING DUE');
-        subHtml = `Assigned in Sheet to <strong>${sheetAgent}</strong> (Scanning for <strong>${activeAgent}</strong>).<br>${subHtml}`;
+        subHtml = `Assigned in Sheet to <strong>${escapeHtml(sheetAgent)}</strong> (Scanning for <strong>${escapeHtml(activeAgent)}</strong>).<br>${subHtml}`;
       }
     }
 
     if (custodyNote) {
-      subHtml += `<br><strong>${custodyNote}</strong>`;
+      subHtml += `<br><strong>${escapeHtml(custodyNote)}</strong>`;
     }
 
     banner.className = `bd-fraud-banner ${statusClass}`;
@@ -3219,7 +3224,7 @@
     const receiptText = (parsed.receipt !== undefined && parsed.receipt !== null && String(parsed.receipt).trim()) ? String(parsed.receipt).trim() : '';
     if (receiptEl) {
       if (receiptText) {
-        receiptEl.innerHTML = `<span class="badge-receipt" style="background:#e0f2fe;color:#0284c7;font-weight:700;padding:2px 8px;border-radius:6px;font-size:0.92rem;"><i class="fa-solid fa-receipt"></i> ${receiptText}</span>`;
+        receiptEl.innerHTML = `<span class="badge-receipt" style="background:#e0f2fe;color:#0284c7;font-weight:700;padding:2px 8px;border-radius:6px;font-size:0.92rem;"><i class="fa-solid fa-receipt"></i> ${escapeHtml(receiptText)}</span>`;
       } else {
         receiptEl.textContent = '-';
       }

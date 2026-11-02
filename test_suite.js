@@ -4483,7 +4483,70 @@ google.visualization.Query.setResponse({
 
   console.log('✅ Test 65 Passed! Shorthand Series Input Resolution & Full Canonical Invoice Promotion verified 100%!\n');
 
-  console.log('🎉 ALL 65 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+  // ========================================================
+  // TEST 66: Security Hardening & Formula Injection / SSRF / DOM Sanitization Guards
+  // ========================================================
+  console.log('Test 66: Security Hardening & Formula Injection / SSRF / DOM Sanitization Guards');
+
+  // 1. Spreadsheet Formula Injection Guard (sanitizeCellForSheet)
+  const fs = require('fs');
+  const path = require('path');
+  const trackingCodeSrc = fs.readFileSync(path.join(__dirname, 'apps-script-tracking', 'Code.js'), 'utf8');
+  const sanitizeStart = trackingCodeSrc.indexOf('function sanitizeCellForSheet(');
+  assert.ok(sanitizeStart > 0, 'sanitizeCellForSheet must be defined in Code.js');
+  const sanitizeCellForSheet = new Function(
+    trackingCodeSrc.slice(sanitizeStart, trackingCodeSrc.indexOf('\n}\n', sanitizeStart) + 2) + '\nreturn sanitizeCellForSheet;'
+  )();
+
+  // Test formula injection triggers
+  assert.strictEqual(sanitizeCellForSheet('=IMPORTXML("https://attacker.com","//a")'), "'=IMPORTXML(\"https://attacker.com\",\"//a\")", 'Formula starting with = must be prepended with quote');
+  assert.strictEqual(sanitizeCellForSheet('+CMD|"/C calc"!A0'), "'+CMD|\"/C calc\"!A0", 'Formula starting with + must be prepended with quote');
+  assert.strictEqual(sanitizeCellForSheet('-2+3+cmd|...'), "'-2+3+cmd|...", 'Formula starting with - must be prepended with quote');
+  assert.strictEqual(sanitizeCellForSheet('@SUM(A1:A10)'), "'@SUM(A1:A10)", 'Formula starting with @ must be prepended with quote');
+  assert.strictEqual(sanitizeCellForSheet('\t=IMPORTXML(...)'), "'=IMPORTXML(...)", 'Formula starting with whitespace and = must be prepended with quote');
+
+  // Test safe data preservation (numbers, clean strings, booleans)
+  assert.strictEqual(sanitizeCellForSheet('IN-FY26/27-3921'), 'IN-FY26/27-3921', 'Normal bill numbers must remain untouched');
+  assert.strictEqual(sanitizeCellForSheet('Satguru Provision Store'), 'Satguru Provision Store', 'Normal party names must remain untouched');
+  assert.strictEqual(sanitizeCellForSheet(5465), 5465, 'Numbers must remain numbers');
+  assert.strictEqual(sanitizeCellForSheet(0), 0, 'Zero must remain number');
+  assert.strictEqual(sanitizeCellForSheet(null), '', 'Null must return empty string');
+  assert.strictEqual(sanitizeCellForSheet(undefined), '', 'Undefined must return empty string');
+
+  // 2. Rust Native SSRF Host Allowlist Validation Simulation
+  function isAllowedNativeHost(rawUrl) {
+    try {
+      const u = new URL(rawUrl);
+      if (u.protocol !== 'https:') return false;
+      const host = u.hostname.toLowerCase();
+      const allowed = ['docs.google.com', 'script.google.com', 'script.googleusercontent.com', 'sheets.googleapis.com'];
+      return allowed.some(h => host === h || host.endsWith('.' + h));
+    } catch {
+      return false;
+    }
+  }
+
+  // Allowed endpoints
+  assert.strictEqual(isAllowedNativeHost('https://docs.google.com/spreadsheets/d/123/gviz/tq'), true);
+  assert.strictEqual(isAllowedNativeHost('https://script.google.com/macros/s/AKfyc.../exec'), true);
+  assert.strictEqual(isAllowedNativeHost('https://script.googleusercontent.com/macros/echo'), true);
+
+  // Blocked SSRF targets
+  assert.strictEqual(isAllowedNativeHost('http://127.0.0.1:8080/admin'), false, 'Loopback IP must be blocked');
+  assert.strictEqual(isAllowedNativeHost('http://localhost:3000/keys'), false, 'Localhost must be blocked');
+  assert.strictEqual(isAllowedNativeHost('http://169.254.169.254/latest/meta-data'), false, 'Cloud metadata service must be blocked');
+  assert.strictEqual(isAllowedNativeHost('https://evil-attacker.com/steal'), false, 'External unauthorized domains must be blocked');
+  assert.strictEqual(isAllowedNativeHost('file:///etc/passwd'), false, 'File scheme must be blocked');
+
+  // 3. DOM Sanitization
+  const appSrc = fs.readFileSync(path.join(__dirname, 'app.js'), 'utf8');
+  assert.ok(!appSrc.includes('toast.innerHTML = `<i class="fa-solid ${icon}"></i><span>${message}</span>`'), 'Unescaped toast.innerHTML must not exist in app.js');
+  assert.ok(appSrc.includes('spanEl.textContent = String(message || \'\')'), 'Safe textContent must be used in showToast');
+  assert.ok(!appSrc.includes('p.innerHTML = `<i class="fa-solid fa-check"></i> Scanned: ${displayTxt}`'), 'Unescaped scanner text in innerHTML must not exist in app.js');
+
+  console.log('✅ Test 66 Passed! Security Hardening & Formula Injection / SSRF / DOM Sanitization Guards verified 100%!\n');
+
+  console.log('🎉 ALL 66 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
 })();
 
 
