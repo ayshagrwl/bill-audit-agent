@@ -108,6 +108,19 @@ function doGet(e) {
       });
     }
 
+    if (action === 'CANONICALIZE_LOGS' || action === 'EXPAND_SHORTHAND_BILLS') {
+      const res = canonicalizeTrackingSheets(ss);
+      return respondJSON({
+        status: 'OK',
+        action: 'CANONICALIZE_LOGS',
+        message: `Canonicalization complete: ${res.custodyCount} unique custody rows, ${res.outUpdated} Scan_Out shorthand rows expanded, ${res.inUpdated} Scan_In shorthand rows expanded`,
+        custodyCount: res.custodyCount,
+        outUpdated: res.outUpdated,
+        inUpdated: res.inUpdated,
+        timestamp: getFormattedTimestamp()
+      });
+    }
+
     return respondJSON({ status: 'ERROR', message: 'Unknown action: ' + action });
   } catch (err) {
     return respondJSON({ status: 'ERROR', message: err.toString() });
@@ -200,6 +213,20 @@ function doPost(e) {
       });
     }
 
+    // 5. Canonicalize all invoice numbers & deduplicate Live_Custody
+    if (action === 'CANONICALIZE_LOGS' || action === 'EXPAND_SHORTHAND_BILLS') {
+      const res = canonicalizeTrackingSheets(ss);
+      return respondJSON({
+        success: true,
+        action: 'CANONICALIZE_LOGS',
+        message: `Canonicalization complete: ${res.custodyCount} unique custody rows, ${res.outUpdated} Scan_Out shorthand rows expanded, ${res.inUpdated} Scan_In shorthand rows expanded`,
+        custodyCount: res.custodyCount,
+        outUpdated: res.outUpdated,
+        inUpdated: res.inUpdated,
+        timestamp: nowIST
+      });
+    }
+
     return respondJSON({ success: false, error: 'Unknown action: ' + action });
   } catch (err) {
     return respondJSON({ success: false, error: err.toString() });
@@ -216,7 +243,7 @@ function recordScanOut(ss, bills, dispatchDate, defaultAgent, timestamp) {
   const outRows = [];
 
   bills.forEach(b => {
-    const billNo = String(b.billNo || '').trim();
+    const billNo = expandCanonicalInvoiceNumber(String(b.billNo || '').trim());
     const agent = String(b.agent || defaultAgent || '').trim();
     const party = String(b.party || 'Standard Customer').trim();
     const amount = Number(b.amount) || 0;
@@ -257,7 +284,7 @@ function recordScanIn(ss, p, timestamp) {
   const inSheet = ss.getSheetByName(TRACKING_TABS.SCAN_IN);
   if (!inSheet) return;
 
-  const billNo = String(p.billNo || '').trim();
+  const billNo = expandCanonicalInvoiceNumber(String(p.billNo || '').trim());
   if (!billNo) return;
 
   const agent = String(p.agent || '').trim();
@@ -426,6 +453,7 @@ function syncCustodyBills(ss, bills, timestamp, defaultStatus, defaultDispatchDa
       if (bNo) {
         billRowMap[bNo] = idx + 2;
         billRowMap[normalizeInvNumber(bNo)] = idx + 2;
+        billRowMap[normalizeInvNumber(expandCanonicalInvoiceNumber(bNo))] = idx + 2;
       }
     });
   }
@@ -433,7 +461,7 @@ function syncCustodyBills(ss, bills, timestamp, defaultStatus, defaultDispatchDa
   const newRows = [];
 
   bills.forEach(b => {
-    const billNo = String(b.billNo || '').trim();
+    const billNo = expandCanonicalInvoiceNumber(String(b.billNo || '').trim());
     if (!billNo) return;
 
     const party = String(b.party || '').trim();
@@ -469,7 +497,7 @@ function syncCustodyBills(ss, bills, timestamp, defaultStatus, defaultDispatchDa
       week
     ];
 
-    const existingIdx = billRowMap[billNo] || billRowMap[normalizeInvNumber(billNo)];
+    const existingIdx = billRowMap[billNo] || billRowMap[normalizeInvNumber(billNo)] || billRowMap[normalizeInvNumber(expandCanonicalInvoiceNumber(billNo))];
     if (existingIdx) {
       if (!beat || !week) {
         const existingRowVals = sheet.getRange(existingIdx, 14, 1, 2).getValues()[0];
@@ -762,6 +790,33 @@ function normalizeInvNumber(val) {
 }
 
 /**
+ * Expand shorthand invoice inputs into their full canonical series representation.
+ * e.g. "3-6757" -> "IN-17063-6757" (Series 17063)
+ * e.g. "7-2472" or "27-5613" -> "IN-FY26/27-2472" or "IN-FY26/27-5613" (Series FY26/27)
+ */
+function expandCanonicalInvoiceNumber(val) {
+  if (!val) return '';
+  const s = String(val).trim();
+  const upper = s.toUpperCase();
+  if (/^IN[-_\s]?(17063|FY26\/27)[-_\s]?\d+/i.test(upper)) {
+    return upper.replace(/^IN[-_\s]*17063[-_\s]*/i, 'IN-17063-')
+                .replace(/^IN[-_\s]*FY26\/27[-_\s]*/i, 'IN-FY26/27-')
+                .replace(/^N[-_\s]*FY26\/27[-_\s]*/i, 'IN-FY26/27-');
+  }
+  const match3 = s.match(/^3[-_\s]?(\d{3,6})$/);
+  if (match3) return 'IN-17063-' + match3[1];
+  const match27 = s.match(/^27[-_\s]?(\d{3,6})$/);
+  if (match27) return 'IN-FY26/27-' + match27[1];
+  const match7 = s.match(/^7[-_\s]?(\d{3,6})$/);
+  if (match7) return 'IN-FY26/27-' + match7[1];
+  const matchFY = s.match(/^(?:FY)?26\/27[-_\s]?(\d{3,6})$/i);
+  if (matchFY) return 'IN-FY26/27-' + matchFY[1];
+  const match17 = s.match(/^17063[-_\s]?(\d{3,6})$/i);
+  if (match17) return 'IN-17063-' + match17[1];
+  return s;
+}
+
+/**
  * Deduplicate and cleanse Scan_In_Log:
  * - Removes auto-healed phantom rows mistakenly recorded
  * - Deduplicates multiple check-in rows for the same bill on the same date, keeping the latest row
@@ -889,4 +944,119 @@ function backfillBeatAndWeek(ss, targetAgent, targetDate, targetBeat, targetWeek
   }
 
   return updatedCount;
+}
+
+/**
+ * Canonicalize all invoice numbers across Live_Custody, Scan_Out_Log, and Scan_In_Log.
+ * - Expands shorthand series bill numbers ("3-6757" -> "IN-17063-6757", "7-2472" -> "IN-FY26/27-2472", "27-5613" -> "IN-FY26/27-5613")
+ * - Deduplicates Live_Custody rows, merging beat/week and retaining the latest status
+ */
+function canonicalizeTrackingSheets(ss) {
+  if (!ss) {
+    try {
+      ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById('1Lu1C-aX9KCRhCrcrZNal81tt4-wD_6wqHWqsI5orTrY');
+    } catch (e) {
+      ss = SpreadsheetApp.openById('1Lu1C-aX9KCRhCrcrZNal81tt4-wD_6wqHWqsI5orTrY');
+    }
+  }
+
+  let custodyUpdated = 0;
+  let outUpdated = 0;
+  let inUpdated = 0;
+
+  // 1. Live_Custody
+  const custodySheet = ss.getSheetByName(TRACKING_TABS.CUSTODY);
+  if (custodySheet) {
+    const lastRow = custodySheet.getLastRow();
+    if (lastRow > 1) {
+      const colCount = Math.max(15, custodySheet.getLastColumn());
+      const values = custodySheet.getRange(2, 1, lastRow - 1, colCount).getValues();
+      const dedupMap = new Map();
+
+      values.forEach(row => {
+        const rawBillNo = String(row[0] || '').trim();
+        if (!rawBillNo) return;
+        const canon = expandCanonicalInvoiceNumber(rawBillNo);
+        row[0] = canon;
+        const norm = normalizeInvNumber(canon);
+
+        if (dedupMap.has(norm)) {
+          const existing = dedupMap.get(norm);
+          // Preserve Beat / Week if existing had it
+          if (!row[13] && existing[13]) row[13] = existing[13];
+          if (!row[14] && existing[14]) row[14] = existing[14];
+          // Preserve payment info if existing was paid and current row is not
+          if (row[5] === 'WITH_AGENT' && (existing[5] === 'PAID_FULL' || existing[5] === 'PAID_PARTIAL')) {
+            row[5] = existing[5];
+            row[6] = existing[6];
+            row[7] = existing[7];
+            row[8] = existing[8];
+            row[9] = existing[9];
+          }
+        }
+        dedupMap.set(norm, row);
+      });
+
+      const cleanRows = Array.from(dedupMap.values());
+      custodySheet.getRange(2, 1, lastRow - 1, colCount).clearContent();
+      if (cleanRows.length > 0) {
+        custodySheet.getRange(2, 1, cleanRows.length, cleanRows[0].length).setValues(cleanRows);
+      }
+      custodyUpdated = cleanRows.length;
+    }
+  }
+
+  // 2. Scan_Out_Log
+  const outSheet = ss.getSheetByName(TRACKING_TABS.SCAN_OUT);
+  if (outSheet) {
+    const lastRow = outSheet.getLastRow();
+    if (lastRow > 1) {
+      const colCount = Math.max(12, outSheet.getLastColumn());
+      const values = outSheet.getRange(2, 1, lastRow - 1, colCount).getValues();
+      let changed = false;
+      for (let i = 0; i < values.length; i++) {
+        const rawBillNo = String(values[i][1] || '').trim();
+        if (rawBillNo) {
+          const canon = expandCanonicalInvoiceNumber(rawBillNo);
+          if (canon !== rawBillNo) {
+            values[i][1] = canon;
+            changed = true;
+            outUpdated++;
+          }
+        }
+      }
+      if (changed) {
+        outSheet.getRange(2, 1, values.length, colCount).setValues(values);
+      }
+    }
+  }
+
+  // 3. Scan_In_Log
+  const inSheet = ss.getSheetByName(TRACKING_TABS.SCAN_IN);
+  if (inSheet) {
+    const lastRow = inSheet.getLastRow();
+    if (lastRow > 1) {
+      const colCount = Math.max(14, inSheet.getLastColumn());
+      const values = inSheet.getRange(2, 1, lastRow - 1, colCount).getValues();
+      let changed = false;
+      for (let i = 0; i < values.length; i++) {
+        const rawBillNo = String(values[i][1] || '').trim();
+        if (rawBillNo) {
+          const canon = expandCanonicalInvoiceNumber(rawBillNo);
+          if (canon !== rawBillNo) {
+            values[i][1] = canon;
+            changed = true;
+            inUpdated++;
+          }
+        }
+      }
+      if (changed) {
+        inSheet.getRange(2, 1, values.length, colCount).setValues(values);
+      }
+    }
+  }
+
+  updateDailySummary(ss);
+
+  return { custodyCount: custodyUpdated, outUpdated, inUpdated };
 }

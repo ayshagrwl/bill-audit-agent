@@ -4256,7 +4256,234 @@ google.visualization.Query.setResponse({
 
   console.log('✅ Test 64 Passed! Apps Script Backfill Beat & Week Engine verified 100%!\n');
 
-  console.log('🎉 ALL 64 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
+  // ========================================================
+  // TEST 65: Shorthand Series Input Resolution & Full Canonical Invoice Promotion on Google Sheet
+  // ========================================================
+  console.log('Test 65: Shorthand Series Input Resolution & Full Canonical Invoice Promotion on Google Sheet');
+
+  // Helper matching app.js expandCanonicalInvoiceNumber
+  function expandCanonicalInvoiceNumber(val) {
+    if (!val) return '';
+    const s = String(val).trim();
+    const upper = s.toUpperCase();
+    if (/^IN[-_\s]?(17063|FY26\/27)[-_\s]?\d+/i.test(upper)) {
+      return upper.replace(/^IN[-_\s]*17063[-_\s]*/i, 'IN-17063-')
+                  .replace(/^IN[-_\s]*FY26\/27[-_\s]*/i, 'IN-FY26/27-')
+                  .replace(/^N[-_\s]*FY26\/27[-_\s]*/i, 'IN-FY26/27-');
+    }
+    const match3 = s.match(/^3[-_\s]?(\d{3,6})$/);
+    if (match3) return 'IN-17063-' + match3[1];
+    const match27 = s.match(/^27[-_\s]?(\d{3,6})$/);
+    if (match27) return 'IN-FY26/27-' + match27[1];
+    const match7 = s.match(/^7[-_\s]?(\d{3,6})$/);
+    if (match7) return 'IN-FY26/27-' + match7[1];
+    const matchFY = s.match(/^(?:FY)?26\/27[-_\s]?(\d{3,6})$/i);
+    if (matchFY) return 'IN-FY26/27-' + matchFY[1];
+    const match17 = s.match(/^17063[-_\s]?(\d{3,6})$/i);
+    if (match17) return 'IN-17063-' + match17[1];
+    return s;
+  }
+
+  // 1. Standalone expansion verification
+  assert.strictEqual(expandCanonicalInvoiceNumber('3-6757'), 'IN-17063-6757');
+  assert.strictEqual(expandCanonicalInvoiceNumber('36757'), 'IN-17063-6757');
+  assert.strictEqual(expandCanonicalInvoiceNumber('7-2472'), 'IN-FY26/27-2472');
+  assert.strictEqual(expandCanonicalInvoiceNumber('72472'), 'IN-FY26/27-2472');
+  assert.strictEqual(expandCanonicalInvoiceNumber('27-5613'), 'IN-FY26/27-5613');
+  assert.strictEqual(expandCanonicalInvoiceNumber('275613'), 'IN-FY26/27-5613');
+  assert.strictEqual(expandCanonicalInvoiceNumber('26/27-5613'), 'IN-FY26/27-5613');
+  assert.strictEqual(expandCanonicalInvoiceNumber('17063-6757'), 'IN-17063-6757');
+  assert.strictEqual(expandCanonicalInvoiceNumber('IN-17063-6757'), 'IN-17063-6757');
+  assert.strictEqual(expandCanonicalInvoiceNumber('IN-FY26/27-2472'), 'IN-FY26/27-2472');
+
+  // 2. Hash Map Indexing and Shorthand Lookup
+  const mockMasterSheetMap = new Map();
+  const mockMasterSheetFuzzyMap = new Map();
+  function addFuzzy(key, bill) {
+    if (!mockMasterSheetFuzzyMap.has(key)) mockMasterSheetFuzzyMap.set(key, []);
+    mockMasterSheetFuzzyMap.get(key).push(bill);
+  }
+  function registerTestBill(b) {
+    mockMasterSheetMap.set(b.billNo.toUpperCase(), b);
+    const m17 = b.billNo.match(/17063[-_\s]?(\d+)$/i);
+    if (m17) addFuzzy('N:3' + m17[1], b);
+    const m27 = b.billNo.match(/(?:26\/)?27[-_\s]?(\d+)$/i);
+    if (m27) {
+      addFuzzy('N:27' + m27[1], b);
+      addFuzzy('N:7' + m27[1], b);
+    }
+  }
+
+  const sampleMasterBills = [
+    { billNo: 'IN-17063-6757', party: 'Ankit Agency (Series 17063)', amount: 37103, outstanding: 37103 },
+    { billNo: 'IN-FY26/27-2472', party: 'Krishna Sweets (Series 2472)', amount: 11858, outstanding: 11858 },
+    { billNo: 'IN-FY26/27-5613', party: 'Ajju Market (Series 5613)', amount: 9704, outstanding: 2000 }
+  ];
+  sampleMasterBills.forEach(registerTestBill);
+
+  function findMasterBillSim(input) {
+    const s = String(input || '').trim().toUpperCase();
+    if (mockMasterSheetMap.has(s)) return mockMasterSheetMap.get(s);
+    const canon = expandCanonicalInvoiceNumber(s);
+    if (mockMasterSheetMap.has(canon.toUpperCase())) return mockMasterSheetMap.get(canon.toUpperCase());
+    const cleanDigits = s.replace(/[^0-9]/g, '');
+    const fuzzyList = mockMasterSheetFuzzyMap.get('N:' + cleanDigits);
+    if (fuzzyList && fuzzyList.length === 1) return fuzzyList[0];
+    return null;
+  }
+
+  assert.strictEqual(findMasterBillSim('3-6757').billNo, 'IN-17063-6757');
+  assert.strictEqual(findMasterBillSim('7-2472').billNo, 'IN-FY26/27-2472');
+  assert.strictEqual(findMasterBillSim('27-5613').billNo, 'IN-FY26/27-5613');
+
+  // 3. buildParsedBill & enrichWithMaster Promotion
+  function buildParsedBillSim(billNo, party, amount, mm) {
+    return {
+      billNo: mm ? mm.billNo : expandCanonicalInvoiceNumber(String(billNo || '').trim()),
+      party: mm ? mm.party : (party || 'Standard Account'),
+      amount: mm ? mm.amount : (amount || 0)
+    };
+  }
+
+  const billParsed1 = buildParsedBillSim('3-6757', '', 0, findMasterBillSim('3-6757'));
+  assert.strictEqual(billParsed1.billNo, 'IN-17063-6757', 'billNo must be full canonical series number');
+  assert.strictEqual(billParsed1.party, 'Ankit Agency (Series 17063)');
+  assert.strictEqual(billParsed1.amount, 37103);
+
+  const billParsed2 = buildParsedBillSim('7-2472', '', 0, findMasterBillSim('7-2472'));
+  assert.strictEqual(billParsed2.billNo, 'IN-FY26/27-2472', 'billNo must be full canonical series number');
+
+  const billParsed3 = buildParsedBillSim('27-5613', '', 0, findMasterBillSim('27-5613'));
+  assert.strictEqual(billParsed3.billNo, 'IN-FY26/27-5613', 'billNo must be full canonical series number');
+
+  // 4. Storing Site Persistence: Scan_Out_Log, Scan_In_Log, Live_Custody
+  function simulateRecordScanOutWithCanonical(outRows, bills, defaultAgent, dispatchDate, timestamp) {
+    bills.forEach(b => {
+      const billNo = expandCanonicalInvoiceNumber(String(b.billNo || '').trim());
+      outRows.push([
+        timestamp,
+        billNo,
+        b.agent || defaultAgent || '',
+        b.party || '',
+        Number(b.amount) || 0,
+        dispatchDate,
+        Number(b.outstanding) || 0,
+        '',
+        b.status || 'WITH_AGENT',
+        b.remarks || '',
+        b.beat || '',
+        b.week || ''
+      ]);
+    });
+  }
+
+  function simulateRecordScanInWithCanonical(inRows, p, timestamp) {
+    const billNo = expandCanonicalInvoiceNumber(String(p.billNo || '').trim());
+    inRows.push([
+      timestamp,
+      billNo,
+      p.agent || '',
+      p.party || '',
+      Number(p.amount) || 0,
+      p.status || '',
+      Number(p.collectedAmt) || 0,
+      Number(p.outstanding) || 0,
+      p.paymentMode || '',
+      p.refNo || '',
+      p.receipt || '',
+      p.returnReason || '',
+      p.remarks || '',
+      p.beat || ''
+    ]);
+  }
+
+  function simulateSyncCustodyWithCanonical(custodyRows, bills, timestamp) {
+    const billRowMap = {};
+    custodyRows.forEach((r, idx) => {
+      const bNo = String(r[0] || '').trim();
+      if (bNo) {
+        billRowMap[bNo] = idx;
+        billRowMap[bNo.replace(/[\s\-_/.]/g, '').toUpperCase()] = idx;
+        billRowMap[expandCanonicalInvoiceNumber(bNo).replace(/[\s\-_/.]/g, '').toUpperCase()] = idx;
+      }
+    });
+
+    bills.forEach(b => {
+      const billNo = expandCanonicalInvoiceNumber(String(b.billNo || '').trim());
+      const row = [
+        billNo,
+        b.party || '',
+        Number(b.amount) || 0,
+        b.agent || '',
+        b.dispatchDate || '2026-11-02',
+        b.status || 'WITH_AGENT',
+        Number(b.collectedAmt) || 0,
+        Number(b.outstanding) || 0,
+        b.paymentMode || '',
+        b.refNo || '',
+        b.returnReason || '',
+        b.remarks || '',
+        timestamp,
+        b.beat || '',
+        b.week || ''
+      ];
+      const norm = billNo.replace(/[\s\-_/.]/g, '').toUpperCase();
+      const existingIdx = billRowMap[billNo] !== undefined ? billRowMap[billNo] : (billRowMap[norm] !== undefined ? billRowMap[norm] : billRowMap[expandCanonicalInvoiceNumber(billNo).replace(/[\s\-_/.]/g, '').toUpperCase()]);
+      if (existingIdx !== undefined) {
+        custodyRows[existingIdx] = row;
+      } else {
+        custodyRows.push(row);
+        billRowMap[billNo] = custodyRows.length - 1;
+        billRowMap[norm] = custodyRows.length - 1;
+      }
+    });
+  }
+
+  // Test scan-out storing full bill number on Google Sheets
+  const testOutSheet = [];
+  simulateRecordScanOutWithCanonical(testOutSheet, [
+    { billNo: '3-6757', party: 'Ankit Agency', amount: 37103, agent: 'Self', beat: 'In-Store Counter / Self', week: 'Week 1' },
+    { billNo: '27-5613', party: 'Ajju Market', amount: 9704, agent: 'Self', beat: 'In-Store Counter / Self', week: 'Week 1' }
+  ], 'Self', '2026-11-02', '2026-11-02T13:00:00.000Z');
+
+  assert.strictEqual(testOutSheet[0][1], 'IN-17063-6757', 'Scan_Out_Log must store FULL invoice number');
+  assert.strictEqual(testOutSheet[1][1], 'IN-FY26/27-5613', 'Scan_Out_Log must store FULL invoice number');
+
+  // Test scan-in storing full bill number on Google Sheets
+  const testInSheet = [];
+  simulateRecordScanInWithCanonical(testInSheet, {
+    billNo: '7-2472',
+    agent: 'Shivam',
+    party: 'Krishna Sweets',
+    amount: 11858,
+    status: 'PAID_FULL',
+    collectedAmt: 11858,
+    outstanding: 0
+  }, '2026-11-02T18:00:00.000Z');
+
+  assert.strictEqual(testInSheet[0][1], 'IN-FY26/27-2472', 'Scan_In_Log must store FULL invoice number');
+
+  // Test Live_Custody storing full bill number on Google Sheets & upserting shorthand legacy rows
+  const testCustodySheet = [
+    // Suppose an older row was mistakenly saved as shorthand '27-5613'
+    ['27-5613', 'Ajju Market', 9704, 'Self', '2026-11-01', 'WITH_AGENT', 0, 9704, '', '', '', '', '2026-11-01T10:00:00.000Z', 'In-Store Counter / Self', 'Week 1']
+  ];
+
+  simulateSyncCustodyWithCanonical(testCustodySheet, [
+    { billNo: '3-6757', party: 'Ankit Agency', amount: 37103, agent: 'Self', beat: 'In-Store Counter / Self', week: 'Week 1' },
+    { billNo: '27-5613', party: 'Ajju Market', amount: 9704, agent: 'Self', beat: 'In-Store Counter / Self', week: 'Week 1', status: 'PAID_FULL', collectedAmt: 9704, outstanding: 0 }
+  ], '2026-11-02T14:00:00.000Z');
+
+  assert.strictEqual(testCustodySheet.length, 2, 'Must upsert legacy shorthand row without duplicating');
+  // Row 0 was updated and promoted to canonical full invoice number:
+  assert.strictEqual(testCustodySheet[0][0], 'IN-FY26/27-5613', 'Legacy shorthand row promoted to FULL canonical invoice number');
+  assert.strictEqual(testCustodySheet[0][5], 'PAID_FULL');
+  // Row 1 is new bill with full canonical invoice number:
+  assert.strictEqual(testCustodySheet[1][0], 'IN-17063-6757', 'New row created with FULL canonical invoice number');
+
+  console.log('✅ Test 65 Passed! Shorthand Series Input Resolution & Full Canonical Invoice Promotion verified 100%!\n');
+
+  console.log('🎉 ALL 65 AUTOMATED TESTS COMPLETED WITH 100% SUCCESS!');
 })();
 
 

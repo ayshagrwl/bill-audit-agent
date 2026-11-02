@@ -744,6 +744,43 @@
   }
 
   /**
+   * Expand shorthand invoice inputs into their full canonical series representation.
+   * e.g. "3-6757" -> "IN-17063-6757" (Series 17063)
+   * e.g. "7-2472" or "27-5613" -> "IN-FY26/27-2472" or "IN-FY26/27-5613" (Series FY26/27)
+   */
+  function expandCanonicalInvoiceNumber(val) {
+    if (!val) return '';
+    const s = String(val).trim();
+    const upper = s.toUpperCase();
+    if (/^IN[-_\s]?(17063|FY26\/27)[-_\s]?\d+/i.test(upper)) {
+      return upper.replace(/^IN[-_\s]*17063[-_\s]*/i, 'IN-17063-')
+                  .replace(/^IN[-_\s]*FY26\/27[-_\s]*/i, 'IN-FY26/27-')
+                  .replace(/^N[-_\s]*FY26\/27[-_\s]*/i, 'IN-FY26/27-');
+    }
+    // Pattern: 3-XXXX or 3XXXX (4+ digits) -> IN-17063-XXXX
+    const match3 = s.match(/^3[-_\s]?(\d{3,6})$/);
+    if (match3) return 'IN-17063-' + match3[1];
+
+    // Pattern: 27-XXXX or 27XXXX (4+ digits) -> IN-FY26/27-XXXX
+    const match27 = s.match(/^27[-_\s]?(\d{3,6})$/);
+    if (match27) return 'IN-FY26/27-' + match27[1];
+
+    // Pattern: 7-XXXX or 7XXXX (4+ digits) -> IN-FY26/27-XXXX
+    const match7 = s.match(/^7[-_\s]?(\d{3,6})$/);
+    if (match7) return 'IN-FY26/27-' + match7[1];
+
+    // Pattern: 26/27-XXXX or FY26/27-XXXX
+    const matchFY = s.match(/^(?:FY)?26\/27[-_\s]?(\d{3,6})$/i);
+    if (matchFY) return 'IN-FY26/27-' + matchFY[1];
+
+    // Pattern: 17063-XXXX
+    const match17 = s.match(/^17063[-_\s]?(\d{3,6})$/i);
+    if (match17) return 'IN-17063-' + match17[1];
+
+    return s;
+  }
+
+  /**
    * Add a bill to a candidate list in the fuzzy index (one entry per distinct invoice number)
    */
   function addFuzzyCandidate(map, key, b) {
@@ -761,9 +798,8 @@
   /**
    * Helper to register the lookup forms of a bill's FULL invoice number.
    * Exact numbers go in State.masterSheetMap; formatting variants (case, spaces, dashes,
-   * slashes, an "INV"/"VCH"/"IN-" prefix) go in State.masterSheetFuzzyMap as candidate lists.
-   * There is deliberately no digits-only / last-digits key: many vouchers share the same
-   * trailing number (e.g. "IN-FY25/26-3965" and "IN-FY26/27-3965").
+   * slashes, an "INV"/"VCH"/"IN-" prefix, and unique series suffixes like "3-6757" or "7-2472")
+   * go in State.masterSheetFuzzyMap as candidate lists.
    */
   function registerBillInMap(map, b) {
     if (!b || !b.billNo) return;
@@ -778,6 +814,25 @@
     if (stripped && stripped !== exact) {
       addFuzzyCandidate(fuzzy, 'N:' + stripped, b);
       addFuzzyCandidate(fuzzy, 'N:' + normalizeInvoiceNumber(stripped), b);
+    }
+
+    // Suffix shorthand index for unique series lookup:
+    // 1. IN-17063-XXXX series (e.g. "3-6757" or "36757")
+    const m17 = b.billNo.match(/17063[-_\s]?(\d+)$/i);
+    if (m17) {
+      const digits = m17[1];
+      addFuzzyCandidate(fuzzy, 'N:3' + digits, b);
+      addFuzzyCandidate(fuzzy, 'N:17063' + digits, b);
+    }
+
+    // 2. IN-FY26/27-XXXX series (e.g. "7-2472", "27-2472", "27-5613")
+    const m27 = b.billNo.match(/(?:26\/)?27[-_\s]?(\d+)$/i);
+    if (m27) {
+      const digits = m27[1];
+      addFuzzyCandidate(fuzzy, 'N:27' + digits, b);
+      addFuzzyCandidate(fuzzy, 'N:7' + digits, b);
+      addFuzzyCandidate(fuzzy, 'N:2627' + digits, b);
+      addFuzzyCandidate(fuzzy, 'N:FY2627' + digits, b);
     }
   }
 
@@ -865,9 +920,9 @@
 
   /**
    * Search Master Sheet for an Invoice Number (O(1) Hash Map Lookup).
-   * Matches the FULL invoice number only: exact first, then the same number written with
-   * different case / spaces / dashes / slashes or an "INV"/"VCH"/"IN-" prefix.
-   * Never matches on the last digits alone, since many vouchers share them.
+   * Matches exact first, then normalized/stripped variants, then canonical series expansions
+   * (e.g. "3-6757" -> "IN-17063-6757", "7-2472" -> "IN-FY26/27-2472", "27-5613" -> "IN-FY26/27-5613").
+   * Returns the master bill with its FULL invoice number.
    */
   function findMasterBill(invoiceInput) {
     if (!invoiceInput) return null;
@@ -892,6 +947,13 @@
     const strippedInput = stripInvoicePrefix(cleanInput);
     if (strippedInput && strippedInput !== upperInput) {
       match = getUniqueFuzzyMatch('N:' + strippedInput) || getUniqueFuzzyMatch('N:' + normalizeInvoiceNumber(strippedInput));
+      if (match) return match;
+    }
+
+    // 4. Canonical expansion (e.g. "3-6757" -> "IN-17063-6757", "7-2472" / "27-5613" -> "IN-FY26/27-...")
+    const canon = expandCanonicalInvoiceNumber(cleanInput);
+    if (canon && canon !== cleanInput) {
+      match = State.masterSheetMap.get(canon.toUpperCase()) || getUniqueFuzzyMatch('N:' + normalizeInvoiceNumber(canon));
       if (match) return match;
     }
 
@@ -1089,7 +1151,7 @@
   // ========================================================
 
   function buildParsedBill(billNo, party, amount, mm, raw, isEInvoice = false) {
-    const finalBillNo = String(billNo || '').trim();
+    const finalBillNo = mm ? mm.billNo : expandCanonicalInvoiceNumber(String(billNo || '').trim());
     return {
       billNo: finalBillNo,
       party: mm ? mm.party : (party || 'Standard Account'),
@@ -1279,6 +1341,7 @@
     if (!parsed || !parsed.billNo) return parsed;
     const mm = findMasterBill(parsed.billNo) || (parsed.raw ? findMasterBill(parsed.raw) : null);
     if (mm) {
+      parsed.billNo = mm.billNo; // ALWAYS ensure billNo is the full invoice number!
       if (!parsed.party || parsed.party === 'Standard Account' || parsed.party === 'General Party') {
         parsed.party = mm.party;
       }
@@ -1291,6 +1354,8 @@
       parsed.outstanding = mm.outstanding !== undefined ? mm.outstanding : 0;
       parsed.remainingText = mm.remainingText || '';
       parsed.fromMaster = true;
+    } else {
+      parsed.billNo = expandCanonicalInvoiceNumber(parsed.billNo);
     }
     return parsed;
   }
@@ -2248,6 +2313,7 @@
     const normScan = normalizeInvoiceNumber(parsed.billNo);
     const existingBasketIdx = State.dispatchBasket.findIndex(b => normalizeInvoiceNumber(b.billNo) === normScan);
     if (existingBasketIdx >= 0) {
+      State.dispatchBasket[existingBasketIdx].billNo = parsed.billNo;
       State.dispatchBasket[existingBasketIdx].agent = assignedAgent;
       if (assignedBeat) State.dispatchBasket[existingBasketIdx].beat = assignedBeat;
       State.dispatchBasket[existingBasketIdx].beatName = assignedBeatName;
@@ -3261,10 +3327,13 @@
           return gResp.ok ? parseGvizResponse(await gResp.text()) : [];
         };
 
-        // Full invoice number only (case-insensitive). Never match on the trailing digits:
-        // many vouchers share them, e.g. "IN-FY25/26-3965" and "IN-FY26/27-3965".
-        const rows = await runQuery(`where upper(D) = '${q(cleanNo.toUpperCase())}'`);
-        b = rows.find(r => normalizeInvoiceNumber(r.billNo) === normalizeInvoiceNumber(cleanNo)) || null;
+        // Full invoice number (case-insensitive) or canonical shorthand expansion ("3-6757" -> "IN-17063-6757")
+        const canonNo = expandCanonicalInvoiceNumber(cleanNo);
+        const condition = (canonNo && canonNo !== cleanNo)
+          ? `where upper(D) = '${q(canonNo.toUpperCase())}' or upper(D) = '${q(cleanNo.toUpperCase())}'`
+          : `where upper(D) = '${q(cleanNo.toUpperCase())}'`;
+        const rows = await runQuery(condition);
+        b = rows.find(r => normalizeInvoiceNumber(r.billNo) === normalizeInvoiceNumber(cleanNo) || normalizeInvoiceNumber(r.billNo) === normalizeInvoiceNumber(canonNo)) || null;
       } catch (gErr) {
         console.warn('[BillLookup] Direct GViz single lookup failed:', gErr);
       }
@@ -3332,7 +3401,9 @@
         let basketUpdated = false;
         State.dispatchBasket.forEach(item => {
           if (normalizeInvoiceNumber(item.billNo) === normalizeInvoiceNumber(billNo) ||
-              normalizeInvoiceNumber(item.billNo) === normalizeInvoiceNumber(b.billNo)) {
+              normalizeInvoiceNumber(item.billNo) === normalizeInvoiceNumber(b.billNo) ||
+              normalizeInvoiceNumber(item.billNo) === normalizeInvoiceNumber(canonNo)) {
+            item.billNo = b.billNo; // ALWAYS ensure basket has the full invoice number!
             if (b.party && b.party !== 'Customer' && b.party !== 'Standard Account') item.party = b.party;
             if (b.amount) item.amount = b.amount;
             // Retain active dispatch session assignment (do not overwrite with historical sheet agent/beat)
@@ -3358,7 +3429,9 @@
         let billsUpdated = false;
         State.bills.forEach(item => {
           if (normalizeInvoiceNumber(item.billNo) === normalizeInvoiceNumber(billNo) ||
-              normalizeInvoiceNumber(item.billNo) === normalizeInvoiceNumber(b.billNo)) {
+              normalizeInvoiceNumber(item.billNo) === normalizeInvoiceNumber(b.billNo) ||
+              normalizeInvoiceNumber(item.billNo) === normalizeInvoiceNumber(canonNo)) {
+            item.billNo = b.billNo; // ALWAYS ensure State.bills has the full invoice number!
             if (b.party && b.party !== 'Customer' && b.party !== 'Standard Account') item.party = b.party;
             if (b.amount) item.amount = b.amount;
             // Retain custody assignment (do not overwrite active custody agent/beat)
@@ -4195,6 +4268,13 @@ _BillAudit Pro_`;
 
       const mm = (State.masterSheetBills && State.masterSheetBills.length > 0) ? findMasterBill(b.billNo) : null;
 
+      // Always promote billNo to full canonical invoice number
+      if (mm && mm.billNo) {
+        b.billNo = mm.billNo;
+      } else {
+        b.billNo = expandCanonicalInvoiceNumber(b.billNo);
+      }
+
       // Always backfill missing metadata (Beat, Party, Amount, Canonical Agent) on every bill
       if (mm) {
         if ((!b.party || b.party === 'Standard Customer' || b.party === 'Customer') && mm.party) {
@@ -4379,8 +4459,10 @@ _BillAudit Pro_`;
         else if (isSameAgent(rawAgent, 'Self')) rawAgent = 'Self';
         else rawAgent = cb.agent || 'Rajesh';
 
+        const finalBillNo = mm ? mm.billNo : expandCanonicalInvoiceNumber(cb.billNo);
+
         const formattedBill = {
-          billNo: cb.billNo,
+          billNo: finalBillNo,
           party: (cb.party && cb.party !== 'Standard Customer') ? cb.party : ((mm && mm.party) || cb.party || 'Standard Customer'),
           amount: Number(cb.amount) || (mm ? Number(mm.amount) : 0) || 0,
           agent: rawAgent,
@@ -4404,10 +4486,33 @@ _BillAudit Pro_`;
         return formattedBill;
       });
 
+      // Deduplicate bills loaded from cloud: keep 1 entry per physical bill, merging beat/week and status
+      const dedupMap = new Map();
+      cloudFormattedBills.forEach(b => {
+        const norm = normalizeInvoiceNumber(b.billNo);
+        if (!dedupMap.has(norm)) {
+          dedupMap.set(norm, b);
+        } else {
+          const existing = dedupMap.get(norm);
+          if (!b.beat && existing.beat) b.beat = existing.beat;
+          if (!b.week && existing.week) b.week = existing.week;
+          if (b.status === 'WITH_AGENT' && (existing.status === 'PAID_FULL' || existing.status === 'PAID_PARTIAL')) {
+            b.status = existing.status;
+            b.collectedAmt = existing.collectedAmt;
+            b.outstanding = existing.outstanding;
+            b.paymentMode = existing.paymentMode;
+            b.refNo = existing.refNo;
+            b.receipt = existing.receipt;
+          }
+          dedupMap.set(norm, b);
+        }
+      });
+      const uniqueCloudBills = Array.from(dedupMap.values());
+
       // Strict Cloud Authority:
       // Replace State.bills with cloud bills so all devices mirror the cloud sheet 1-to-1!
       // (Retain any locally scanned bills that haven't been pushed to the cloud yet)
-      const cloudNorms = new Set(cloudFormattedBills.map(b => normalizeInvoiceNumber(b.billNo)));
+      const cloudNorms = new Set(uniqueCloudBills.map(b => normalizeInvoiceNumber(b.billNo)));
       const pendingLocalUnsynced = State.bills.filter(b => {
         const norm = normalizeInvoiceNumber(b.billNo);
         return !cloudNorms.has(norm) && State.offlineQueue.some(q => {
@@ -4417,7 +4522,7 @@ _BillAudit Pro_`;
         });
       });
 
-      State.bills = [...cloudFormattedBills, ...pendingLocalUnsynced];
+      State.bills = [...uniqueCloudBills, ...pendingLocalUnsynced];
       reconcileCustodyWithMasterSheet();
       saveState('bills');
       updateGlobalStats();
@@ -4428,7 +4533,7 @@ _BillAudit Pro_`;
 
       if (showFeedback) {
         SoundFX.playBeep('success');
-        showToast(`Synced ${cloudFormattedBills.length} custody bills from Cloud Tracking Sheet!`, 'success');
+        showToast(`Synced ${uniqueCloudBills.length} custody bills from Cloud Tracking Sheet!`, 'success');
       }
       return true;
     } else {
