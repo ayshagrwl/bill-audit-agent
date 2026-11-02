@@ -400,7 +400,9 @@ function processSyncQueue(ss, queue, timestamp) {
         agent: p.agent,
         status: 'LEFT_OUT_ALERT',
         remarks: 'ALERT: Bill left out / not returned by agent',
-        lastActionDate: itemTime
+        lastActionDate: itemTime,
+        beat: p.beat || '',
+        week: p.week || ''
       };
       syncCustodyBills(ss, [custodyBill], itemTime);
     }

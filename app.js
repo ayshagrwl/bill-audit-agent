@@ -2958,6 +2958,8 @@
       receipt: bill.receipt || '',
       outstanding: bill.outstanding !== undefined ? bill.outstanding : 0,
       remarks: bill.remarks,
+      beat: bill.beat || bill.beatName || '',
+      week: bill.week || '',
       timestamp
     });
 
@@ -3565,6 +3567,8 @@
       paymentMode: mode,
       refNo: bill.refNo,
       remarks: bill.remarks,
+      beat: bill.beat || bill.beatName || '',
+      week: bill.week || '',
       timestamp
     });
 
@@ -3614,9 +3618,13 @@
     queueSyncAction('SETTLEMENT_RETURN', {
       billNo: bill.billNo,
       agent: bill.agent,
+      party: bill.party,
+      amount: bill.amount,
       status: 'RETURNED_IN_HAND',
       returnReason: reason,
       remarks: bill.remarks,
+      beat: bill.beat || bill.beatName || '',
+      week: bill.week || '',
       timestamp
     });
 
@@ -3650,7 +3658,14 @@
         b.status = 'MISSING_ALERT';
         b.remarks = `LEFT OUT at EOD settlement on ${getTodayDateString()}`;
         b.lastActionDate = timestamp;
-        queueSyncAction('BILL_FLAG_MISSING', { billNo: b.billNo, agent, status: 'MISSING_ALERT', timestamp });
+        queueSyncAction('BILL_FLAG_MISSING', {
+          billNo: b.billNo,
+          agent,
+          status: 'MISSING_ALERT',
+          beat: b.beat || b.beatName || '',
+          week: b.week || '',
+          timestamp
+        });
       });
 
       saveState();
@@ -5371,6 +5386,9 @@ _BillAudit Pro_`;
       // Auto-reconcile live custody with latest master sheet payment info
       const reconcileRes = reconcileCustodyWithMasterSheet();
       saveState('bills');
+      if (reconcileRes.healedCount > 0 || reconcileRes.partialCount > 0) {
+        syncCustodyToTrackingSheet();
+      }
 
       updateGlobalStats();
       renderAgentSelects();
