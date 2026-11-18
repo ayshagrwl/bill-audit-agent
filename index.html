@@ -18,6 +18,20 @@
   <!-- Full Screen Canvas for Confetti & Celebration FX -->
   <canvas id="confettiCanvas" class="confetti-canvas"></canvas>
 
+  <!-- Shared login (shown only when Firebase is configured and nobody is signed in) -->
+  <div id="cloudLoginGate" class="cloud-login-gate" style="display: none;">
+    <form id="cloudLoginForm" class="cloud-login-card clean-card">
+      <h2><i class="fa-solid fa-lock"></i> BillAudit Pro</h2>
+      <p class="text-muted">Sign in with the shared app login.</p>
+      <label for="cloudLoginEmail">Email</label>
+      <input type="email" id="cloudLoginEmail" class="form-input" autocomplete="username" required />
+      <label for="cloudLoginPassword">Password</label>
+      <input type="password" id="cloudLoginPassword" class="form-input" autocomplete="current-password" required />
+      <p class="cloud-login-error" id="cloudLoginError" role="alert"></p>
+      <button type="submit" class="btn btn-primary" id="cloudLoginBtn">Sign in</button>
+    </form>
+  </div>
+
   <div id="app" class="app-layout">
 
     <!-- ======================================================== -->
@@ -1073,6 +1087,23 @@
 
       <section id="tab-settings" class="tab-view">
         <div class="desktop-settings-grid">
+
+          <!-- CARD 0: FIREBASE CLOUD (scan logs & custody) -->
+          <div class="clean-card">
+            <div class="card-header-simple">
+              <i class="fa-solid fa-cloud icon-accent"></i>
+              <div>
+                <h3>Cloud Storage (Firebase)</h3>
+                <p>Scan OUT / Scan IN logs and live custody are stored in Firebase. <span id="cloudSignedInAs">Not signed in</span></p>
+              </div>
+            </div>
+            <div class="cloud-actions">
+              <button type="button" class="btn btn-outline-secondary btn-sm" data-cloud-export="custody"><i class="fa-solid fa-file-csv"></i> Export custody</button>
+              <button type="button" class="btn btn-outline-secondary btn-sm" data-cloud-export="scanOut"><i class="fa-solid fa-file-csv"></i> Export Scan OUT log</button>
+              <button type="button" class="btn btn-outline-secondary btn-sm" data-cloud-export="scanIn"><i class="fa-solid fa-file-csv"></i> Export Scan IN log</button>
+              <button type="button" class="btn btn-outline-danger btn-sm" id="cloudSignOutBtn"><i class="fa-solid fa-right-from-bracket"></i> Sign out</button>
+            </div>
+          </div>
           
           <!-- CARD 1: MASTER / MAIN BILLING SHEET INTEGRATION -->
           <div class="clean-card">
@@ -1850,6 +1881,12 @@
   <div id="toastContainer" class="toast-container"></div>
 
   <!-- Core JavaScript -->
+  <!-- Firebase (Firestore + shared login). firebase-config.js holds the project's web config;
+       leave it empty to keep using the Apps Script tracking sheet. -->
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+  <script src="firebase-config.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

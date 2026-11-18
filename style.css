@@ -4023,3 +4023,56 @@ button.ins-kpi:focus-visible {
 .ins-table td:first-child strong {
   white-space: nowrap;
 }
+
+/* ========================================================
+   FIREBASE SHARED LOGIN
+   ======================================================== */
+.cloud-login-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 20000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: var(--bg-page);
+}
+
+.cloud-login-card {
+  width: 100%;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 24px;
+}
+
+.cloud-login-card h2 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.cloud-login-card label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  margin-top: 6px;
+}
+
+.cloud-login-card .btn {
+  margin-top: 8px;
+}
+
+.cloud-login-error {
+  min-height: 1.2em;
+  margin: 4px 0 0;
+  font-size: 0.8rem;
+  color: var(--danger);
+}
+
+.cloud-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}

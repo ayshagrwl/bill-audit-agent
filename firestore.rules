@@ -1,0 +1,19 @@
+rules_version = '2';
+// Only the shared BillAudit login may read or write. Anyone can create a Firebase account
+// through the public sign-up API, so a signed-in check alone is not enough: the email is pinned.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isApp() {
+      return request.auth != null && request.auth.token.email == 'SHARED_LOGIN_EMAIL';
+    }
+    match /custody/{billId} {
+      allow read, write: if isApp();
+    }
+    match /scanOut/{rowId} {
+      allow read, create, update: if isApp();
+    }
+    match /scanIn/{rowId} {
+      allow read, create, update: if isApp();
+    }
+  }
+}

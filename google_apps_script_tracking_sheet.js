@@ -304,7 +304,9 @@ function recordScanIn(ss, p, timestamp) {
   const party = String(p.party || 'Standard Customer').trim();
   const totalAmt = Number(p.amount || p.totalAmount) || 0;
   const collectedAmt = Number(p.collectedAmt) || 0;
-  const remainingDue = p.remainingDue !== undefined ? Number(p.remainingDue) : Math.max(0, totalAmt - collectedAmt);
+  // SETTLEMENT_RETURN sends `outstanding`; SETTLEMENT_PAYMENT sends `remainingDue`
+  const rawDue = p.remainingDue !== undefined ? p.remainingDue : p.outstanding;
+  const remainingDue = rawDue !== undefined && rawDue !== null && rawDue !== '' ? Number(rawDue) : Math.max(0, totalAmt - collectedAmt);
   const paymentMode = String(p.paymentMode || (p.status === 'RETURNED_IN_HAND' ? 'RETURN' : 'Cash')).trim();
   const refNo = String(p.refNo || '').trim();
   const status = String(p.status || (collectedAmt >= totalAmt && totalAmt > 0 ? 'PAID_FULL' : 'PAID_PARTIAL')).trim();

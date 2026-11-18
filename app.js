@@ -1164,7 +1164,8 @@
       agent: mm ? mm.agent : '',
       beat: mm ? (mm.beat || '') : '',
       receipt: mm ? (mm.receipt || '') : '',
-      outstanding: mm && mm.outstanding !== undefined ? mm.outstanding : 0,
+      // Unknown when the bill is not in the Master Sheet: 0 would record it as fully paid on Scan IN
+      outstanding: mm && mm.outstanding !== undefined ? mm.outstanding : undefined,
       remainingText: mm ? (mm.remainingText || '') : '',
       fromMaster: !!mm,
       raw: raw || finalBillNo,
@@ -2205,6 +2206,23 @@
   }
 
   async function loadInsightsLogs(force = false) {
+    if (Cloud.isConfigured()) {
+      if (!force && insightsState.logs && Date.now() - insightsState.fetchedAt < 10 * 60 * 1000) return;
+      insightsState.loading = true;
+      insightsState.error = '';
+      renderInsightsTab();
+      try {
+        await Cloud.ready();
+        const data = await Cloud.fetchLogs(120);
+        insightsState.logs = { out: data.out.map(mapOutLogRow), in: data.in.map(mapInLogRow) };
+        insightsState.fetchedAt = Date.now();
+      } catch (err) {
+        insightsState.error = err && err.message ? err.message : String(err);
+      } finally {
+        insightsState.loading = false;
+      }
+      return;
+    }
     const url = State.settings.trackingSheetScriptUrl;
     if (!url) {
       insightsState.error = 'Tracking Sheet script URL is not set (Settings & Sync).';
@@ -4988,10 +5006,20 @@ _BillAudit Pro_`;
    */
   async function syncBillsFromTrackingSheet(showFeedback = false) {
     let custodyBills = null;
+    const fromCloud = Cloud.isConfigured();
+
+    if (fromCloud) {
+      try {
+        await Cloud.ready();
+        custodyBills = await Cloud.pullCustody(State.bills);
+      } catch (cloudErr) {
+        console.warn('Firestore custody fetch warning:', cloudErr);
+      }
+    }
 
     // 1. Direct BigTable GViz query on Live_Custody tab (Ultra-fast ~300ms, public, zero login redirect, works on all devices)
     const trackingSheetId = '1Lu1C-aX9KCRhCrcrZNal81tt4-wD_6wqHWqsI5orTrY';
-    try {
+    if (!fromCloud) try {
       const gvizUrl = `https://docs.google.com/spreadsheets/d/${trackingSheetId}/gviz/tq?tqx=out:json&sheet=Live_Custody&t=${Date.now()}`;
       const gvizResp = await fetch(gvizUrl);
       if (gvizResp.ok) {
@@ -5045,7 +5073,7 @@ _BillAudit Pro_`;
     }
 
     // 2. Fallback to Web App endpoint if GViz failed
-    if (!custodyBills && State.settings.trackingSheetScriptUrl) {
+    if (!fromCloud && !custodyBills && State.settings.trackingSheetScriptUrl) {
       try {
         const resp = await fetch(`${State.settings.trackingSheetScriptUrl}?action=GET_CUSTODY&t=${Date.now()}`);
         const data = await resp.json();
@@ -5145,6 +5173,8 @@ _BillAudit Pro_`;
       State.bills = [...uniqueCloudBills, ...pendingLocalUnsynced];
       reconcileCustodyWithMasterSheet();
       saveState('bills');
+      // Bills healed by the reconcile above (paid on Master Sheet etc.) go back to the cloud
+      if (fromCloud) syncCustodyToTrackingSheet();
       updateGlobalStats();
       if (State.activeTab === 'tab-leftout') renderLeftOutTab();
       else if (State.activeTab === 'tab-ledger') renderMasterLedger();
@@ -5665,6 +5695,343 @@ _BillAudit Pro_`;
 
   let syncDebounceTimer = null;
 
+  // ========================================================
+  // FIREBASE CLOUD STORE (Firestore + shared app login)
+  // ========================================================
+  // When firebase-config.js provides a config, scans are stored in Firestore instead of the
+  // Apps Script tracking sheet:
+  //   scanOut/{queueId_bill}  one row per bill per Scan OUT   (same fields as Scan_Out_Log)
+  //   scanIn/{queueId_bill}   one row per Scan IN             (same fields as Scan_In_Log)
+  //   custody/{normalized bill no}  current state of each bill (same fields as Live_Custody)
+  // With no config, the app keeps using the Apps Script tracking sheet.
+
+  const CLOUD_KEYS = {
+    CUSTODY_HASHES: 'billAudit_cloudCustodyHashes',
+    CUSTODY_PULLED_AT: 'billAudit_cloudCustodyPulledAt',
+    LOG_CACHE: 'billAudit_cloudLogCache'
+  };
+  const CUSTODY_FIELDS = ['billNo', 'party', 'amount', 'agent', 'dispatchDate', 'status', 'collectedAmt', 'outstanding',
+    'paymentMode', 'refNo', 'returnReason', 'remarks', 'lastActionDate', 'beat', 'week'];
+
+  /** The stored shape of one custody bill (also used to detect which bills changed). */
+  function custodyRecord(b) {
+    const amount = Number(b.amount) || 0;
+    return {
+      billNo: String(b.billNo || '').trim(),
+      party: String(b.party || '').trim(),
+      amount,
+      agent: String(b.agent || '').trim(),
+      dispatchDate: String(b.dispatchDate || '').trim(),
+      status: String(b.status || 'WITH_AGENT').trim(),
+      collectedAmt: Number(b.collectedAmt) || 0,
+      outstanding: b.outstanding !== undefined && b.outstanding !== null && b.outstanding !== '' ? Number(b.outstanding) || 0 : amount,
+      paymentMode: String(b.paymentMode || '').trim(),
+      refNo: String(b.refNo || b.receipt || '').trim(),
+      returnReason: String(b.returnReason || '').trim(),
+      remarks: String(b.remarks || '').trim(),
+      lastActionDate: String(b.lastActionDate || '').trim(),
+      beat: String(b.beat || b.beatName || '').trim(),
+      week: String(b.week || '').trim()
+    };
+  }
+
+  function custodyHash(rec) {
+    return CUSTODY_FIELDS.map(f => rec[f]).join('␟');
+  }
+
+  /**
+   * Firestore log documents for one queued sync action (custody is synced separately from
+   * State.bills). Doc ids are derived from the queue item id, so a retried sync never
+   * duplicates rows.
+   */
+  function cloudLogWritesForQueueItem(item) {
+    const p = (item && item.payload) || {};
+    const ts = String(p.timestamp || item.timestamp || new Date().toISOString());
+    const writes = [];
+    const docId = billNo => `${item.id}_${normalizeInvoiceNumber(billNo)}`;
+
+    if (item.type === 'BATCH_DISPATCH' && Array.isArray(p.bills)) {
+      const date = normalizeDateString(p.dispatchDate) || normalizeDateString(ts);
+      p.bills.forEach(b => {
+        const billNo = String(b.billNo || '').trim();
+        if (!billNo) return;
+        const amount = Number(b.amount) || 0;
+        writes.push({
+          col: 'scanOut',
+          id: docId(billNo),
+          data: {
+            ts,
+            billNo,
+            agent: String(b.agent || p.agent || '').trim(),
+            party: String(b.party || 'Standard Customer').trim(),
+            amount,
+            dispatchDate: date,
+            dueOut: b.outstanding !== undefined && b.outstanding !== null && b.outstanding !== '' ? Number(b.outstanding) || 0 : amount,
+            receipt: String(b.receipt || b.refNo || '').trim(),
+            status: 'WITH_AGENT',
+            notes: String(b.remarks || `Dispatched for route ${date}`),
+            beat: String(b.beat || b.beatName || '').trim(),
+            week: String(b.week || '').trim()
+          }
+        });
+      });
+    } else if (item.type === 'SETTLEMENT_PAYMENT' || item.type === 'SETTLEMENT_RETURN') {
+      const billNo = String(p.billNo || '').trim();
+      const remarks = String(p.remarks || '').trim();
+      // Sync jobs ("Auto-Healed") update custody only; they are not a person scanning the bill in
+      if (billNo && !/^(auto-healed|verified paid on master sheet)/i.test(remarks)) {
+        const amount = Number(p.amount || p.totalAmount) || 0;
+        // SETTLEMENT_RETURN carries `outstanding`, SETTLEMENT_PAYMENT carries `remainingDue`
+        const rawDue = p.remainingDue !== undefined ? p.remainingDue : p.outstanding;
+        const collectedRaw = p.collectedAmt !== undefined ? Number(p.collectedAmt) || 0 : null;
+        const dueIn = rawDue !== undefined && rawDue !== null && rawDue !== ''
+          ? Number(rawDue) || 0
+          : Math.max(0, amount - (collectedRaw || 0));
+        const status = String(p.status || 'RECEIVED').trim();
+        writes.push({
+          col: 'scanIn',
+          id: docId(billNo),
+          data: {
+            ts,
+            billNo,
+            agent: String(p.agent || '').trim(),
+            party: String(p.party || 'Standard Customer').trim(),
+            amount,
+            collected: collectedRaw !== null ? collectedRaw : Math.max(0, amount - dueIn),
+            dueIn,
+            mode: String(p.paymentMode || (status === 'RETURNED_IN_HAND' ? 'RETURN' : '')).trim(),
+            receipt: String(p.refNo || p.receipt || '').trim(),
+            status,
+            reason: String(p.returnReason || '').trim(),
+            remarks: remarks || (status === 'RETURNED_IN_HAND' ? 'Verified Return' : 'Checked IN'),
+            beat: String(p.beat || p.beatName || '').trim(),
+            week: String(p.week || '').trim()
+          }
+        });
+      }
+    }
+    return writes;
+  }
+
+  /** Firestore log docs as rows in the Scan_Out_Log / Scan_In_Log column order (for Insights). */
+  function cloudOutDocToRow(d) {
+    return [d.ts, d.billNo, d.agent, d.party, d.amount, d.dispatchDate, d.dueOut, d.receipt, d.status, d.notes, d.beat, d.week];
+  }
+
+  function cloudInDocToRow(d) {
+    return [d.ts, d.billNo, d.agent, d.party, d.amount, d.collected, d.dueIn, d.mode, d.receipt, d.status, d.reason, d.remarks, d.beat, d.week];
+  }
+
+  function readLocalJson(key, fallback) {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : fallback;
+    } catch (e) {
+      return fallback;
+    }
+  }
+
+  function writeLocalJson(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) { console.warn('[Cloud] local cache not saved:', e); }
+  }
+
+  const Cloud = {
+    db: null,
+    auth: null,
+    user: null,
+    _ready: null,
+    _resolveReady: null,
+
+    isConfigured() {
+      return !!(window.BILLAUDIT_FIREBASE_CONFIG && window.BILLAUDIT_FIREBASE_CONFIG.apiKey && window.firebase && window.firebase.firestore);
+    },
+
+    init() {
+      if (!this.isConfigured() || this.db) return;
+      this._ready = new Promise(resolve => { this._resolveReady = resolve; });
+      firebase.initializeApp(window.BILLAUDIT_FIREBASE_CONFIG);
+      this.auth = firebase.auth();
+      this.db = firebase.firestore();
+      // Offline cache: scans made without signal are saved and sent when back online
+      this.db.enablePersistence({ synchronizeTabs: true }).catch(err => console.warn('[Cloud] offline cache unavailable:', err.code || err));
+      this.auth.onAuthStateChanged(user => {
+        this.user = user;
+        renderCloudLoginGate();
+        if (user) this._resolveReady();
+      });
+    },
+
+    /** Resolves once the shared login is signed in. */
+    ready() {
+      return this._ready || Promise.reject(new Error('Firebase is not configured'));
+    },
+
+    async signIn(email, password) {
+      await this.auth.signInWithEmailAndPassword(email, password);
+    },
+
+    async signOut() {
+      await this.auth.signOut();
+    },
+
+    async commit(writes) {
+      for (let i = 0; i < writes.length; i += 400) {
+        const batch = this.db.batch();
+        writes.slice(i, i + 400).forEach(w => {
+          batch.set(this.db.collection(w.col).doc(w.id), w.data, w.merge ? { merge: true } : {});
+        });
+        await batch.commit();
+      }
+    },
+
+    async pushQueue(queue) {
+      const writes = [];
+      queue.forEach(item => writes.push(...cloudLogWritesForQueueItem(item)));
+      if (writes.length) await this.commit(writes);
+    },
+
+    /** Writes only the custody bills whose stored fields changed since the last sync. */
+    async pushCustodyChanges(bills) {
+      const hashes = readLocalJson(CLOUD_KEYS.CUSTODY_HASHES, {});
+      const writes = [];
+      const next = {};
+      (bills || []).forEach(b => {
+        const id = normalizeInvoiceNumber(b && b.billNo);
+        if (!id) return;
+        const rec = custodyRecord(b);
+        const h = custodyHash(rec);
+        next[id] = h;
+        if (hashes[id] !== h) {
+          writes.push({ col: 'custody', id, data: { ...rec, updatedAt: firebase.firestore.FieldValue.serverTimestamp() } });
+        }
+      });
+      if (writes.length) await this.commit(writes);
+      writeLocalJson(CLOUD_KEYS.CUSTODY_HASHES, { ...hashes, ...next });
+      return writes.length;
+    },
+
+    /**
+     * Custody bills from Firestore. The first pull on a device reads everything; later pulls
+     * read only bills updated since, merged into the bills already on this device.
+     */
+    async pullCustody(currentBills) {
+      const lastPulled = Number(localStorage.getItem(CLOUD_KEYS.CUSTODY_PULLED_AT)) || 0;
+      const full = !lastPulled || !(currentBills && currentBills.length);
+      const startedAt = Date.now();
+      let query = this.db.collection('custody');
+      if (!full) query = query.where('updatedAt', '>', firebase.firestore.Timestamp.fromMillis(lastPulled - 5 * 60 * 1000));
+      const snap = await query.get();
+      const docs = snap.docs.map(d => d.data());
+
+      const hashes = full ? {} : readLocalJson(CLOUD_KEYS.CUSTODY_HASHES, {});
+      docs.forEach(d => { hashes[normalizeInvoiceNumber(d.billNo)] = custodyHash(custodyRecord(d)); });
+      writeLocalJson(CLOUD_KEYS.CUSTODY_HASHES, hashes);
+      localStorage.setItem(CLOUD_KEYS.CUSTODY_PULLED_AT, String(startedAt));
+
+      if (full) return docs;
+      const merged = new Map(currentBills.map(b => [normalizeInvoiceNumber(b.billNo), { ...b }]));
+      docs.forEach(d => {
+        const id = normalizeInvoiceNumber(d.billNo);
+        merged.set(id, { ...(merged.get(id) || {}), ...d });
+      });
+      return Array.from(merged.values());
+    },
+
+    /** Scan OUT / Scan IN rows for the last `days` days, cached on this device and topped up incrementally. */
+    async fetchLogs(days) {
+      const cutoff = new Date(Date.now() - days * 86400000).toISOString();
+      const cache = readLocalJson(CLOUD_KEYS.LOG_CACHE, { out: [], in: [], maxTs: '' });
+      const since = cache.maxTs && cache.maxTs > cutoff ? cache.maxTs : cutoff;
+      const [outSnap, inSnap] = await Promise.all([
+        this.db.collection('scanOut').where('ts', '>', since).get(),
+        this.db.collection('scanIn').where('ts', '>', since).get()
+      ]);
+      const keep = rows => rows.filter(r => String(r[0]) >= cutoff);
+      const seen = new Set();
+      const dedupe = rows => rows.filter(r => { const k = `${r[0]}|${r[1]}`; if (seen.has(k)) return false; seen.add(k); return true; });
+      const out = dedupe(keep([...(since === cutoff ? [] : cache.out), ...outSnap.docs.map(d => cloudOutDocToRow(d.data()))]));
+      const inn = dedupe(keep([...(since === cutoff ? [] : cache.in), ...inSnap.docs.map(d => cloudInDocToRow(d.data()))]));
+      const maxTs = [...out, ...inn].reduce((m, r) => (String(r[0]) > m ? String(r[0]) : m), cache.maxTs || '');
+      writeLocalJson(CLOUD_KEYS.LOG_CACHE, { out, in: inn, maxTs });
+      return { out, in: inn };
+    },
+
+    /** All documents of a collection, for the export button. */
+    async readAll(col) {
+      const snap = await this.db.collection(col).get();
+      return snap.docs.map(d => d.data());
+    }
+  };
+
+  function renderCloudLoginGate() {
+    const gate = document.getElementById('cloudLoginGate');
+    if (!gate) return;
+    const needsLogin = Cloud.isConfigured() && !Cloud.user;
+    gate.style.display = needsLogin ? 'flex' : 'none';
+    const who = document.getElementById('cloudSignedInAs');
+    if (who) who.textContent = Cloud.user ? `Signed in as ${Cloud.user.email}` : 'Not signed in';
+  }
+
+  function setupCloudLogin() {
+    const form = document.getElementById('cloudLoginForm');
+    form?.addEventListener('submit', async e => {
+      e.preventDefault();
+      const email = document.getElementById('cloudLoginEmail').value.trim();
+      const password = document.getElementById('cloudLoginPassword').value;
+      const err = document.getElementById('cloudLoginError');
+      const btn = document.getElementById('cloudLoginBtn');
+      if (err) err.textContent = '';
+      if (btn) btn.disabled = true;
+      try {
+        await Cloud.signIn(email, password);
+        document.getElementById('cloudLoginPassword').value = '';
+      } catch (ex) {
+        if (err) err.textContent = /wrong-password|invalid-credential|user-not-found|invalid-login/i.test(String(ex.code || ex.message))
+          ? 'Wrong email or password.'
+          : `Could not sign in: ${ex.message || ex}`;
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    });
+    document.getElementById('cloudSignOutBtn')?.addEventListener('click', async () => {
+      if (!Cloud.isConfigured()) return;
+      if (!confirm('Sign out of BillAudit on this device?')) return;
+      await Cloud.signOut();
+    });
+    document.querySelectorAll('[data-cloud-export]').forEach(btn => btn.addEventListener('click', () => exportCloudCollection(btn.dataset.cloudExport)));
+  }
+
+  /** Downloads a Firestore collection (custody, scanOut or scanIn) as CSV. */
+  async function exportCloudCollection(col) {
+    if (!Cloud.isConfigured()) {
+      showToast('Cloud export needs Firebase to be set up', 'warning');
+      return;
+    }
+    try {
+      await Cloud.ready();
+      showToast('Preparing export…', 'info', 1500);
+      const docs = await Cloud.readAll(col);
+      const columns = col === 'custody' ? CUSTODY_FIELDS
+        : col === 'scanOut' ? ['ts', 'billNo', 'agent', 'party', 'amount', 'dispatchDate', 'dueOut', 'receipt', 'status', 'notes', 'beat', 'week']
+        : ['ts', 'billNo', 'agent', 'party', 'amount', 'collected', 'dueIn', 'mode', 'receipt', 'status', 'reason', 'remarks', 'beat', 'week'];
+      docs.sort((a, b) => String(b.ts || b.lastActionDate || '').localeCompare(String(a.ts || a.lastActionDate || '')));
+      const cell = v => {
+        let str = String(v === null || v === undefined ? '' : v);
+        if (/^[=+\-@]/.test(str)) str = `'${str}`;
+        return `"${str.replace(/"/g, '""')}"`;
+      };
+      const csv = [columns.map(cell).join(','), ...docs.map(d => columns.map(c => cell(d[c])).join(','))].join('\n');
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+      link.download = `BillAudit_${col}_${getTodayDateString()}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (err) {
+      showToast(`Export failed: ${err.message || err}`, 'warning', 4000);
+    }
+  }
+
   function queueSyncAction(type, payload) {
     State.offlineQueue.push({
       id: 'Q-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5),
@@ -5676,7 +6043,7 @@ _BillAudit Pro_`;
     updateOfflineQueueBadge();
 
     const targetUrl = State.settings.trackingSheetScriptUrl || State.settings.scriptUrl;
-    if (navigator.onLine && targetUrl) {
+    if (navigator.onLine && (Cloud.isConfigured() || targetUrl)) {
       if (syncDebounceTimer) clearTimeout(syncDebounceTimer);
       syncDebounceTimer = setTimeout(() => {
         processOfflineQueue();
@@ -5685,6 +6052,7 @@ _BillAudit Pro_`;
   }
 
   async function processOfflineQueue() {
+    if (Cloud.isConfigured()) return processOfflineQueueToCloud();
     const targetUrl = State.settings.trackingSheetScriptUrl || State.settings.scriptUrl;
     if (!targetUrl || State.offlineQueue.length === 0) return;
     if (State.isSyncing) return;
@@ -5733,7 +6101,43 @@ _BillAudit Pro_`;
     }
   }
 
+  /** Firebase mode: write queued scans as log docs, then the custody bills that changed. */
+  async function processOfflineQueueToCloud() {
+    if (State.isSyncing || State.offlineQueue.length === 0) return;
+    State.isSyncing = true;
+    const btn = document.getElementById('quickSyncBtn');
+    const text = document.getElementById('syncStatusText');
+    if (btn) btn.classList.add('syncing');
+    if (text) text.textContent = 'Syncing...';
+    const queueSnapshot = [...State.offlineQueue];
+    try {
+      await Cloud.ready();
+      await Cloud.pushQueue(queueSnapshot);
+      await Cloud.pushCustodyChanges(State.bills);
+      const processedIds = new Set(queueSnapshot.map(item => item.id));
+      State.offlineQueue = State.offlineQueue.filter(item => !processedIds.has(item.id));
+      saveState('queue');
+      updateOfflineQueueBadge();
+      if (text) text.textContent = 'Synced';
+    } catch (e) {
+      console.warn('Cloud sync failed, kept in queue:', e);
+      if (text) text.textContent = 'Queued';
+    } finally {
+      State.isSyncing = false;
+      if (btn) btn.classList.remove('syncing');
+    }
+  }
+
   async function syncCustodyToTrackingSheet() {
+    if (Cloud.isConfigured()) {
+      try {
+        await Cloud.ready();
+        await Cloud.pushCustodyChanges(State.bills);
+      } catch (e) {
+        console.warn('Background custody sync failed:', e);
+      }
+      return;
+    }
     const targetUrl = State.settings.trackingSheetScriptUrl || State.settings.scriptUrl;
     if (!targetUrl || !State.bills || State.bills.length === 0) return;
 
@@ -8995,6 +9399,7 @@ _BillAudit Pro_`;
   // Application Startup
   document.addEventListener('DOMContentLoaded', () => {
     loadLocalState();
+    Cloud.init();
 
     const today = getTodayDateString();
     const dDate = document.getElementById('dispatchDate');
@@ -9024,6 +9429,8 @@ _BillAudit Pro_`;
     if (csvUrlInput) csvUrlInput.value = State.settings.sheetCsvUrl || '';
 
     setupEventListeners();
+    setupCloudLogin();
+    renderCloudLoginGate();
 
     // Initialize Hardware USB & Bluetooth Barcode / QR Scanner Listener
     HardwareScanner.init();
@@ -9044,6 +9451,8 @@ _BillAudit Pro_`;
       syncBillsFromTrackingSheet(false).catch(err => {
         console.warn('Background tracking custody sync warning:', err);
       });
+      // Send scans that were queued while offline or before signing in
+      if (Cloud.isConfigured()) Cloud.ready().then(() => processOfflineQueue()).catch(() => {});
     }, 300);
   });
 
