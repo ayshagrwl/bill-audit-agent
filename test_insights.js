@@ -21,7 +21,7 @@ const consts = ['PAY_MODE_RE', 'GENERIC_REMARK_RE', 'PAID_STATUS_RE', 'SYSTEM_IN
   .map(n => src.match(new RegExp('  const ' + n + ' = .*;'))[0]).join('\n');
 const names = ['normalizeInvoiceNumber', 'normalizeDateString', 'getTodayDateString', 'isSameAgent', 'cleanBeatString',
   'canonicalAgentName', 'parseLogNumber', 'mapOutLogRow', 'mapInLogRow', 'extractTripNote', 'daysBetween',
-  'buildBillInsights', 'getInsightsWeek', 'summarizeTrips', 'summarizeOutlets'];
+  'buildBillInsights', 'getInsightsWeek', 'summarizeTrips', 'summarizeOutlets', 'summarizeBeats'];
 const L = new Function(
   'const dateNormCache = new Map();\nconst State = { agents: [{ name: "Rajesh" }, { name: "Shivam" }, { name: "Self" }] };\n' +
   consts + '\n' + names.map(extract).join('\n') + '\nreturn { ' + names.join(', ') + ' };'
@@ -126,6 +126,38 @@ test('Outlets group bills by party, biggest due first', () => {
   assert.strictEqual(outlets[0].party, 'Other');
   assert.strictEqual(outlets[1].bills.length, 2);
   assert.strictEqual(outlets[1].due, 1500);
+});
+
+test('Beats & outlets: visits, usual gap, visits since paid, and status', () => {
+  const rows = [
+    // Stuck outlet: 3 visits, nothing collected
+    out('2026-10-01T05:00:00Z', 'IN-FY26/27-901', 'Shivam', 'Stuck Store', 1000, '2026-10-01', 1000),
+    out('2026-10-08T05:00:00Z', 'IN-FY26/27-901', 'Shivam', 'Stuck Store', 1000, '2026-10-08', 1000),
+    out('2026-10-15T05:00:00Z', 'IN-FY26/27-901', 'Shivam', 'Stuck Store', 1000, '2026-10-15', 1000),
+    // Paying outlet: due dropped between visits
+    out('2026-10-08T05:00:00Z', 'IN-FY26/27-902', 'Shivam', 'Paying Store', 1000, '2026-10-08', 1000),
+    out('2026-10-15T05:00:00Z', 'IN-FY26/27-902', 'Shivam', 'Paying Store', 1000, '2026-10-15', 600),
+    // Outlet on another beat, last seen long ago
+    out('2026-09-01T05:00:00Z', 'IN-FY26/27-903', 'Rajesh', 'Old Store', 500, '2026-09-01', 500)
+  ];
+  rows[0].beat = rows[1].beat = rows[2].beat = rows[3].beat = rows[4].beat = 'Pateri';
+  rows[5].beat = 'Bagha';
+  const bills = L.buildBillInsights(rows, [], { today: '2026-10-20' });
+  const beats = L.summarizeBeats(bills, '2026-10-20');
+  const pateri = beats.find(b => b.beat === 'Pateri');
+  assert.strictEqual(pateri.outlets.length, 2);
+  const stuck = pateri.outlets.find(o => o.party === 'Stuck Store');
+  assert.strictEqual(stuck.status, 'STUCK');
+  assert.strictEqual(stuck.visitsSincePaid, 3);
+  assert.strictEqual(Math.round(stuck.avgGap), 7);
+  const paying = pateri.outlets.find(o => o.party === 'Paying Store');
+  assert.strictEqual(paying.status, 'PAYING');
+  assert.strictEqual(paying.lastPaid, '2026-10-08');
+  assert.strictEqual(paying.lastPaidAmt, 400);
+  assert.strictEqual(pateri.stuck, 1);
+  const old = beats.find(b => b.beat === 'Bagha').outlets[0];
+  assert.strictEqual(old.status, 'VISIT_DUE');
+  assert.strictEqual(old.daysSinceVisit, 49);
 });
 
 console.log(`\n🎉 ALL ${n} INSIGHTS TESTS PASSED`);

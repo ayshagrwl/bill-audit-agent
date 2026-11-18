@@ -2113,6 +2113,7 @@
         billNo: lastOutRow.billNo,
         party: (mm && mm.party) || [...outs, ...ins].reverse().map(r => r.party).find(Boolean) || '',
         agent: canonicalAgentName(lastOutRow.agent || (lastIn && lastIn.agent)),
+        beat: [...outs].reverse().map(r => r.beat).find(Boolean) || (mm && mm.beat) || '',
         amount: (mm && Number(mm.amount)) || lastOutRow.amount || 0,
         trips,
         tripCount: trips.length,
@@ -2131,6 +2132,83 @@
       });
     });
     return bills;
+  }
+
+  /**
+   * Agent -> Beat -> Outlet view of what is owed and how often each outlet is visited.
+   * A visit is a day the outlet's bills went out with an agent. Per outlet: open bills, due,
+   * visits, average gap between visits, last visit, last payment, visits since it, and a
+   * status: STUCK (3+ visits since money last came in), VISIT_DUE (not visited for longer
+   * than its usual cycle), PAYING (paid in the last 14 days) or OK.
+   */
+  function summarizeBeats(bills, today = getTodayDateString(), beatOf = b => b.beat) {
+    const outletMap = new Map();
+    bills.forEach(b => {
+      const agent = b.agent || 'Unassigned';
+      const beat = beatOf(b) || 'No beat';
+      const party = String(b.party || 'Unknown outlet').trim();
+      const key = `${agent}|${beat.toLowerCase()}|${party.toLowerCase().replace(/\s+/g, ' ')}`;
+      if (!outletMap.has(key)) outletMap.set(key, { agent, beat, party, bills: [], visitDays: new Set(), paidDays: new Map() });
+      const o = outletMap.get(key);
+      o.bills.push(b);
+      b.trips.forEach(t => {
+        o.visitDays.add(t.date);
+        if (t.collected > 0) o.paidDays.set(t.date, (o.paidDays.get(t.date) || 0) + t.collected);
+      });
+    });
+
+    const outlets = [];
+    outletMap.forEach(o => {
+      const open = o.bills.filter(b => b.currentDue > 0);
+      if (open.length === 0) return;
+      const visits = Array.from(o.visitDays).sort();
+      const gaps = visits.slice(1).map((d, i) => daysBetween(visits[i], d)).filter(g => g > 0);
+      const avgGap = gaps.length ? gaps.reduce((s, g) => s + g, 0) / gaps.length : null;
+      const lastVisit = visits[visits.length - 1] || '';
+      const paidDates = Array.from(o.paidDays.keys()).sort();
+      const lastPaid = paidDates[paidDates.length - 1] || '';
+      const visitsSincePaid = visits.filter(d => !lastPaid || d > lastPaid).length;
+      const daysSinceVisit = lastVisit ? daysBetween(lastVisit, today) : null;
+      const oldest = open.reduce((m, b) => (b.firstOut < m ? b.firstOut : m), open[0].firstOut);
+      let status = 'OK';
+      if (lastPaid && daysBetween(lastPaid, today) <= 14) status = 'PAYING';
+      else if (visitsSincePaid >= 3) status = 'STUCK';
+      if (status !== 'STUCK' && daysSinceVisit !== null && daysSinceVisit > Math.max(7, Math.round((avgGap || 7) * 1.5))) status = 'VISIT_DUE';
+      outlets.push({
+        agent: o.agent, beat: o.beat, party: o.party, openBills: open,
+        due: open.reduce((s, b) => s + b.currentDue, 0),
+        oldestDays: daysBetween(oldest, today),
+        visits30: visits.filter(d => daysBetween(d, today) <= 30).length,
+        avgGap, lastVisit, daysSinceVisit, lastPaid,
+        lastPaidAmt: lastPaid ? o.paidDays.get(lastPaid) : 0,
+        collected30: Array.from(o.paidDays.entries()).filter(([d]) => daysBetween(d, today) <= 30).reduce((s, [, v]) => s + v, 0),
+        visitsSincePaid, status
+      });
+    });
+
+    const beatMap = new Map();
+    outlets.forEach(o => {
+      const key = `${o.agent}|${o.beat.toLowerCase()}`;
+      if (!beatMap.has(key)) beatMap.set(key, { agent: o.agent, beat: o.beat, outlets: [], due: 0, collected30: 0, stuck: 0, visitDue: 0, visitDays: new Set() });
+      const bt = beatMap.get(key);
+      bt.outlets.push(o);
+      bt.due += o.due;
+      bt.collected30 += o.collected30;
+      if (o.status === 'STUCK') bt.stuck++;
+      if (o.status === 'VISIT_DUE') bt.visitDue++;
+    });
+    // Beat visit days = days any of its bills went out (including outlets that are paid up)
+    bills.forEach(b => {
+      const key = `${b.agent || 'Unassigned'}|${(beatOf(b) || 'No beat').toLowerCase()}`;
+      const bt = beatMap.get(key);
+      if (bt) b.trips.forEach(t => bt.visitDays.add(t.date));
+    });
+    const beats = Array.from(beatMap.values()).map(bt => {
+      const days = Array.from(bt.visitDays).sort();
+      bt.outlets.sort((a, b) => b.due - a.due);
+      return { ...bt, lastVisit: days[days.length - 1] || '', visits30: days.filter(d => daysBetween(d, today) <= 30).length };
+    });
+    return beats.sort((a, b) => a.agent.localeCompare(b.agent) || b.due - a.due);
   }
 
   /** Monday-based week window for an offset from the current week (0 = this week). */
@@ -2196,7 +2274,7 @@
     { key: 'paid', label: 'Money collected', cls: 'viz-good', icon: 'fa-indian-rupee-sign' }
   ];
 
-  const insightsState = { logs: null, fetchedAt: 0, loading: false, error: '', bills: [], weekOffset: 0, agent: 'ALL', list: 'BLOCKED', search: '' };
+  const insightsState = { logs: null, fetchedAt: 0, loading: false, error: '', bills: [], weekOffset: 0, agent: 'ALL', list: 'BLOCKED', search: '', beatKey: null, openOutlet: null };
 
   function formatShortDate(dateStr) {
     const n = normalizeDateString(dateStr);
@@ -2468,6 +2546,7 @@
     }
 
     renderInsightsList({ blocked, missing, payment, outlets });
+    renderInsightsBeats(bills);
   }
 
   function tripDotsHtml(b) {
@@ -2534,6 +2613,157 @@
       ? `<tr class="empty-row"><td colspan="${columns.length}" style="text-align:center;padding:24px">🎉 Nothing here${q ? ' for this search' : ''}.</td></tr>`
       : rows.slice(0, limit).join('') + (rows.length > limit ? `<tr class="empty-row"><td colspan="${columns.length}">Showing ${limit} of ${rows.length} — search or export to see all.</td></tr>` : '');
     insightsState.csv = { columns, rows: csvRows };
+  }
+
+  const OUTLET_STATUS = {
+    STUCK: { label: 'Stuck', cls: 'ins-st-crit', icon: 'fa-ban', hint: '3+ visits since money last came in' },
+    VISIT_DUE: { label: 'Visit overdue', cls: 'ins-st-warn', icon: 'fa-clock', hint: 'Not visited for longer than its usual cycle' },
+    PAYING: { label: 'Paying', cls: 'ins-st-good', icon: 'fa-circle-check', hint: 'Paid something in the last 14 days' },
+    OK: { label: 'OK', cls: 'ins-st-neutral', icon: 'fa-minus', hint: 'Visited on its usual cycle, no payment pattern yet' }
+  };
+
+  function insightsBeatOf(b) {
+    return b.beat || inferBillBeat({ billNo: b.billNo, agent: b.agent, dispatchDate: b.lastOut }) || '';
+  }
+
+  function outletStatusBadge(status) {
+    const st = OUTLET_STATUS[status];
+    return `<span class="ins-status-badge ${st.cls}" title="${st.hint}"><i class="fa-solid ${st.icon}"></i> ${st.label}</span>`;
+  }
+
+  /** Beats & Outlets section of the Insights tab. */
+  function renderInsightsBeats(bills) {
+    const todayEl = document.getElementById('insTodayBeats');
+    const listEl = document.getElementById('insBeatList');
+    const panelEl = document.getElementById('insOutletPanel');
+    if (!listEl || !panelEl) return;
+
+    const beats = summarizeBeats(bills, getTodayDateString(), insightsBeatOf);
+    const keyOf = bt => `${bt.agent}|${bt.beat.toLowerCase()}`;
+
+    // Today's beat for each agent, from the weekly beat plan
+    const dayCode = getCurrentDayCode();
+    const agents = State.agents.filter(a => insightsState.agent === 'ALL' || a.name === insightsState.agent);
+    const todayCards = agents.map(a => {
+      const plan = MASTER_BEAT_PLAN[a.name] && MASTER_BEAT_PLAN[a.name][dayCode];
+      if (!plan) return '';
+      const bt = beats.find(b => isSameAgent(b.agent, a.name) && isSameBeat(b.beat, plan.beat));
+      const priority = bt ? bt.outlets.filter(o => o.status === 'STUCK' || o.status === 'VISIT_DUE').slice(0, 3) : [];
+      return `
+        <button type="button" class="ins-today-card" ${bt ? `data-ins-beat="${escapeHtml(keyOf(bt))}"` : 'disabled'}>
+          <span class="ins-today-head"><i class="fa-solid fa-calendar-day"></i> ${escapeHtml(a.name)} · today (${dayCode})</span>
+          <strong>${escapeHtml(plan.beat)}</strong>
+          ${bt ? `<span class="ins-today-meta"><strong class="text-danger">${formatINR(bt.due)}</strong> due across ${bt.outlets.length} outlets · ${bt.stuck} stuck</span>
+          ${priority.length ? `<span class="ins-today-meta">Collect first: ${priority.map(o => `${escapeHtml(o.party)} (${formatINRCompact(o.due)})`).join(', ')}</span>` : ''}`
+          : '<span class="ins-today-meta">No unpaid bills on this beat 🎉</span>'}
+        </button>`;
+    }).join('');
+    if (todayEl) todayEl.innerHTML = todayCards || '<div class="viz-empty">No beat planned for today.</div>';
+
+    if (beats.length === 0) {
+      listEl.innerHTML = '<div class="viz-empty">No outlets with money due.</div>';
+      panelEl.innerHTML = '';
+      return;
+    }
+    // Agents in the usual order (Rajesh, Shivam, Self), then anyone else found in old logs
+    const agentRank = name => {
+      const i = State.agents.findIndex(a => isSameAgent(name, a.name));
+      return i < 0 ? State.agents.length : i;
+    };
+    beats.sort((a, b) => agentRank(a.agent) - agentRank(b.agent) || b.due - a.due);
+    if (!beats.some(bt => keyOf(bt) === insightsState.beatKey)) {
+      // Default to today's beat of the first agent that has one, else the biggest due
+      const todayBtn = todayEl && todayEl.querySelector('[data-ins-beat]');
+      insightsState.beatKey = todayBtn ? todayBtn.dataset.insBeat : keyOf(beats[0]);
+    }
+
+    // Beat list grouped by agent; bar length = due, relative to the agent's biggest beat
+    const byAgent = new Map();
+    beats.forEach(bt => { if (!byAgent.has(bt.agent)) byAgent.set(bt.agent, []); byAgent.get(bt.agent).push(bt); });
+    listEl.innerHTML = Array.from(byAgent.entries()).map(([agent, list]) => {
+      const max = Math.max(...list.map(b => b.due), 1);
+      const total = list.reduce((s, b) => s + b.due, 0);
+      return `
+        <div class="ins-beat-group">
+          <div class="ins-beat-agent"><i class="fa-solid fa-user-tie"></i> ${escapeHtml(agent)} <span class="font-mono">${formatINR(total)} due</span></div>
+          ${list.map(bt => {
+            const tipId = registerVizTip(bt.beat, [
+              { cls: 'viz-route', label: 'Due on this beat', value: formatINR(bt.due), strong: true },
+              { label: 'Outlets with dues', value: String(bt.outlets.length) },
+              { label: 'Stuck / visit overdue', value: `${bt.stuck} / ${bt.visitDue}` },
+              { label: 'Visit days (30 days)', value: String(bt.visits30) },
+              { label: 'Collected (30 days)', value: formatINR(bt.collected30) }
+            ], 'ins');
+            return `
+              <button type="button" class="viz-hbar-row ins-beat-row${keyOf(bt) === insightsState.beatKey ? ' is-selected' : ''}" data-ins-beat="${escapeHtml(keyOf(bt))}" data-viz-tip="${tipId}" aria-pressed="${keyOf(bt) === insightsState.beatKey}">
+                <span class="viz-hbar-head">
+                  <span class="viz-hbar-name">${escapeHtml(bt.beat)}</span>
+                  <span class="viz-hbar-value font-mono"><strong>${formatINRCompact(bt.due)}</strong> · ${bt.outlets.length} outlets</span>
+                </span>
+                <span class="viz-hbar-track"><span class="viz-seg viz-route" style="width:${(bt.due / max) * 100}%"></span></span>
+                <span class="ins-beat-meta">${bt.stuck ? `<span class="text-danger">${bt.stuck} stuck</span> · ` : ''}${bt.visitDue ? `${bt.visitDue} visit overdue · ` : ''}last visit ${bt.lastVisit ? formatShortDate(bt.lastVisit) : '—'} · ${formatINRCompact(bt.collected30)} in 30d</span>
+              </button>`;
+          }).join('')}
+        </div>`;
+    }).join('');
+
+    // Outlet table for the selected beat
+    const bt = beats.find(b => keyOf(b) === insightsState.beatKey);
+    const counts = Object.keys(OUTLET_STATUS).map(k => ({ k, n: bt.outlets.filter(o => o.status === k).length })).filter(x => x.n);
+    panelEl.innerHTML = `
+      <div class="ins-outlet-head">
+        <div>
+          <h5>${escapeHtml(bt.beat)} <small class="text-muted">· ${escapeHtml(bt.agent)}</small></h5>
+          <span class="text-muted">${bt.outlets.length} outlets owe <strong class="text-danger">${formatINR(bt.due)}</strong> · visited on ${bt.visits30} days in the last 30 · ${formatINR(bt.collected30)} collected</span>
+        </div>
+        <div class="ins-status-counts">${counts.map(c => `${outletStatusBadge(c.k)} <span class="font-mono">${c.n}</span>`).join(' ')}</div>
+      </div>
+      <div class="table-wrap mt-2" style="max-height: 480px; overflow-y: auto;">
+        <table class="minimal-table ins-table">
+          <thead><tr><th>Outlet</th><th>Status</th><th style="text-align:right">Due</th><th>Bills</th><th>Oldest</th><th>Visits (30d)</th><th>Usual gap</th><th>Last visit</th><th>Last paid</th><th>Visits since paid</th></tr></thead>
+          <tbody>
+            ${bt.outlets.map((o, i) => {
+              const open = insightsState.openOutlet === `${insightsState.beatKey}|${i}`;
+              return `
+                <tr class="ins-outlet-row${open ? ' is-open' : ''}" data-ins-outlet="${i}" tabindex="0" aria-expanded="${open}">
+                  <td><i class="fa-solid fa-chevron-${open ? 'down' : 'right'} text-muted"></i> <strong>${escapeHtml(o.party)}</strong></td>
+                  <td>${outletStatusBadge(o.status)}</td>
+                  <td class="font-mono text-danger" style="text-align:right">${formatINR(o.due)}</td>
+                  <td>${o.openBills.length}</td>
+                  <td><span class="aging-pill ${o.oldestDays > 30 ? 'aging-critical' : o.oldestDays > 14 ? 'aging-warn' : 'aging-fresh'}">${o.oldestDays}d</span></td>
+                  <td>${o.visits30}</td>
+                  <td>${o.avgGap ? `every ~${Math.round(o.avgGap)}d` : '—'}</td>
+                  <td>${o.lastVisit ? `${formatShortDate(o.lastVisit)} <small class="text-muted">(${o.daysSinceVisit}d ago)</small>` : '—'}</td>
+                  <td>${o.lastPaid ? `${formatShortDate(o.lastPaid)} <small class="font-mono">${formatINRCompact(o.lastPaidAmt)}</small>` : '<span class="text-danger">never</span>'}</td>
+                  <td><strong class="${o.visitsSincePaid >= 3 ? 'text-danger' : ''}">${o.visitsSincePaid}</strong></td>
+                </tr>
+                ${open ? `<tr class="ins-outlet-bills"><td colspan="10">${o.openBills.map(b => `
+                  <div class="ins-outlet-bill"><strong class="font-mono">${escapeHtml(b.billNo)}</strong>
+                    <span class="font-mono text-danger">${formatINR(b.currentDue)}</span>
+                    <span>sent ${formatShortDate(b.firstOut)}</span>
+                    ${tripDotsHtml(b)}
+                    ${b.lastNote ? `<span class="ins-note">${escapeHtml(b.lastNote)}</span>` : ''}</div>`).join('')}</td></tr>` : ''}`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>`;
+
+    const selectBeat = key => {
+      insightsState.beatKey = key;
+      insightsState.openOutlet = null;
+      renderInsightsTab();
+      document.getElementById('insOutletPanel')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    };
+    document.querySelectorAll('#insBeatsCard [data-ins-beat]').forEach(btn => btn.addEventListener('click', () => selectBeat(btn.dataset.insBeat)));
+    panelEl.querySelectorAll('[data-ins-outlet]').forEach(row => {
+      const toggle = () => {
+        const key = `${insightsState.beatKey}|${row.dataset.insOutlet}`;
+        insightsState.openOutlet = insightsState.openOutlet === key ? null : key;
+        renderInsightsTab();
+      };
+      row.addEventListener('click', toggle);
+      row.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+    });
   }
 
   function exportInsightsList() {
