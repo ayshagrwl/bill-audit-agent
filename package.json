@@ -10,7 +10,7 @@
     "build:windows": "node scripts/prepare-dist.js && tauri build --target x86_64-pc-windows-msvc",
     "clasp:push": "clasp push",
     "clasp:deploy": "clasp deploy",
-    "test": "node test_suite.js && node test_scan_lookup.js"
+    "test": "node test_suite.js && node test_scan_lookup.js && node test_insights.js"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^1.6.0"

@@ -1,0 +1,20 @@
+{
+  "hosting": {
+    "site": "billaudit-pro-bfd2d3",
+    "public": "dist",
+    "ignore": [
+      "**/.*"
+    ],
+    "headers": [
+      {
+        "source": "**/*.@(html|js|css)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
+      }
+    ]
+  }
+}

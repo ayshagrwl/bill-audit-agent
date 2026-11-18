@@ -3842,3 +3842,184 @@ div.viz-hbar-row {
   background: var(--primary-light);
   font-size: 0.8rem;
 }
+
+/* ========================================================
+   WEEKLY INSIGHTS TAB
+   ======================================================== */
+.ins-filter-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.ins-week-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ins-week-nav strong {
+  min-width: 190px;
+  text-align: center;
+  font-size: 0.9rem;
+}
+
+.ins-status {
+  font-size: 0.78rem;
+}
+
+.ins-summary {
+  padding: 14px 18px;
+}
+
+.ins-summary h4 {
+  margin: 0 0 6px;
+  font-size: 0.95rem;
+}
+
+.ins-summary ul {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.ins-error {
+  color: var(--danger);
+  font-size: 0.86rem;
+}
+
+.ins-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 1100px) {
+  .ins-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.ins-kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-top: 3px solid var(--border-light);
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+
+button.ins-kpi {
+  cursor: pointer;
+}
+
+button.ins-kpi:hover,
+button.ins-kpi:focus-visible {
+  box-shadow: var(--shadow-hover);
+  outline: none;
+}
+
+.ins-kpi-good { border-top-color: var(--viz-good); }
+.ins-kpi-warn { border-top-color: var(--viz-warn); }
+.ins-kpi-crit { border-top-color: var(--viz-crit); }
+
+.ins-kpi-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+}
+
+.ins-kpi-value {
+  font-size: 1.35rem;
+  color: var(--text-main);
+}
+
+.ins-kpi-sub {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.ins-list-hint {
+  margin: 8px 0 0;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.ins-table td {
+  vertical-align: middle;
+}
+
+.ins-note {
+  max-width: 260px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.ins-sub {
+  font-size: 0.7rem;
+  color: var(--text-soft);
+  margin-top: 2px;
+}
+
+.ins-trip-dots {
+  display: inline-flex;
+  gap: 3px;
+  vertical-align: middle;
+}
+
+.ins-trip-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  cursor: help;
+}
+
+/* Came back but never scanned in: hollow ring in the outcome colour */
+.ins-trip-dot.is-unscanned {
+  background: transparent !important;
+  box-shadow: inset 0 0 0 2px var(--viz-warn);
+}
+
+.ins-trip-dot.viz-good.is-unscanned {
+  box-shadow: inset 0 0 0 2px var(--viz-good);
+}
+
+.ins-help summary {
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 0.86rem;
+}
+
+.ins-help ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.ins-help {
+  padding: 12px 16px;
+}
+
+.ins-filter-row .form-select {
+  width: auto;
+  min-width: 150px;
+}
+
+.ins-table td:first-child strong {
+  white-space: nowrap;
+}
