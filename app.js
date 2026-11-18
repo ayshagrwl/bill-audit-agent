@@ -1599,10 +1599,15 @@
     return t;
   }
 
-  function registerVizTip(title, rows) {
-    const id = `vt${++vizTipSeq}`;
+  function registerVizTip(title, rows, scope = 'home') {
+    const id = `${scope}-${++vizTipSeq}`;
     vizTips.set(id, { title, rows });
     return id;
+  }
+
+  function clearVizTips(scope) {
+    const prefix = `${scope}-`;
+    Array.from(vizTips.keys()).forEach(k => { if (k.startsWith(prefix)) vizTips.delete(k); });
   }
 
   function statusTipRows(t) {
@@ -1936,6 +1941,616 @@
     }
   }
 
+  // ========================================================
+  // INSIGHTS: trips, repeats & collections from Scan_Out / Scan_In logs
+  // ========================================================
+  // A "trip" is one dispatch date of one bill. Money collected on a trip is the drop in the
+  // bill's remaining due between Scan OUT and the Scan IN that followed it. The "Collected"
+  // column in Scan_In_Log is the bill's total paid so far (from the Master Sheet), so it
+  // cannot tell what came in on a given trip.
+
+  const PAY_MODE_RE = /^(cash|upi|online|cheque|check|neft|rtgs|imps|card|g ?pay|phone ?pe|paytm|bank|qr)$/i;
+  const GENERIC_REMARK_RE = /^(received back from agent|scanned at check-in|dispatched for route|ok|nil|na|n\/a|-)$/i;
+  const PAID_STATUS_RE = /^(PAID_FULL|PAID|RETURNED_IN_HAND)$/i;
+  // Rows written by sync jobs, not by a person scanning the bill in the evening
+  const SYSTEM_IN_ROW_RE = /^(auto-healed|audit complete)/i;
+  const CHECKED_IN_STATUS_RE = /^(RECEIVED|PAID_FULL|PAID_PARTIAL|PAID|RETURNED_IN_HAND)$/i;
+
+  function canonicalAgentName(raw) {
+    const name = String(raw || '').trim();
+    if (!name) return 'Unassigned';
+    const known = (State.agents || []).find(a => isSameAgent(name, a.name));
+    if (known) return known.name;
+    const low = name.toLowerCase();
+    if (low.includes('shivam')) return 'Shivam';
+    if (low.includes('rajesh')) return 'Rajesh';
+    if (low.includes('self')) return 'Self';
+    return name;
+  }
+
+  function parseLogNumber(v) {
+    if (v === null || v === undefined || v === '') return null;
+    const n = parseFloat(String(v).replace(/[₹,\s]/g, ''));
+    return isNaN(n) ? null : n;
+  }
+
+  function mapOutLogRow(r) {
+    return {
+      ts: String(r[0] || ''),
+      billNo: String(r[1] || '').trim(),
+      agent: String(r[2] || '').trim(),
+      party: String(r[3] || '').trim(),
+      amount: parseLogNumber(r[4]),
+      date: normalizeDateString(r[5]) || normalizeDateString(r[0]),
+      dueOut: parseLogNumber(r[6]),
+      beat: String(r[10] || '').trim()
+    };
+  }
+
+  function mapInLogRow(r) {
+    return {
+      ts: String(r[0] || ''),
+      billNo: String(r[1] || '').trim(),
+      agent: String(r[2] || '').trim(),
+      party: String(r[3] || '').trim(),
+      amount: parseLogNumber(r[4]),
+      dueIn: parseLogNumber(r[6]),
+      mode: String(r[7] || '').trim(),
+      receipt: String(r[8] || '').trim(),
+      status: String(r[9] || '').trim().toUpperCase(),
+      reason: String(r[10] || '').trim(),
+      remarks: String(r[11] || '').trim()
+    };
+  }
+
+  /** The agent's note on why nothing came in (reasons often get typed into Payment Mode). */
+  function extractTripNote(inRow) {
+    if (SYSTEM_IN_ROW_RE.test(inRow.remarks)) return '';
+    if (inRow.reason) return inRow.reason;
+    if (inRow.mode && !PAY_MODE_RE.test(inRow.mode) && !/^R?\s*\d+$/i.test(inRow.mode)) return inRow.mode;
+    if (inRow.remarks && !GENERIC_REMARK_RE.test(inRow.remarks)) return inRow.remarks;
+    return '';
+  }
+
+  function daysBetween(fromDate, toDate) {
+    const a = normalizeDateString(fromDate);
+    const b = normalizeDateString(toDate);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(a) || !/^\d{4}-\d{2}-\d{2}$/.test(b)) return 0;
+    const [y1, m1, d1] = a.split('-').map(Number);
+    const [y2, m2, d2] = b.split('-').map(Number);
+    return Math.round((new Date(y2, m2 - 1, d2) - new Date(y1, m1 - 1, d1)) / 86400000);
+  }
+
+  /**
+   * Builds one record per bill with its trips and flags.
+   * Each trip: date, agent, outcome ('paid' | 'noPay' | 'out'), whether it was scanned in,
+   * money collected on that trip, and the agent's note.
+   * - A trip came back if it was scanned in, if the bill went out again later (then it came
+   *   back without a Scan IN), or, for the latest trip, if Live_Custody shows it checked in.
+   * - Collected on a trip = due at dispatch minus the next known due (Scan IN, next dispatch,
+   *   or the Master Sheet for the latest trip).
+   * Flags: blocked (2+ trips, nothing collected, still due), missing (latest trip not back
+   * after a day), paymentCheck (Scan IN reported less due than the Master Sheet shows).
+   */
+  function buildBillInsights(outRows, inRows, opts = {}) {
+    const today = opts.today || getTodayDateString();
+    const getMaster = opts.getMaster || (() => null);
+    const getCustody = opts.getCustody || (() => null);
+    const byBill = new Map();
+    const entry = row => {
+      const key = normalizeInvoiceNumber(row.billNo);
+      if (!key) return null;
+      if (!byBill.has(key)) byBill.set(key, { outs: [], ins: [] });
+      return byBill.get(key);
+    };
+    const tsOf = row => {
+      const t = Date.parse(row.ts);
+      return isNaN(t) ? Date.parse(`${row.date || ''}T00:00:00`) || 0 : t;
+    };
+    outRows.forEach(r => { const e = entry(r); if (e) e.outs.push({ ...r, t: tsOf(r) }); });
+    inRows.forEach(r => {
+      if (SYSTEM_IN_ROW_RE.test(r.remarks)) return;
+      const e = entry(r);
+      if (e) e.ins.push({ ...r, t: tsOf(r) });
+    });
+
+    const bills = [];
+    byBill.forEach(({ outs, ins }) => {
+      if (outs.length === 0) return;
+      outs.sort((a, b) => a.t - b.t);
+      ins.sort((a, b) => a.t - b.t);
+
+      const lastOutRow = outs[outs.length - 1];
+      const mm = getMaster(lastOutRow.billNo);
+      const custody = getCustody(lastOutRow.billNo);
+      const sheetDue = mm && mm.outstanding !== undefined && mm.outstanding !== null && mm.outstanding !== '' && !isNaN(mm.outstanding)
+        ? Number(mm.outstanding) : null;
+
+      // Several Scan OUT rows on the same date are the same trip
+      const tripsByDate = new Map();
+      outs.forEach(o => { if (o.date && !tripsByDate.has(o.date)) tripsByDate.set(o.date, o); });
+      const tripRows = Array.from(tripsByDate.values()).sort((a, b) => a.t - b.t);
+
+      const trips = tripRows.map((o, i) => {
+        const next = tripRows[i + 1];
+        const end = next ? next.t : Infinity;
+        const tripIns = ins.filter(r => r.t >= o.t - 60000 && r.t < end);
+        const dueOut = o.dueOut !== null ? o.dueOut : (o.amount || 0);
+        const trip = { date: o.date, agent: canonicalAgentName(o.agent), dueOut, scanned: tripIns.length > 0, back: false, collected: 0, dueIn: null, note: '', inDate: '' };
+
+        let dueAfter = null;
+        if (trip.scanned) {
+          const last = tripIns[tripIns.length - 1];
+          trip.back = true;
+          trip.dueIn = last.dueIn !== null ? last.dueIn : (PAID_STATUS_RE.test(last.status) ? 0 : dueOut);
+          trip.note = tripIns.map(extractTripNote).filter(Boolean).pop() || '';
+          trip.inDate = normalizeDateString(last.ts);
+          dueAfter = trip.dueIn;
+        } else if (next) {
+          trip.back = true; // went out again, so it came back without a Scan IN
+          dueAfter = next.dueOut !== null ? next.dueOut : null;
+        } else if (custody && CHECKED_IN_STATUS_RE.test(String(custody.status || '')) &&
+                   normalizeDateString(custody.lastActionDate || '') >= o.date) {
+          trip.back = true; // checked in per Live_Custody
+          trip.inDate = normalizeDateString(custody.lastActionDate || '');
+        }
+        if (dueAfter === null && !next && sheetDue !== null) dueAfter = sheetDue;
+        trip.collected = dueAfter !== null ? Math.max(0, dueOut - dueAfter) : 0;
+        trip.outcome = trip.collected > 0 ? 'paid' : (trip.back ? 'noPay' : 'out');
+        return trip;
+      });
+
+      const lastIn = ins[ins.length - 1];
+      const lastTrip = trips[trips.length - 1];
+      const lastKnownDue = lastTrip.dueIn !== null ? lastTrip.dueIn : lastTrip.dueOut;
+      const currentDue = sheetDue !== null ? sheetDue : lastKnownDue;
+      const collectedTotal = trips.reduce((s, t) => s + t.collected, 0);
+      const daysSinceLastOut = daysBetween(lastTrip.date, today);
+      const daysSinceLastIn = lastTrip.scanned ? daysBetween(lastTrip.inDate, today) : null;
+
+      bills.push({
+        billNo: lastOutRow.billNo,
+        party: (mm && mm.party) || [...outs, ...ins].reverse().map(r => r.party).find(Boolean) || '',
+        agent: canonicalAgentName(lastOutRow.agent || (lastIn && lastIn.agent)),
+        amount: (mm && Number(mm.amount)) || lastOutRow.amount || 0,
+        trips,
+        tripCount: trips.length,
+        unscannedReturns: trips.filter(t => t.back && !t.scanned).length,
+        firstOut: trips[0].date,
+        lastOut: lastTrip.date,
+        collectedTotal,
+        currentDue,
+        sheetDue,
+        lastNote: trips.map(t => t.note).filter(Boolean).pop() || '',
+        daysSinceLastOut,
+        blocked: trips.length >= 2 && collectedTotal <= 0 && currentDue > 0,
+        missing: !lastTrip.back && daysSinceLastOut >= 1,
+        paymentCheck: lastTrip.scanned && sheetDue !== null && lastTrip.dueIn !== null &&
+          sheetDue - lastTrip.dueIn > 1 && daysSinceLastIn >= 2
+      });
+    });
+    return bills;
+  }
+
+  /** Monday-based week window for an offset from the current week (0 = this week). */
+  function getInsightsWeek(offset = 0, todayStr = getTodayDateString()) {
+    const [y, m, d] = todayStr.split('-').map(Number);
+    const today = new Date(y, m - 1, d);
+    const monday = new Date(today);
+    monday.setDate(today.getDate() - ((today.getDay() + 6) % 7) + offset * 7);
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+    const fmt = dt => `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+    return { start: fmt(monday), end: fmt(sunday), startDate: monday, endDate: sunday };
+  }
+
+  /** Trip outcomes in a date window, per agent and in total. */
+  function summarizeTrips(bills, start, end, agentFilter = 'ALL') {
+    const blank = () => ({ trips: 0, back: 0, notBack: 0, paid: 0, backNoPay: 0, unscanned: 0, collected: 0, valueOut: 0, repeats: 0 });
+    const total = blank();
+    const perAgent = new Map();
+    bills.forEach(b => {
+      b.trips.forEach((t, i) => {
+        if (t.date < start || t.date > end) return;
+        const agent = t.agent || b.agent;
+        if (agentFilter !== 'ALL' && !isSameAgent(agent, agentFilter)) return;
+        if (!perAgent.has(agent)) perAgent.set(agent, blank());
+        [total, perAgent.get(agent)].forEach(s => {
+          s.trips++;
+          s.valueOut += t.dueOut || 0;
+          if (i > 0) s.repeats++;
+          s.collected += t.collected;
+          if (t.back) s.back++;
+          if (t.back && !t.scanned) s.unscanned++;
+          if (t.outcome === 'paid') s.paid++;
+          else if (t.outcome === 'noPay') s.backNoPay++;
+          else s.notBack++;
+        });
+      });
+    });
+    return { total, perAgent };
+  }
+
+  /** Outlets (parties) with money still due, worst first. */
+  function summarizeOutlets(bills, today = getTodayDateString()) {
+    const map = new Map();
+    bills.forEach(b => {
+      if (!(b.currentDue > 0)) return;
+      const key = String(b.party || 'Unknown outlet').trim().toLowerCase().replace(/\s+/g, ' ');
+      if (!map.has(key)) map.set(key, { party: b.party || 'Unknown outlet', agents: new Set(), bills: [], due: 0, maxTrips: 0, oldest: b.firstOut, collected30: 0 });
+      const o = map.get(key);
+      o.bills.push(b);
+      o.due += b.currentDue;
+      o.maxTrips = Math.max(o.maxTrips, b.tripCount);
+      if (b.agent) o.agents.add(b.agent);
+      if (b.firstOut < o.oldest) o.oldest = b.firstOut;
+      b.trips.forEach(t => { if (daysBetween(t.date, today) <= 30) o.collected30 += t.collected; });
+    });
+    return Array.from(map.values()).sort((a, b) => b.due - a.due);
+  }
+
+  const TRIP_OUTCOMES = [
+    { key: 'out', label: 'Not back yet', cls: 'viz-crit', icon: 'fa-person-walking-luggage' },
+    { key: 'noPay', label: 'Came back, nothing collected', cls: 'viz-warn', icon: 'fa-rotate-left' },
+    { key: 'paid', label: 'Money collected', cls: 'viz-good', icon: 'fa-indian-rupee-sign' }
+  ];
+
+  const insightsState = { logs: null, fetchedAt: 0, loading: false, error: '', bills: [], weekOffset: 0, agent: 'ALL', list: 'BLOCKED', search: '' };
+
+  function formatShortDate(dateStr) {
+    const n = normalizeDateString(dateStr);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(n)) return dateStr || '-';
+    const [y, m, d] = n.split('-').map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+  }
+
+  async function loadInsightsLogs(force = false) {
+    const url = State.settings.trackingSheetScriptUrl;
+    if (!url) {
+      insightsState.error = 'Tracking Sheet script URL is not set (Settings & Sync).';
+      return;
+    }
+    if (!force && insightsState.logs && Date.now() - insightsState.fetchedAt < 10 * 60 * 1000) return;
+    insightsState.loading = true;
+    insightsState.error = '';
+    renderInsightsTab();
+    try {
+      const resp = await fetch(`${url}?action=GET_LOGS&days=120&t=${Date.now()}`);
+      const data = await resp.json();
+      if (!data || !Array.isArray(data.out) || !Array.isArray(data.in)) {
+        throw new Error('The Tracking Sheet script does not support GET_LOGS yet — redeploy it (npm run clasp:push, then npm run clasp:deploy).');
+      }
+      insightsState.logs = { out: data.out.map(mapOutLogRow), in: data.in.map(mapInLogRow) };
+      insightsState.fetchedAt = Date.now();
+    } catch (err) {
+      insightsState.error = err && err.message ? err.message : String(err);
+    } finally {
+      insightsState.loading = false;
+    }
+  }
+
+  function rebuildInsights() {
+    if (!insightsState.logs) { insightsState.bills = []; return; }
+    const custodyByBill = new Map((State.bills || []).map(b => [normalizeInvoiceNumber(b.billNo), b]));
+    insightsState.bills = buildBillInsights(insightsState.logs.out, insightsState.logs.in, {
+      getMaster: billNo => findMasterBill(billNo),
+      getCustody: billNo => custodyByBill.get(normalizeInvoiceNumber(billNo)) || null
+    });
+  }
+
+  async function openInsightsTab(force = false) {
+    await loadInsightsLogs(force);
+    rebuildInsights();
+    renderInsightsTab();
+  }
+
+  function insightsWeekLabel(offset) {
+    const w = getInsightsWeek(offset);
+    const range = `${formatShortDate(w.start)} – ${formatShortDate(w.end)}`;
+    if (offset === 0) return `This week · ${range}`;
+    if (offset === -1) return `Last week · ${range}`;
+    return range;
+  }
+
+  function tripCountsForChart(stats) {
+    return { out: stats.notBack, noPay: stats.backNoPay, paid: stats.paid };
+  }
+
+  function tripTipRows(stats) {
+    return [
+      { cls: 'viz-good', label: 'trips collected money', value: String(stats.paid) },
+      { cls: 'viz-warn', label: 'came back, nothing collected', value: String(stats.backNoPay) },
+      { cls: 'viz-crit', label: 'not back yet', value: String(stats.notBack) },
+      { label: `collected on these trips`, value: formatINR(stats.collected), strong: true },
+      { label: `value sent out · ${stats.trips} trips`, value: formatINR(stats.valueOut) }
+    ];
+  }
+
+  function tripStackHtml(counts, scaleMax, vertical) {
+    if (scaleMax <= 0) return '';
+    return TRIP_OUTCOMES.map(o => {
+      const v = counts[o.key];
+      if (!v) return '';
+      return `<span class="viz-seg ${o.cls}" style="${vertical ? 'height' : 'width'}:${(v / scaleMax) * 100}%"></span>`;
+    }).join('');
+  }
+
+  function renderInsightsTab() {
+    const root = document.getElementById('tab-insights');
+    if (!root) return;
+    ensureVizTooltip();
+    clearVizTips('ins');
+
+    const legendHtml = TRIP_OUTCOMES.map(o => `<span class="viz-legend-item"><span class="viz-swatch ${o.cls}"></span><i class="fa-solid ${o.icon}"></i> ${o.label}</span>`).join('');
+    root.querySelectorAll('[data-viz-legend="trip"]').forEach(el => { el.innerHTML = legendHtml; });
+    root.querySelectorAll('[data-viz-legend="trip-dots"]').forEach(el => {
+      el.innerHTML = `<span class="viz-legend-item">Each dot is one trip:</span>${legendHtml}<span class="viz-legend-item"><span class="ins-trip-dot is-unscanned"></span> hollow = came back without Scan IN</span>`;
+    });
+
+    const agentSel = document.getElementById('insAgentFilter');
+    if (agentSel && agentSel.options.length <= 1) {
+      State.agents.forEach(a => {
+        const opt = document.createElement('option');
+        opt.value = a.name;
+        opt.textContent = a.name;
+        agentSel.appendChild(opt);
+      });
+    }
+    if (agentSel) agentSel.value = insightsState.agent;
+
+    const weekLabel = document.getElementById('insWeekLabel');
+    if (weekLabel) weekLabel.textContent = insightsWeekLabel(insightsState.weekOffset);
+    const nextBtn = document.getElementById('insWeekNext');
+    if (nextBtn) nextBtn.disabled = insightsState.weekOffset >= 0;
+
+    const statusEl = document.getElementById('insStatus');
+    if (statusEl) {
+      if (insightsState.loading) statusEl.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Loading logs…';
+      else if (insightsState.error) statusEl.textContent = '';
+      else if (insightsState.fetchedAt) statusEl.textContent = `Logs loaded ${new Date(insightsState.fetchedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })} · last 120 days`;
+    }
+
+    const summaryEl = document.getElementById('insSummary');
+    if (insightsState.error && !insightsState.logs) {
+      if (summaryEl) {
+        summaryEl.textContent = '';
+        const msg = document.createElement('div');
+        msg.className = 'ins-error';
+        msg.textContent = `Could not load the Scan OUT / Scan IN logs: ${insightsState.error}`;
+        summaryEl.appendChild(msg);
+      }
+      return;
+    }
+    if (!insightsState.logs) {
+      if (summaryEl) summaryEl.innerHTML = '<span class="text-muted"><i class="fa-solid fa-spinner fa-spin"></i> Loading Scan OUT / Scan IN logs…</span>';
+      return;
+    }
+
+    const agent = insightsState.agent;
+    const bills = insightsState.bills.filter(b => agent === 'ALL' || isSameAgent(b.agent, agent));
+    const week = getInsightsWeek(insightsState.weekOffset);
+    const prevWeek = getInsightsWeek(insightsState.weekOffset - 1);
+    const { total: wk, perAgent } = summarizeTrips(insightsState.bills, week.start, week.end, agent);
+    const prev = summarizeTrips(insightsState.bills, prevWeek.start, prevWeek.end, agent).total;
+
+    const blocked = bills.filter(b => b.blocked);
+    const missing = bills.filter(b => b.missing);
+    const payment = bills.filter(b => b.paymentCheck);
+    const outlets = summarizeOutlets(bills);
+    const multiOutlets = outlets.filter(o => o.bills.length >= 2);
+
+    // Plain-language summary
+    if (summaryEl) {
+      const who = agent === 'ALL' ? 'Agents' : agent;
+      const lines = [];
+      if (wk.trips === 0) {
+        lines.push(`No bills were sent out ${insightsState.weekOffset === 0 ? 'so far this week' : 'in this week'}.`);
+      } else {
+        const delta = prev.collected > 0 ? Math.round(((wk.collected - prev.collected) / prev.collected) * 100) : null;
+        lines.push(`${who} took <strong>${wk.trips} bill trips</strong> worth ${formatINR(wk.valueOut)} out. <strong>${wk.paid}</strong> of them brought money back — <strong>${formatINR(wk.collected)}</strong> collected${delta !== null ? ` (${delta >= 0 ? '+' : ''}${delta}% vs the week before)` : ''}.`);
+        if (wk.repeats > 0) lines.push(`<strong>${wk.repeats}</strong> of these trips were bills that had already gone out before.`);
+        if (wk.backNoPay > 0) lines.push(`<strong>${wk.backNoPay}</strong> came back with nothing collected${wk.unscanned > 0 ? `, and <strong>${wk.unscanned}</strong> came back without anyone scanning them in` : ''}.`);
+        if (wk.notBack > 0) lines.push(`<strong>${wk.notBack}</strong> are not back yet.`);
+      }
+      if (blocked.length > 0) {
+        const blockedDue = blocked.reduce((s, b) => s + b.currentDue, 0);
+        lines.push(`⛔ <strong>${blocked.length} bills are blocked</strong> — sent 2+ times with nothing collected, ${formatINR(blockedDue)} stuck.`);
+      }
+      if (multiOutlets.length > 0) {
+        const top = multiOutlets[0];
+        lines.push(`🏪 <strong>${multiOutlets.length} outlets</strong> have 2 or more unpaid bills. Biggest: <strong>${escapeHtml(top.party)}</strong> — ${top.bills.length} bills, ${formatINR(top.due)} due.`);
+      }
+      summaryEl.innerHTML = `<h4><i class="fa-solid fa-clipboard-list"></i> ${escapeHtml(insightsWeekLabel(insightsState.weekOffset))}${agent === 'ALL' ? '' : ` · ${escapeHtml(agent)}`}</h4><ul>${lines.map(l => `<li>${l}</li>`).join('')}</ul>`;
+    }
+
+    // KPI tiles
+    const kpis = document.getElementById('insKpis');
+    if (kpis) {
+      const rate = wk.trips > 0 ? Math.round((wk.paid / wk.trips) * 100) : 0;
+      const tiles = [
+        { label: 'Bill trips sent', value: wk.trips, sub: `${formatINR(wk.valueOut)} · ${wk.repeats} repeats`, tone: '' },
+        { label: 'Collected on trips', value: formatINR(wk.collected), sub: `${wk.paid} trips paid · ${rate}% of trips`, tone: 'good' },
+        { label: 'Back, nothing collected', value: wk.backNoPay, sub: `${wk.unscanned} came back without Scan IN`, tone: 'warn' },
+        { label: 'Not back yet', value: wk.notBack, sub: 'from this week', tone: 'crit' },
+        { label: 'Blocked bills (all time)', value: blocked.length, sub: `${formatINR(blocked.reduce((s, b) => s + b.currentDue, 0))} stuck`, tone: 'crit', list: 'BLOCKED' }
+      ];
+      kpis.innerHTML = tiles.map(t => `
+        <${t.list ? 'button type="button"' : 'div'} class="ins-kpi ${t.tone ? `ins-kpi-${t.tone}` : ''}" ${t.list ? `data-ins-goto="${t.list}"` : ''}>
+          <span class="ins-kpi-label">${t.label}</span>
+          <strong class="ins-kpi-value font-mono">${t.value}</strong>
+          <span class="ins-kpi-sub">${t.sub}</span>
+        </${t.list ? 'button' : 'div'}>`).join('');
+      kpis.querySelectorAll('[data-ins-goto]').forEach(btn => btn.addEventListener('click', () => {
+        insightsState.list = btn.dataset.insGoto;
+        renderInsightsTab();
+        document.getElementById('insListCard')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }));
+    }
+
+    // Agent chart (selected week)
+    const agentEl = document.getElementById('insAgentChart');
+    if (agentEl) {
+      const rows = Array.from(perAgent.entries()).sort((a, b) => b[1].trips - a[1].trips);
+      if (rows.length === 0) {
+        agentEl.innerHTML = '<div class="viz-empty">No bill trips in this week.</div>';
+      } else {
+        const max = Math.max(...rows.map(r => r[1].trips));
+        agentEl.innerHTML = rows.map(([name, st]) => {
+          const tipId = registerVizTip(name, tripTipRows(st), 'ins');
+          return `
+            <button type="button" class="viz-hbar-row${agent !== 'ALL' && !isSameAgent(name, agent) ? ' is-dimmed' : ''}" data-viz-tip="${tipId}" data-ins-agent="${escapeHtml(name)}" aria-label="${escapeHtml(`${name}: ${st.trips} trips, ${st.paid} collected money (${formatINR(st.collected)}), ${st.backNoPay} came back with nothing, ${st.notBack} not back`)}">
+              <span class="viz-hbar-head">
+                <span class="viz-hbar-name">${escapeHtml(name)}</span>
+                <span class="viz-hbar-value font-mono"><strong>${formatINR(st.collected)}</strong> collected · ${st.paid}/${st.trips} trips paid</span>
+              </span>
+              <span class="viz-hbar-track">${tripStackHtml(tripCountsForChart(st), max, false)}</span>
+            </button>`;
+        }).join('');
+        agentEl.querySelectorAll('[data-ins-agent]').forEach(btn => btn.addEventListener('click', () => {
+          const name = btn.dataset.insAgent;
+          insightsState.agent = State.agents.some(a => a.name === name) ? (insightsState.agent === name ? 'ALL' : name) : 'ALL';
+          renderInsightsTab();
+        }));
+      }
+    }
+
+    // 8-week trend
+    const trendEl = document.getElementById('insWeekTrend');
+    if (trendEl) {
+      // 8 weeks ending at this week, or 3 weeks past the selected one when browsing back
+      const base = Math.min(0, insightsState.weekOffset + 3);
+      const offsets = Array.from({ length: 8 }, (_, i) => base - 7 + i);
+      const data = offsets.map(off => {
+        const w = getInsightsWeek(off);
+        return { off, w, st: summarizeTrips(insightsState.bills, w.start, w.end, agent).total };
+      });
+      const maxTrips = Math.max(0, ...data.map(d => d.st.trips));
+      if (maxTrips === 0) {
+        trendEl.innerHTML = '<div class="viz-empty">No bill trips in these weeks.</div>';
+      } else {
+        const scaleMax = niceCeil(maxTrips);
+        const grid = [1, 0.5, 0].map(f => `<div class="viz-grid-line" style="bottom:${f * 100}%"><span>${Math.round(scaleMax * f)}</span></div>`).join('');
+        const cols = data.map(d => {
+          const tipId = registerVizTip(insightsWeekLabel(d.off), tripTipRows(d.st), 'ins');
+          const sel = d.off === insightsState.weekOffset;
+          return `
+            <button type="button" class="viz-col${sel ? ' is-selected' : ''}" data-viz-tip="${tipId}" data-ins-week="${d.off}" aria-pressed="${sel}" aria-label="${escapeHtml(`${insightsWeekLabel(d.off)}: ${d.st.trips} trips, ${formatINR(d.st.collected)} collected`)}">
+              <span class="viz-col-plot">
+                <span class="viz-col-stack" style="height:${(d.st.trips / scaleMax) * 100}%">${tripStackHtml(tripCountsForChart(d.st), d.st.trips, true)}</span>
+              </span>
+              <span class="viz-col-x"><strong>${formatShortDate(d.w.start)}</strong><small>${formatINRCompact(d.st.collected)}</small></span>
+            </button>`;
+        }).join('');
+        trendEl.innerHTML = `<div class="viz-trend-plot"><div class="viz-grid-lines">${grid}</div><div class="viz-cols">${cols}</div></div>`;
+        trendEl.querySelectorAll('[data-ins-week]').forEach(btn => btn.addEventListener('click', () => {
+          insightsState.weekOffset = Number(btn.dataset.insWeek);
+          renderInsightsTab();
+        }));
+      }
+    }
+
+    renderInsightsList({ blocked, missing, payment, outlets });
+  }
+
+  function tripDotsHtml(b) {
+    return `<span class="ins-trip-dots">${b.trips.map(t => {
+      const o = TRIP_OUTCOMES.find(x => x.key === t.outcome);
+      const tipId = registerVizTip(`Trip on ${formatShortDate(t.date)} · ${t.agent}`, [
+        { cls: o.cls, label: t.back && !t.scanned ? `${o.label} (no Scan IN)` : o.label, value: t.collected > 0 ? formatINR(t.collected) : '' },
+        { label: 'Due when sent', value: formatINR(t.dueOut) },
+        ...(t.note ? [{ label: 'Note', value: t.note }] : [])
+      ], 'ins');
+      return `<span class="ins-trip-dot ${o.cls}${t.back && !t.scanned ? ' is-unscanned' : ''}" tabindex="0" data-viz-tip="${tipId}" aria-label="${escapeHtml(`${formatShortDate(t.date)}: ${o.label}`)}"></span>`;
+    }).join('')}</span>`;
+  }
+
+  function renderInsightsList({ blocked, missing, payment, outlets }) {
+    const head = document.getElementById('insListHead');
+    const body = document.getElementById('insListBody');
+    const hint = document.getElementById('insListHint');
+    if (!head || !body) return;
+
+    const counts = { BLOCKED: blocked.length, MISSING: missing.length, PAYMENT: payment.length, OUTLETS: outlets.length };
+    document.querySelectorAll('[data-ins-count]').forEach(el => { el.textContent = counts[el.dataset.insCount]; });
+    document.querySelectorAll('#insListTabs [data-ins-list]').forEach(btn => btn.classList.toggle('active', btn.dataset.insList === insightsState.list));
+
+    const q = insightsState.search.trim().toLowerCase();
+    const matchBill = b => !q || [b.billNo, b.party, b.agent, b.lastNote].some(v => String(v || '').toLowerCase().includes(q));
+    const billCell = b => `<td><strong class="font-mono">${escapeHtml(b.billNo)}</strong></td>`;
+    let columns = [];
+    let rows = [];
+    let csvRows = [];
+
+    if (insightsState.list === 'BLOCKED') {
+      if (hint) hint.textContent = 'Sent out 2 or more times, nothing collected on any trip, money still due. Most trips first — decide: call the outlet, stop re-sending, or take back the bill.';
+      columns = ['Bill', 'Outlet', 'Agent', 'Trips', 'First sent', 'Due now', 'Last note'];
+      const list = blocked.filter(matchBill).sort((a, b) => b.tripCount - a.tripCount || b.currentDue - a.currentDue);
+      rows = list.map(b => `<tr>${billCell(b)}<td>${escapeHtml(b.party)}</td><td>${escapeHtml(b.agent)}</td><td style="white-space:nowrap">${tripDotsHtml(b)} <strong>${b.tripCount}</strong></td><td>${formatShortDate(b.firstOut)}</td><td class="font-mono text-danger" style="text-align:right">${formatINR(b.currentDue)}</td><td class="ins-note">${escapeHtml(b.lastNote || '—')}</td></tr>`);
+      csvRows = list.map(b => [b.billNo, b.party, b.agent, b.tripCount, b.firstOut, b.currentDue, b.lastNote]);
+    } else if (insightsState.list === 'MISSING') {
+      if (hint) hint.textContent = 'Latest trip has no Scan IN after a day or more and the bill is not checked in on Live_Custody. Ask the agent where the bill is.';
+      columns = ['Bill', 'Outlet', 'Agent', 'Sent on', 'Days out', 'Due now', 'Trips'];
+      const list = missing.filter(matchBill).sort((a, b) => b.daysSinceLastOut - a.daysSinceLastOut || b.currentDue - a.currentDue);
+      rows = list.map(b => `<tr>${billCell(b)}<td>${escapeHtml(b.party)}</td><td>${escapeHtml(b.agent)}</td><td>${formatShortDate(b.lastOut)}</td><td><span class="aging-pill ${b.daysSinceLastOut > 7 ? 'aging-critical' : b.daysSinceLastOut > 3 ? 'aging-warn' : 'aging-fresh'}">${b.daysSinceLastOut}d</span></td><td class="font-mono" style="text-align:right">${formatINR(b.currentDue)}</td><td>${tripDotsHtml(b)}</td></tr>`);
+      csvRows = list.map(b => [b.billNo, b.party, b.agent, b.lastOut, b.daysSinceLastOut, b.currentDue, b.tripCount]);
+    } else if (insightsState.list === 'PAYMENT') {
+      if (hint) hint.textContent = 'At Scan IN the agent reported less due than the Master Sheet still shows (2+ days later). A collected payment may not have been entered in the sheet.';
+      columns = ['Bill', 'Outlet', 'Agent', 'Scanned in', 'Due at Scan IN', 'Due in sheet', 'Gap'];
+      const list = payment.filter(matchBill).sort((a, b) => (b.sheetDue - b.trips[b.trips.length - 1].dueIn) - (a.sheetDue - a.trips[a.trips.length - 1].dueIn));
+      rows = list.map(b => {
+        const t = b.trips[b.trips.length - 1];
+        return `<tr>${billCell(b)}<td>${escapeHtml(b.party)}</td><td>${escapeHtml(b.agent)}</td><td>${formatShortDate(t.inDate)}</td><td class="font-mono" style="text-align:right">${formatINR(t.dueIn)}</td><td class="font-mono" style="text-align:right">${formatINR(b.sheetDue)}</td><td class="font-mono text-danger" style="text-align:right">${formatINR(b.sheetDue - t.dueIn)}</td></tr>`;
+      });
+      csvRows = list.map(b => { const t = b.trips[b.trips.length - 1]; return [b.billNo, b.party, b.agent, t.inDate, t.dueIn, b.sheetDue, b.sheetDue - t.dueIn]; });
+    } else {
+      if (hint) hint.textContent = 'Outlets with money still due, biggest first. Outlets with several unpaid bills are where a single visit or call can clear the most.';
+      columns = ['Outlet', 'Agent', 'Unpaid bills', 'Due now', 'Most trips', 'Oldest sent', 'Collected (30 days)'];
+      const list = outlets.filter(o => !q || o.party.toLowerCase().includes(q) || o.bills.some(matchBill));
+      rows = list.map(o => `<tr><td><strong>${escapeHtml(o.party)}</strong><div class="ins-sub font-mono">${o.bills.slice(0, 4).map(b => escapeHtml(b.billNo)).join(', ')}${o.bills.length > 4 ? '…' : ''}</div></td><td>${escapeHtml(Array.from(o.agents).join(', '))}</td><td><strong>${o.bills.length}</strong></td><td class="font-mono text-danger" style="text-align:right">${formatINR(o.due)}</td><td>${o.maxTrips}</td><td>${formatShortDate(o.oldest)}</td><td class="font-mono" style="text-align:right">${formatINR(o.collected30)}</td></tr>`);
+      csvRows = list.map(o => [o.party, Array.from(o.agents).join(' / '), o.bills.length, o.due, o.maxTrips, o.oldest, o.collected30]);
+    }
+
+    head.innerHTML = `<tr>${columns.map(c => `<th${/Due|Gap|Collected/.test(c) ? ' style="text-align:right"' : ''}>${c}</th>`).join('')}</tr>`;
+    const limit = 200;
+    body.innerHTML = rows.length === 0
+      ? `<tr class="empty-row"><td colspan="${columns.length}" style="text-align:center;padding:24px">🎉 Nothing here${q ? ' for this search' : ''}.</td></tr>`
+      : rows.slice(0, limit).join('') + (rows.length > limit ? `<tr class="empty-row"><td colspan="${columns.length}">Showing ${limit} of ${rows.length} — search or export to see all.</td></tr>` : '');
+    insightsState.csv = { columns, rows: csvRows };
+  }
+
+  function exportInsightsList() {
+    const data = insightsState.csv;
+    if (!data || data.rows.length === 0) {
+      showToast('Nothing to export in this list', 'info');
+      return;
+    }
+    const cell = v => {
+      let str = String(v === null || v === undefined ? '' : v);
+      if (/^[=+\-@]/.test(str)) str = `'${str}`;
+      return `"${str.replace(/"/g, '""')}"`;
+    };
+    const csv = [data.columns.map(cell).join(','), ...data.rows.map(r => r.map(cell).join(','))].join('\n');
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    link.download = `BillAudit_${insightsState.list}_${getTodayDateString()}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }
+
+  function setupInsightsListeners() {
+    document.getElementById('insWeekPrev')?.addEventListener('click', () => { insightsState.weekOffset--; renderInsightsTab(); });
+    document.getElementById('insWeekNext')?.addEventListener('click', () => { insightsState.weekOffset = Math.min(0, insightsState.weekOffset + 1); renderInsightsTab(); });
+    document.getElementById('insAgentFilter')?.addEventListener('change', e => { insightsState.agent = e.target.value; renderInsightsTab(); });
+    document.getElementById('insRefreshBtn')?.addEventListener('click', () => openInsightsTab(true));
+    document.getElementById('insSearchInput')?.addEventListener('input', e => { insightsState.search = e.target.value; renderInsightsTab(); });
+    document.getElementById('insExportBtn')?.addEventListener('click', exportInsightsList);
+    document.querySelectorAll('#insListTabs [data-ins-list]').forEach(btn => btn.addEventListener('click', () => {
+      insightsState.list = btn.dataset.insList;
+      renderInsightsTab();
+    }));
+  }
+
   function focusActiveScannerInput() {
     setTimeout(() => {
       if (State.activeTab === 'tab-dispatch') {
@@ -2163,7 +2778,7 @@
     } else if (outstanding > 0 && amount > 0 && (outstanding < amount || isPartialRemark)) {
       const paidAmt = Math.max(0, amount - outstanding);
       paymentBadge = `
-        <span class="badge-payment-partial"><i class="fa-solid fa-circle-half-stroke"></i> Partial Paid (${formatINR(paidAmt)})</span>
+        <span class="badge-payment-partial" title="Paid on earlier visits, as recorded in the Master Sheet — not collected on this trip"><i class="fa-solid fa-circle-half-stroke"></i> Paid earlier (sheet): ${formatINR(paidAmt)}</span>
         <span class="badge-payment-due"><i class="fa-solid fa-coins"></i> Due: ${formatINR(outstanding)}</span>
       `;
     } else if (outstanding > 0) {
@@ -5868,6 +6483,8 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       renderLeftOutTab();
     } else if (tabId === 'tab-settings') {
       renderAgentsManager();
+    } else if (tabId === 'tab-insights') {
+      openInsightsTab();
     }
   }
 
@@ -6017,7 +6634,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       }
     }
 
-    vizTips.clear();
+    clearVizTips('home');
     ensureVizTooltip();
     renderStatusLegends();
     const basketAsCustody = uniqueBasketBills.map(b => ({ ...b, status: 'IN_BASKET' }));
@@ -7690,6 +8307,8 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
   }
 
   function setupEventListeners() {
+    setupInsightsListeners();
+
     // Tab switching (only nav tabs, not scan tabs)
     document.querySelectorAll('.tab-item').forEach(btn => {
       btn.addEventListener('click', () => switchTab(btn.dataset.tab));
@@ -7854,7 +8473,8 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
         '3': 'tab-settlement',
         '4': 'tab-leftout',
         '5': 'tab-ledger',
-        '6': 'tab-settings'
+        '6': 'tab-settings',
+        '7': 'tab-insights'
       };
 
       if (tabMap[e.key]) {

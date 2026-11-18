@@ -71,6 +71,12 @@
           <span class="key-hint">5</span>
         </button>
 
+        <button class="nav-item tab-item" data-tab="tab-insights" title="Weekly Insights: blocked, missing &amp; outlet dues (Key: 7)">
+          <i class="fa-solid fa-lightbulb nav-icon text-warning"></i>
+          <span class="nav-label">Weekly Insights</span>
+          <span class="key-hint">7</span>
+        </button>
+
         <button type="button" class="nav-item" id="sidebarBeatAnalysisBtn" title="Beat Analysis for Each Agent (Key: B)">
           <i class="fa-solid fa-chart-column nav-icon text-warning"></i>
           <span class="nav-label">Beat Analysis</span>
@@ -977,6 +983,94 @@
       <!-- ======================================================== -->
       <!-- TAB 5: SHEET & SETUP                                     -->
       <!-- ======================================================== -->
+      <!-- ======================================================== -->
+      <!-- TAB: WEEKLY INSIGHTS (trips, blocked, missing, outlets)  -->
+      <!-- ======================================================== -->
+      <section id="tab-insights" class="tab-view">
+        <div class="section-title-strip">
+          <div>
+            <span class="section-title-label"><i class="fa-solid fa-lightbulb text-warning"></i> Weekly Insights</span>
+            <span class="section-title-hint">What happened to every bill sent out: came back, money collected, or stuck — built from the Scan OUT / Scan IN logs</span>
+          </div>
+        </div>
+
+        <div class="ins-filter-row mt-2">
+          <div class="ins-week-nav">
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="insWeekPrev" aria-label="Previous week"><i class="fa-solid fa-chevron-left"></i> Prev</button>
+            <strong id="insWeekLabel">This week</strong>
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="insWeekNext" aria-label="Next week">Next <i class="fa-solid fa-chevron-right"></i></button>
+          </div>
+          <select id="insAgentFilter" class="form-select form-input-compact" aria-label="Agent">
+            <option value="ALL">All agents</option>
+          </select>
+          <button type="button" class="btn btn-outline-primary btn-sm" id="insRefreshBtn"><i class="fa-solid fa-arrows-rotate"></i> Refresh logs</button>
+          <span class="text-muted ins-status" id="insStatus"></span>
+        </div>
+
+        <div class="clean-card ins-summary mt-2" id="insSummary"></div>
+
+        <div class="ins-kpi-grid mt-2" id="insKpis"></div>
+
+        <div class="viz-grid mt-3">
+          <div class="clean-card decision-chart-card">
+            <div class="decision-card-head">
+              <div>
+                <h4><i class="fa-solid fa-users text-primary"></i> This Week by Agent</h4>
+                <p>Every bill trip in the selected week and how it ended. Click an agent to focus on them.</p>
+              </div>
+            </div>
+            <div class="viz-legend mt-2" data-viz-legend="trip"></div>
+            <div class="viz-hbars mt-2" id="insAgentChart"></div>
+          </div>
+          <div class="clean-card decision-chart-card">
+            <div class="decision-card-head">
+              <div>
+                <h4><i class="fa-solid fa-chart-column text-primary"></i> Last 8 Weeks</h4>
+                <p>Bill trips per week by outcome, with money collected on those trips. Click a week to open it.</p>
+              </div>
+            </div>
+            <div class="viz-legend mt-2" data-viz-legend="trip"></div>
+            <div class="viz-trend mt-2" id="insWeekTrend"></div>
+          </div>
+        </div>
+
+        <div class="clean-card mt-3" id="insListCard">
+          <div class="decision-table-header">
+            <div class="decision-tabs" id="insListTabs">
+              <button type="button" class="decision-tab-btn active" data-ins-list="BLOCKED">⛔ Blocked bills (<span data-ins-count="BLOCKED">0</span>)</button>
+              <button type="button" class="decision-tab-btn" data-ins-list="MISSING">🚨 Not scanned back (<span data-ins-count="MISSING">0</span>)</button>
+              <button type="button" class="decision-tab-btn" data-ins-list="PAYMENT">💰 Payment check (<span data-ins-count="PAYMENT">0</span>)</button>
+              <button type="button" class="decision-tab-btn" data-ins-list="OUTLETS">🏪 Outlets with dues (<span data-ins-count="OUTLETS">0</span>)</button>
+            </div>
+            <div class="decision-table-controls">
+              <input type="text" id="insSearchInput" class="form-input form-input-compact" placeholder="🔍 Search bill, outlet, note..." style="min-width: 200px;" />
+              <button type="button" class="btn btn-outline-secondary btn-sm" id="insExportBtn"><i class="fa-solid fa-file-csv"></i> Export list</button>
+            </div>
+          </div>
+          <p class="ins-list-hint" id="insListHint"></p>
+          <div class="viz-legend mt-1" data-viz-legend="trip-dots"></div>
+          <div class="table-wrap mt-2" style="max-height: 520px; overflow-y: auto;">
+            <table class="minimal-table ins-table">
+              <thead id="insListHead"></thead>
+              <tbody id="insListBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <details class="clean-card ins-help mt-3">
+          <summary><i class="fa-solid fa-circle-question"></i> How these numbers are worked out</summary>
+          <ul>
+            <li><strong>Trip</strong> — one day a bill went out with an agent. A bill sent on 3 different days has 3 trips.</li>
+            <li><strong>Collected on a trip</strong> — how much the bill's remaining due dropped between Scan OUT and the next Scan IN (or the next time it went out). This is money from <em>that</em> trip only.</li>
+            <li><strong>Why Scan OUT already shows a paid amount</strong> — "Paid earlier (sheet)" is what the outlet paid on earlier visits, per the Master Sheet. It is not money collected today.</li>
+            <li><strong>Came back without Scan IN</strong> — the bill went out again later, so it must have come back, but nobody scanned it in. Payment notes for those days are lost.</li>
+            <li><strong>Blocked</strong> — sent out 2 or more times, nothing collected on any trip, and money still due.</li>
+            <li><strong>Not scanned back</strong> — the latest trip has no Scan IN after a day or more, and the bill is not checked in on Live_Custody.</li>
+            <li><strong>Payment check</strong> — at Scan IN the agent reported less due than the Master Sheet shows 2+ days later: a payment may not have been entered in the sheet.</li>
+          </ul>
+        </details>
+      </section>
+
       <section id="tab-settings" class="tab-view">
         <div class="desktop-settings-grid">
           
