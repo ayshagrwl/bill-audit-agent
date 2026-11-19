@@ -1,10 +1,14 @@
 rules_version = '2';
-// Only the shared BillAudit login may read or write. Anyone can create a Firebase account
-// through the public sign-up API, so a signed-in check alone is not enough: the email is pinned.
+// CURRENT: any signed-in app session may read and write. The app signs in anonymously, so this
+// keeps out casual access but not someone determined who has the project ID.
+//
+// TO ADD THE SHARED LOGIN LATER: set BILLAUDIT_AUTH_MODE = 'shared' in firebase-config.js and
+// change isApp() to:
+//   return request.auth != null && request.auth.token.email == 'your-shared-login@example.com';
 service cloud.firestore {
   match /databases/{database}/documents {
     function isApp() {
-      return request.auth != null && request.auth.token.email == 'SHARED_LOGIN_EMAIL';
+      return request.auth != null;
     }
     match /custody/{billId} {
       allow read, write: if isApp();

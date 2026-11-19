@@ -6072,6 +6072,11 @@ _BillAudit Pro_`;
     _ready: null,
     _resolveReady: null,
 
+    /** 'anonymous' (default): the app signs itself in, no login screen. 'shared': shared email/password login. */
+    authMode() {
+      return window.BILLAUDIT_AUTH_MODE === 'shared' ? 'shared' : 'anonymous';
+    },
+
     isConfigured() {
       return !!(window.BILLAUDIT_FIREBASE_CONFIG && window.BILLAUDIT_FIREBASE_CONFIG.apiKey && window.firebase && window.firebase.firestore);
     },
@@ -6086,6 +6091,9 @@ _BillAudit Pro_`;
       this.db.enablePersistence({ synchronizeTabs: true }).catch(err => console.warn('[Cloud] offline cache unavailable:', err.code || err));
       this.auth.onAuthStateChanged(user => {
         this.user = user;
+        if (!user && this.authMode() === 'anonymous') {
+          this.auth.signInAnonymously().catch(err => console.warn('[Cloud] anonymous sign-in failed:', err.code || err));
+        }
         renderCloudLoginGate();
         if (user) this._resolveReady();
       });
@@ -6196,10 +6204,15 @@ _BillAudit Pro_`;
   function renderCloudLoginGate() {
     const gate = document.getElementById('cloudLoginGate');
     if (!gate) return;
-    const needsLogin = Cloud.isConfigured() && !Cloud.user;
+    const needsLogin = Cloud.isConfigured() && Cloud.authMode() === 'shared' && !Cloud.user;
     gate.style.display = needsLogin ? 'flex' : 'none';
     const who = document.getElementById('cloudSignedInAs');
-    if (who) who.textContent = Cloud.user ? `Signed in as ${Cloud.user.email}` : 'Not signed in';
+    if (who) {
+      who.textContent = !Cloud.user ? 'Not signed in'
+        : Cloud.user.isAnonymous ? 'Connected (no login required yet)' : `Signed in as ${Cloud.user.email}`;
+    }
+    const signOutBtn = document.getElementById('cloudSignOutBtn');
+    if (signOutBtn) signOutBtn.style.display = Cloud.authMode() === 'shared' ? '' : 'none';
   }
 
   function setupCloudLogin() {
