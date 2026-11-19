@@ -4217,3 +4217,124 @@ button.ins-kpi:focus-visible {
   padding: 4px 0 4px 18px;
   font-size: 0.78rem;
 }
+
+/* ========================================================
+   BILL REVIEW (agent + beat + dates)
+   ======================================================== */
+.rv-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+}
+
+.rv-filters label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.rv-filters .form-select {
+  width: auto;
+  min-width: 150px;
+}
+
+.rv-check {
+  font-weight: 600 !important;
+}
+
+.rv-summary {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 1100px) {
+  .rv-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.rv-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+}
+
+.rv-tile strong {
+  font-size: 1.15rem;
+  color: var(--text-main);
+}
+
+.rv-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rv-outlet {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  overflow: hidden;
+}
+
+.rv-outlet.is-open {
+  border-color: var(--primary);
+}
+
+.rv-outlet-head {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 12px;
+  width: 100%;
+  padding: 10px 14px;
+  text-align: left;
+  background: none;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.rv-outlet-head:hover,
+.rv-outlet-head:focus-visible {
+  background: var(--bg-subtle);
+  outline: none;
+}
+
+.rv-outlet-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 0.92rem;
+}
+
+.rv-outlet-due {
+  font-weight: 800;
+  color: var(--danger);
+  text-align: right;
+}
+
+.rv-talk {
+  grid-column: 1 / -1;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.rv-outlet .table-wrap {
+  border-top: 1px solid var(--border-light);
+}

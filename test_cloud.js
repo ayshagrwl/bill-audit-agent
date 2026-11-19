@@ -84,4 +84,12 @@ test('Firestore log docs round-trip into the Insights row format', () => {
   assert.deepStrictEqual([i.billNo, i.dueIn, i.status, i.reason], ['B7', 0, 'RECEIVED', 'shop closed']);
 });
 
+test('Scan OUT stores the agent & beat chosen in the app session', () => {
+  const [w] = L.cloudLogWritesForQueueItem({ id: 'Q-8', type: 'BATCH_DISPATCH', timestamp: '2026-11-19T05:00:00Z',
+    payload: { dispatchDate: '2026-11-19', agent: 'Rajesh', beat: 'Civil Line Panna Naka',
+      bills: [{ billNo: 'B9', agent: 'SHEET AGENT', beat: 'SHEET BEAT', amount: 10 }] } });
+  assert.strictEqual(w.data.agent, 'Rajesh');
+  assert.strictEqual(w.data.beat, 'Civil Line Panna Naka');
+});
+
 console.log(`\n🎉 ALL ${n} CLOUD TESTS PASSED`);
