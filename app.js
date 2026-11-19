@@ -5242,6 +5242,14 @@ _BillAudit Pro_`;
       try {
         await Cloud.ready();
         custodyBills = await Cloud.pullCustody(State.bills);
+        // Firebase has no custody yet (history not imported): keep this device's bills instead of
+        // replacing them with an empty list
+        if (custodyBills.length === 0 && State.bills.length > 0) {
+          localStorage.removeItem(CLOUD_KEYS.CUSTODY_PULLED_AT);
+          custodyBills = null;
+          showToast('Cloud storage is empty — run importAllToFirestore in the tracking Apps Script. Showing bills saved on this device.', 'warning', 6000);
+          return false;
+        }
       } catch (cloudErr) {
         console.warn('Firestore custody fetch warning:', cloudErr);
       }
