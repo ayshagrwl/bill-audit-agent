@@ -33,6 +33,11 @@ function importAllToFirestore() {
     throw new Error('Import already ran on ' + props.getProperty('FIRESTORE_IMPORT_DONE') +
       '. Delete the FIRESTORE_IMPORT_DONE script property to run it again.');
   }
+  // Never overwrite live data: the app updates custody after the first import
+  const existing = firestoreFetch('/custody?pageSize=1', 'get');
+  if (existing.documents && existing.documents.length) {
+    throw new Error('Firestore already has custody data, so the import was skipped (it would overwrite newer app updates).');
+  }
   const ss = fsSpreadsheet();
   const outRows = fsReadLogRows(ss, FS_TABS.SCAN_OUT, OUT_FIELDS.length, 400);
   const inRows = fsReadLogRows(ss, FS_TABS.SCAN_IN, IN_FIELDS.length, 400);
