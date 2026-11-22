@@ -1111,6 +1111,7 @@
   }
 
   function updateMasterSheetUI(syncState = null) {
+    if (State.activeTab === 'tab-audit') setTimeout(() => renderAuditTab(), 0);
     const banner = document.getElementById('masterSheetBanner');
     const bannerCount = document.getElementById('bannerSheetCount');
     const pill = document.getElementById('masterSheetStatusBtn');
@@ -1944,6 +1945,9 @@
       } else if (State.activeTab === 'tab-settlement') {
         const input = document.getElementById('settlementInvoiceInput');
         if (input && document.activeElement !== input) input.focus();
+      } else if (State.activeTab === 'tab-audit') {
+        const input = document.getElementById('auditInvoiceInput');
+        if (input && document.activeElement !== input) input.focus();
       }
     }, 80);
   }
@@ -1961,7 +1965,7 @@
   }
 
   function flashHardwareScannerIndicator(text) {
-    const pills = [document.getElementById('dispatchHwPill'), document.getElementById('settlementHwPill')];
+    const pills = [document.getElementById('dispatchHwPill'), document.getElementById('settlementHwPill'), document.getElementById('auditHwPill')];
     pills.forEach(p => {
       if (p) {
         p.classList.add('active-flash');
@@ -2013,6 +2017,8 @@
             const sInp = document.getElementById('settlementInvoiceInput');
             if (dInp) dInp.value = '';
             if (sInp) sInp.value = '';
+            const aInp = document.getElementById('auditInvoiceInput');
+            if (aInp) aInp.value = '';
 
             this.processScannedCode(scannedCode);
             return;
@@ -2051,6 +2057,8 @@
                 const sInp = document.getElementById('settlementInvoiceInput');
                 if (dInp) dInp.value = '';
                 if (sInp) sInp.value = '';
+                const aInp = document.getElementById('auditInvoiceInput');
+                if (aInp) aInp.value = '';
 
                 this.processScannedCode(scannedCode);
               }
@@ -2088,7 +2096,9 @@
     async routeScannedCode(rawText) {
       const activeTab = State.activeTab;
 
-      if (activeTab === 'tab-dispatch') {
+      if (activeTab === 'tab-audit') {
+        handleAuditCode(rawText, 'SCAN');
+      } else if (activeTab === 'tab-dispatch') {
         handleScannedCodeDispatch(rawText);
       } else if (activeTab === 'tab-settlement') {
         handleScannedCodeSettlement(rawText);
@@ -5728,6 +5738,478 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
 
 
   // ========================================================
+  // 11B. OUTSTANDING BILL AUDIT (BY AGENT & BEAT)
+  // Physically verify which outstanding bills are present in the agency.
+  // Expected list = Master Sheet outstanding bills for the agent & beat.
+  // Does NOT change custody / dispatch / settlement records.
+  // ========================================================
+
+  const AUDIT_KEYS = {
+    SESSIONS: 'billAudit_auditSessions',
+    HISTORY: 'billAudit_auditHistory'
+  };
+
+  const AuditState = {
+    agent: '',
+    beat: 'ALL',
+    filter: 'ALL',   // 'ALL', 'MISSING', 'FOUND', 'EXTRA'
+    search: '',
+    sessions: {},    // { 'Agent|Beat': { startedAt, entries: [...] } }
+    history: [],
+    loaded: false
+  };
+
+  function loadAuditState() {
+    if (AuditState.loaded) return;
+    AuditState.loaded = true;
+    try {
+      const s = localStorage.getItem(AUDIT_KEYS.SESSIONS);
+      const parsed = s ? JSON.parse(s) : {};
+      AuditState.sessions = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch (e) { AuditState.sessions = {}; }
+    try {
+      const h = localStorage.getItem(AUDIT_KEYS.HISTORY);
+      const parsed = h ? JSON.parse(h) : [];
+      AuditState.history = Array.isArray(parsed) ? parsed : [];
+    } catch (e) { AuditState.history = []; }
+  }
+
+  function saveAuditState() {
+    try {
+      localStorage.setItem(AUDIT_KEYS.SESSIONS, JSON.stringify(AuditState.sessions));
+      localStorage.setItem(AUDIT_KEYS.HISTORY, JSON.stringify(AuditState.history.slice(0, 50)));
+    } catch (e) {
+      console.warn('Audit state save failed:', e);
+    }
+  }
+
+  function getAuditSessionKey() {
+    return `${AuditState.agent}|${AuditState.beat}`;
+  }
+
+  function getAuditSession(create) {
+    const key = getAuditSessionKey();
+    let sess = AuditState.sessions[key];
+    if (!sess && create) {
+      sess = { startedAt: new Date().toISOString(), entries: [] };
+      AuditState.sessions[key] = sess;
+    }
+    return sess || { startedAt: null, entries: [] };
+  }
+
+  /** Outstanding (unpaid) Master Sheet bills for an agent, optionally restricted to one beat. */
+  function getAuditExpectedBills(agent, beat) {
+    if (State.masterSheetBills.length > 0 && (!State.masterDueBills || State.masterSheetMap.size === 0)) {
+      rebuildMasterSheetMap();
+    }
+    const source = State.masterDueBills || [];
+    const seen = new Set();
+    const out = [];
+    for (let i = 0; i < source.length; i++) {
+      const b = source[i];
+      if (!b || !b.billNo) continue;
+      if (agent && !isSameAgent(b._canonAgent || b.agent, agent)) continue;
+      if (beat && beat !== 'ALL' && !isSameBeat(b.beat, beat)) continue;
+      if (b._isPaid !== undefined ? b._isPaid : isBillPaidInFull(b)) continue;
+      const norm = b._normBillNo || (b._normBillNo = normalizeInvoiceNumber(b.billNo));
+      if (seen.has(norm)) continue;
+      seen.add(norm);
+      out.push(b);
+    }
+    return out;
+  }
+
+  function getAuditBillOutstanding(b) {
+    if (b && b.outstanding !== undefined && b.outstanding !== null && b.outstanding !== '' && !isNaN(b.outstanding)) {
+      return Number(b.outstanding);
+    }
+    return Number(b && b.amount) || 0;
+  }
+
+  function populateAuditSelectors() {
+    const agentSel = document.getElementById('auditAgentSelect');
+    const beatSel = document.getElementById('auditBeatSelect');
+    if (!agentSel || !beatSel) return;
+
+    if (!AuditState.agent) {
+      AuditState.agent = (State.activeAgent && State.activeAgent.name) || (State.agents[0] && State.agents[0].name) || '';
+    }
+    agentSel.innerHTML = State.agents.map(a =>
+      `<option value="${escapeHtml(a.name)}">${escapeHtml(a.fullName || a.name)}</option>`
+    ).join('');
+    agentSel.value = AuditState.agent;
+
+    // Beats with outstanding bills for this agent, with counts
+    const counts = new Map();
+    getAuditExpectedBills(AuditState.agent, 'ALL').forEach(b => {
+      const bt = String(b.beat || '').trim();
+      if (!bt) return;
+      counts.set(bt, (counts.get(bt) || 0) + 1);
+    });
+    const beats = Array.from(counts.keys()).sort((a, b) => a.localeCompare(b));
+    if (AuditState.beat !== 'ALL' && !counts.has(AuditState.beat)) {
+      beats.unshift(AuditState.beat); // keep a beat that has an in-progress session
+    }
+    beatSel.innerHTML = `<option value="ALL">All Beats</option>` + beats.map(bt =>
+      `<option value="${escapeHtml(bt)}">${escapeHtml(bt)} (${counts.get(bt) || 0})</option>`
+    ).join('');
+    beatSel.value = AuditState.beat;
+  }
+
+  function classifyAuditEntries(expected, entries) {
+    const entryMap = new Map(entries.map(e => [e.norm, e]));
+    const expectedNorms = new Set();
+    const rows = [];
+    expected.forEach(b => {
+      const norm = b._normBillNo || normalizeInvoiceNumber(b.billNo);
+      expectedNorms.add(norm);
+      const e = entryMap.get(norm);
+      rows.push({
+        norm,
+        billNo: b.billNo,
+        party: b.party || '',
+        beat: b.beat || '',
+        agent: b.agent || '',
+        amount: Number(b.amount) || 0,
+        outstanding: getAuditBillOutstanding(b),
+        result: e ? 'FOUND' : 'MISSING',
+        mode: e ? e.mode : '',
+        at: e ? e.at : '',
+        note: ''
+      });
+    });
+    entries.forEach(e => {
+      if (expectedNorms.has(e.norm)) return;
+      rows.push({ ...e, result: 'EXTRA' });
+    });
+    return rows;
+  }
+
+  function renderAuditTab() {
+    loadAuditState();
+    populateAuditSelectors();
+
+    const agentBadge = document.getElementById('auditAgentBadge');
+    const beatBadge = document.getElementById('auditBeatBadge');
+    if (agentBadge) agentBadge.textContent = AuditState.agent || '–';
+    if (beatBadge) beatBadge.textContent = AuditState.beat === 'ALL' ? 'All Beats' : AuditState.beat;
+
+    const hint = document.getElementById('auditSourceHint');
+    const tbody = document.getElementById('auditTbody');
+    if (!tbody) return;
+
+    const hasMaster = State.masterSheetBills && State.masterSheetBills.length > 0;
+    if (hint) {
+      hint.textContent = hasMaster
+        ? 'Expected list = outstanding bills in the Master Sheet for the selected agent & beat. Scan what is physically present.'
+        : 'Master Sheet not loaded yet — sync it (sidebar "Sheet" button) to see the expected outstanding list. Scans are still recorded.';
+    }
+
+    const expected = getAuditExpectedBills(AuditState.agent, AuditState.beat);
+    const session = getAuditSession(false);
+    const rows = classifyAuditEntries(expected, session.entries || []);
+
+    const sum = (list) => list.reduce((s, r) => s + (Number(r.outstanding) || 0), 0);
+    const found = rows.filter(r => r.result === 'FOUND');
+    const missing = rows.filter(r => r.result === 'MISSING');
+    const extra = rows.filter(r => r.result === 'EXTRA');
+    const setTxt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    setTxt('auditKpiExpected', expected.length);
+    setTxt('auditKpiExpectedAmt', formatINR(sum(expected.map(b => ({ outstanding: getAuditBillOutstanding(b) })))));
+    setTxt('auditKpiFound', found.length);
+    setTxt('auditKpiFoundAmt', formatINR(sum(found)));
+    setTxt('auditKpiMissing', missing.length);
+    setTxt('auditKpiMissingAmt', formatINR(sum(missing)));
+    setTxt('auditKpiExtra', extra.length);
+    setTxt('auditKpiExtraAmt', formatINR(sum(extra)));
+
+    document.querySelectorAll('#auditFilterTabs [data-audit-filter]').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.auditFilter === AuditState.filter);
+    });
+
+    const q = AuditState.search.trim().toLowerCase();
+    const order = { EXTRA: 0, MISSING: 1, FOUND: 2 };
+    const visible = rows
+      .filter(r => AuditState.filter === 'ALL' || r.result === AuditState.filter)
+      .filter(r => !q || String(r.billNo).toLowerCase().includes(q) || String(r.party).toLowerCase().includes(q))
+      .sort((a, b) => (order[a.result] - order[b.result]) || String(a.billNo).localeCompare(String(b.billNo)));
+
+    setTxt('auditListCount', visible.length);
+
+    if (visible.length === 0) {
+      const msg = rows.length === 0
+        ? (hasMaster ? 'No outstanding bills for this agent & beat.' : 'Master Sheet not loaded. Scan bills or sync the sheet.')
+        : 'No bills match this filter.';
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="6">${escapeHtml(msg)}</td></tr>`;
+    } else {
+      const MAX_ROWS = 600;
+      const statusHtml = (r) => {
+        if (r.result === 'FOUND') {
+          const modeTxt = r.mode === 'SCAN' ? 'scanned' : 'manual';
+          return `<span class="audit-status audit-status-found"><i class="fa-solid fa-circle-check"></i> Found</span><span class="audit-mode-tag">${modeTxt}</span>`;
+        }
+        if (r.result === 'EXTRA') {
+          return `<span class="audit-status audit-status-extra" title="${escapeHtml(r.note || '')}"><i class="fa-solid fa-triangle-exclamation"></i> Extra</span>`;
+        }
+        return `<span class="audit-status audit-status-missing"><i class="fa-solid fa-circle-xmark"></i> Missing</span>`;
+      };
+      tbody.innerHTML = visible.slice(0, MAX_ROWS).map(r => {
+        const actionBtn = r.result === 'MISSING'
+          ? `<button type="button" class="audit-row-btn" data-audit-mark="${escapeHtml(r.billNo)}" title="Bill is present but could not be scanned">Mark Found</button>`
+          : `<button type="button" class="audit-row-btn" data-audit-undo="${escapeHtml(r.norm)}" title="Remove this entry">Undo</button>`;
+        const partyCell = r.result === 'EXTRA' && r.note
+          ? `${escapeHtml(r.party || '—')}<br><small class="text-muted">${escapeHtml(r.note)}</small>`
+          : escapeHtml(r.party || '—');
+        return `
+          <tr class="audit-row-${r.result.toLowerCase()}">
+            <td>${statusHtml(r)}</td>
+            <td class="font-mono">${escapeHtml(r.billNo)}</td>
+            <td>${partyCell}</td>
+            <td>${escapeHtml(r.beat || '—')}</td>
+            <td class="font-mono text-right">${formatINR(r.outstanding)}</td>
+            <td>${actionBtn}</td>
+          </tr>`;
+      }).join('') + (visible.length > MAX_ROWS
+        ? `<tr class="empty-row"><td colspan="6">Showing first ${MAX_ROWS} of ${visible.length}. Use the filter or search to narrow.</td></tr>`
+        : '');
+    }
+
+    tbody.querySelectorAll('[data-audit-mark]').forEach(btn => {
+      btn.addEventListener('click', () => handleAuditCode(btn.dataset.auditMark, 'MANUAL'));
+    });
+    tbody.querySelectorAll('[data-audit-undo]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const sess = getAuditSession(false);
+        sess.entries = (sess.entries || []).filter(e => e.norm !== btn.dataset.auditUndo);
+        saveAuditState();
+        renderAuditTab();
+      });
+    });
+
+    renderAuditHistory();
+  }
+
+  function renderAuditHistory() {
+    const el = document.getElementById('auditHistoryList');
+    if (!el) return;
+    if (!AuditState.history.length) {
+      el.innerHTML = '<p class="text-muted audit-hint">No audits saved yet.</p>';
+      return;
+    }
+    el.innerHTML = AuditState.history.slice(0, 15).map(h => `
+      <div class="audit-history-item">
+        <strong>${escapeHtml(h.agent)}</strong> · ${escapeHtml(h.beat === 'ALL' ? 'All Beats' : h.beat)}
+        <div class="audit-history-meta">${escapeHtml(new Date(h.auditedAt).toLocaleString())}</div>
+        <div class="audit-history-meta">
+          ✅ ${h.found} found · ❌ ${h.missing} missing (${escapeHtml(formatINR(h.missingAmt))}) · ⚠️ ${h.extra} extra
+        </div>
+      </div>`).join('');
+  }
+
+  /**
+   * Record one audited bill (from 2D scanner, manual input box, or "Mark Found" button).
+   */
+  function handleAuditCode(rawText, mode) {
+    loadAuditState();
+    const clean = String(rawText || '').replace(/[\x00-\x09\x0B-\x1F\x7F]/g, '').trim();
+    if (!clean) return;
+    if (!AuditState.agent) {
+      showToast('Select an agent first', 'warning');
+      return;
+    }
+
+    let parsed = parseQRCodeData(clean);
+    if (!parsed || !parsed.billNo) {
+      parsed = { billNo: clean, party: '', amount: 0, raw: clean };
+    }
+    parsed = enrichWithMaster(parsed);
+    const norm = normalizeInvoiceNumber(parsed.billNo);
+    if (!norm) {
+      SoundFX.init();
+      SoundFX.playBeep('error');
+      showToast('Invalid invoice number', 'warning');
+      return;
+    }
+
+    const session = getAuditSession(true);
+    if (session.entries.some(e => e.norm === norm)) {
+      SoundFX.init();
+      SoundFX.playBeep('warning');
+      SoundFX.vibrate(120);
+      showToast(`${parsed.billNo} already audited`, 'warning', 2200);
+      return;
+    }
+
+    const expected = getAuditExpectedBills(AuditState.agent, AuditState.beat);
+    const isExpected = expected.some(b => (b._normBillNo || normalizeInvoiceNumber(b.billNo)) === norm);
+
+    let note = '';
+    if (!isExpected) {
+      if (!parsed.fromMaster) note = 'Not in Master Sheet';
+      else if (isBillPaidInFull(parsed)) note = 'Already paid in Master Sheet';
+      else if (parsed.agent && !isSameAgent(parsed.agent, AuditState.agent)) note = `Sheet agent: ${parsed.agent}`;
+      else if (AuditState.beat !== 'ALL' && parsed.beat && !isSameBeat(parsed.beat, AuditState.beat)) note = `Sheet beat: ${parsed.beat}`;
+      else note = 'Not in outstanding list';
+    }
+
+    session.entries.push({
+      norm,
+      billNo: parsed.billNo,
+      party: parsed.party && parsed.party !== 'Standard Account' ? parsed.party : '',
+      amount: Number(parsed.amount) || 0,
+      outstanding: parsed.fromMaster ? getAuditBillOutstanding(parsed) : (Number(parsed.amount) || 0),
+      beat: parsed.beat || '',
+      agent: parsed.agent || '',
+      mode: mode === 'SCAN' ? 'SCAN' : 'MANUAL',
+      at: new Date().toISOString(),
+      note
+    });
+    saveAuditState();
+
+    SoundFX.init();
+    if (isExpected) {
+      SoundFX.playBeep('success');
+      SoundFX.vibrate(50);
+    } else {
+      SoundFX.playBeep('warning');
+      SoundFX.vibrate(150);
+      showToast(`⚠️ ${parsed.billNo}: ${note}`, 'warning', 3000);
+    }
+
+    const badge = document.getElementById('auditLastScanBadge');
+    const details = document.getElementById('auditLastScanDetails');
+    if (badge) badge.textContent = parsed.billNo;
+    if (details) {
+      details.textContent = isExpected
+        ? `✅ Found · ${parsed.party || 'Customer'} · Due ${formatINR(getAuditBillOutstanding(parsed))}`
+        : `⚠️ Extra · ${note}`;
+    }
+
+    renderAuditTab();
+    focusActiveScannerInput();
+  }
+
+  function handleManualInvoiceAudit() {
+    const input = document.getElementById('auditInvoiceInput');
+    if (!input) return;
+    const val = input.value.trim();
+    if (!val) return;
+    input.value = '';
+    handleAuditCode(val, 'MANUAL');
+  }
+
+  function saveAndRecordAudit() {
+    loadAuditState();
+    const session = getAuditSession(false);
+    const expected = getAuditExpectedBills(AuditState.agent, AuditState.beat);
+    if (!session.entries || session.entries.length === 0) {
+      if (!confirm('No bills have been scanned in this audit. Record ALL outstanding bills as MISSING?')) return;
+    }
+    const rows = classifyAuditEntries(expected, session.entries || []);
+    const found = rows.filter(r => r.result === 'FOUND');
+    const missing = rows.filter(r => r.result === 'MISSING');
+    const extra = rows.filter(r => r.result === 'EXTRA');
+    const sumOut = (list) => list.reduce((s, r) => s + (Number(r.outstanding) || 0), 0);
+
+    if (!confirm(
+      `Save audit for ${AuditState.agent} · ${AuditState.beat === 'ALL' ? 'All Beats' : AuditState.beat}?\n\n` +
+      `✅ Found: ${found.length}\n❌ Missing: ${missing.length} (${formatINR(sumOut(missing))})\n⚠️ Extra: ${extra.length}\n\n` +
+      `This will be recorded to the Tracking Sheet (Bill_Audit_Log).`
+    )) return;
+
+    const now = new Date();
+    const auditId = 'AUD-' + now.getTime();
+    const auditDate = getTodayDateString();
+
+    const payload = {
+      auditId,
+      auditDate,
+      agent: AuditState.agent,
+      beat: AuditState.beat === 'ALL' ? 'All Beats' : AuditState.beat,
+      startedAt: session.startedAt || now.toISOString(),
+      auditedAt: now.toISOString(),
+      rows: rows.map(r => ({
+        billNo: r.billNo,
+        party: r.party || '',
+        amount: Number(r.amount) || 0,
+        outstanding: Number(r.outstanding) || 0,
+        beat: r.beat || '',
+        result: r.result,
+        mode: r.result === 'MISSING' ? '' : (r.mode || ''),
+        note: r.note || ''
+      }))
+    };
+
+    queueSyncAction('BILL_AUDIT', payload);
+
+    AuditState.history.unshift({
+      auditId,
+      agent: payload.agent,
+      beat: AuditState.beat,
+      auditedAt: payload.auditedAt,
+      expected: expected.length,
+      found: found.length,
+      missing: missing.length,
+      extra: extra.length,
+      missingAmt: sumOut(missing),
+      missingBills: missing.map(r => r.billNo)
+    });
+    delete AuditState.sessions[getAuditSessionKey()];
+    saveAuditState();
+
+    SoundFX.init();
+    SoundFX.playBeep('success');
+    ConfettiFX.burst({ count: 30, x: 0.5, y: 0.4 });
+    showToast(`Audit saved: ${found.length} found, ${missing.length} missing, ${extra.length} extra`, 'success', 3500);
+
+    const badge = document.getElementById('auditLastScanBadge');
+    const details = document.getElementById('auditLastScanDetails');
+    if (badge) badge.textContent = 'None yet';
+    if (details) details.textContent = 'Audit saved. Ready for the next one...';
+    renderAuditTab();
+  }
+
+  function setupAuditListeners() {
+    document.getElementById('auditAgentSelect')?.addEventListener('change', (e) => {
+      AuditState.agent = e.target.value;
+      AuditState.beat = 'ALL';
+      renderAuditTab();
+    });
+    document.getElementById('auditBeatSelect')?.addEventListener('change', (e) => {
+      AuditState.beat = e.target.value || 'ALL';
+      renderAuditTab();
+    });
+    document.getElementById('auditAddInvoiceBtn')?.addEventListener('click', handleManualInvoiceAudit);
+    document.getElementById('auditInvoiceInput')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        handleManualInvoiceAudit();
+      }
+    });
+    document.getElementById('auditSearchInput')?.addEventListener('input', (e) => {
+      AuditState.search = e.target.value || '';
+      renderAuditTab();
+    });
+    document.querySelectorAll('#auditFilterTabs [data-audit-filter]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        AuditState.filter = btn.dataset.auditFilter;
+        renderAuditTab();
+      });
+    });
+    document.getElementById('auditResetBtn')?.addEventListener('click', () => {
+      const sess = getAuditSession(false);
+      if (sess.entries && sess.entries.length > 0 &&
+          !confirm(`Clear ${sess.entries.length} audited bills for ${AuditState.agent} · ${AuditState.beat === 'ALL' ? 'All Beats' : AuditState.beat}?`)) {
+        return;
+      }
+      delete AuditState.sessions[getAuditSessionKey()];
+      saveAuditState();
+      renderAuditTab();
+    });
+    document.getElementById('auditSaveBtn')?.addEventListener('click', saveAndRecordAudit);
+  }
+
+  // ========================================================
   // 12. UI HELPERS & LISTENERS
   // ========================================================
 
@@ -5868,6 +6350,9 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       renderLeftOutTab();
     } else if (tabId === 'tab-settings') {
       renderAgentsManager();
+    } else if (tabId === 'tab-audit') {
+      renderAuditTab();
+      focusActiveScannerInput();
     }
   }
 
@@ -7854,7 +8339,8 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
         '3': 'tab-settlement',
         '4': 'tab-leftout',
         '5': 'tab-ledger',
-        '6': 'tab-settings'
+        '6': 'tab-settings',
+        '7': 'tab-audit'
       };
 
       if (tabMap[e.key]) {
@@ -8404,6 +8890,7 @@ _BillAudit Pro_`;
     if (csvUrlInput) csvUrlInput.value = State.settings.sheetCsvUrl || '';
 
     setupEventListeners();
+    setupAuditListeners();
 
     // Initialize Hardware USB & Bluetooth Barcode / QR Scanner Listener
     HardwareScanner.init();

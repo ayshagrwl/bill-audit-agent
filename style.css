@@ -3842,3 +3842,92 @@ div.viz-hbar-row {
   background: var(--primary-light);
   font-size: 0.8rem;
 }
+
+/* ========================================================
+   OUTSTANDING BILL AUDIT TAB
+   ======================================================== */
+.audit-select-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+.audit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 200px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.audit-select-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.audit-hint { font-size: 0.8rem; margin: 0; }
+.audit-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.audit-kpi {
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-left: 4px solid var(--primary);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  box-shadow: var(--shadow-subtle);
+}
+.audit-kpi-good { border-left-color: var(--success); }
+.audit-kpi-bad { border-left-color: var(--danger); }
+.audit-kpi-warn { border-left-color: var(--warning); }
+.audit-kpi-label { font-size: 0.75rem; color: var(--text-muted); font-weight: 600; }
+.audit-kpi-val { font-size: 1.5rem; color: var(--text-main); }
+.audit-kpi small { color: var(--text-muted); font-size: 0.78rem; }
+.audit-table-wrap { max-height: 520px; overflow-y: auto; }
+.audit-table-wrap .text-right, .audit-table-wrap td.text-right { text-align: right; }
+.audit-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.audit-status-found { background: var(--success-light); color: var(--success); border: 1px solid var(--success-border); }
+.audit-status-missing { background: var(--danger-light); color: var(--danger); border: 1px solid var(--danger-border); }
+.audit-status-extra { background: var(--warning-light); color: var(--warning); border: 1px solid var(--warning-border); }
+.audit-mode-tag { font-size: 0.68rem; color: var(--text-muted); margin-left: 4px; }
+.audit-row-found td { opacity: 0.85; }
+.audit-row-btn {
+  border: 1px solid var(--border-light);
+  background: var(--bg-subtle);
+  color: var(--text-main);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+  font-size: 0.72rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.audit-row-btn:hover { border-color: var(--primary); color: var(--primary); }
+.audit-history-list { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+.audit-history-item {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-size: 0.78rem;
+  background: var(--bg-subtle);
+}
+.audit-history-item strong { color: var(--text-main); }
+.audit-history-item .audit-history-meta { color: var(--text-muted); margin-top: 2px; }
+#auditFilterTabs { flex-wrap: wrap; }
+@media (max-width: 900px) {
+  .audit-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

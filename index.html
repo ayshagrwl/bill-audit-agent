@@ -71,6 +71,12 @@
           <span class="key-hint">5</span>
         </button>
 
+        <button class="nav-item tab-item" data-tab="tab-audit" title="Outstanding Bill Audit by Agent &amp; Beat (Key: 7)">
+          <i class="fa-solid fa-clipboard-check nav-icon text-primary"></i>
+          <span class="nav-label">Bill Audit</span>
+          <span class="key-hint">7</span>
+        </button>
+
         <button type="button" class="nav-item" id="sidebarBeatAnalysisBtn" title="Beat Analysis for Each Agent (Key: B)">
           <i class="fa-solid fa-chart-column nav-icon text-warning"></i>
           <span class="nav-label">Beat Analysis</span>
@@ -970,6 +976,154 @@
                 </tr>
               </tbody>
             </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================================================== -->
+      <!-- TAB: OUTSTANDING BILL AUDIT (BY AGENT & BEAT)            -->
+      <!-- ======================================================== -->
+      <section id="tab-audit" class="tab-view">
+        <div class="scan-session-header scan-session-out">
+          <div class="session-title">
+            <span class="session-mode-label">🧾 Outstanding Bill Audit</span>
+            <span class="session-agent-badge" id="auditAgentBadge">–</span>
+            <span class="session-beat-badge" id="auditBeatBadge">–</span>
+          </div>
+          <div class="session-scanner-badge" id="auditHwPill" title="USB / Bluetooth Scanner Armed">
+            <i class="fa-solid fa-barcode"></i> 2D Gun Ready
+          </div>
+        </div>
+
+        <!-- Agent & Beat selection -->
+        <div class="clean-card mt-3 audit-select-card">
+          <div class="audit-select-row">
+            <label class="audit-field">
+              <span>Agent</span>
+              <select id="auditAgentSelect" class="form-select"></select>
+            </label>
+            <label class="audit-field">
+              <span>Beat</span>
+              <select id="auditBeatSelect" class="form-select">
+                <option value="ALL">All Beats</option>
+              </select>
+            </label>
+            <div class="audit-select-actions">
+              <button type="button" id="auditResetBtn" class="btn btn-outline btn-sm" title="Clear scanned bills and start this audit again">
+                <i class="fa-solid fa-rotate-left"></i> Restart
+              </button>
+              <button type="button" id="auditSaveBtn" class="btn btn-success btn-sm font-bold" title="Save audit result and record it to the Tracking Sheet">
+                <i class="fa-solid fa-floppy-disk"></i> Save &amp; Record Audit
+              </button>
+            </div>
+          </div>
+          <p class="text-muted audit-hint mt-2" id="auditSourceHint">Expected list = outstanding bills in the Master Sheet for the selected agent &amp; beat.</p>
+        </div>
+
+        <!-- Summary -->
+        <div class="audit-kpi-grid mt-3">
+          <div class="audit-kpi">
+            <span class="audit-kpi-label">Outstanding (expected)</span>
+            <strong class="audit-kpi-val font-mono" id="auditKpiExpected">0</strong>
+            <small class="font-mono" id="auditKpiExpectedAmt">₹0.00</small>
+          </div>
+          <div class="audit-kpi audit-kpi-good">
+            <span class="audit-kpi-label">Found (present)</span>
+            <strong class="audit-kpi-val font-mono" id="auditKpiFound">0</strong>
+            <small class="font-mono" id="auditKpiFoundAmt">₹0.00</small>
+          </div>
+          <div class="audit-kpi audit-kpi-bad">
+            <span class="audit-kpi-label">Missing (not found)</span>
+            <strong class="audit-kpi-val font-mono" id="auditKpiMissing">0</strong>
+            <small class="font-mono" id="auditKpiMissingAmt">₹0.00</small>
+          </div>
+          <div class="audit-kpi audit-kpi-warn">
+            <span class="audit-kpi-label">Extra (not in list)</span>
+            <strong class="audit-kpi-val font-mono" id="auditKpiExtra">0</strong>
+            <small class="font-mono" id="auditKpiExtraAmt">₹0.00</small>
+          </div>
+        </div>
+
+        <div class="desktop-scan-grid mt-3">
+          <!-- LEFT: scanner + manual entry -->
+          <div class="scanner-station-col">
+            <div class="clean-card scanner-station-card">
+              <div class="scanner-station-text">
+                <h3>Scan Bills Present</h3>
+                <p>Scan every bill physically present with the 2D gun. If a bill will not scan, type its invoice number below.</p>
+              </div>
+              <div class="scanner-input-container mt-2">
+                <div class="scanner-input-prefix">
+                  <i class="fa-solid fa-keyboard"></i>
+                </div>
+                <input type="text" id="auditInvoiceInput" class="scan-primary-input font-mono"
+                       placeholder="Type invoice no. (e.g. 3921) if scan fails..." autocomplete="off" />
+                <button id="auditAddInvoiceBtn" class="btn btn-primary btn-scan-add" title="Mark bill as present">
+                  <i class="fa-solid fa-plus"></i> Add
+                </button>
+              </div>
+              <div class="scanner-status-strip mt-2">
+                <span class="scan-live-tag">
+                  <span class="status-indicator-dot"></span> Listening for scanner
+                </span>
+                <span class="scan-hint-text">Automatic <kbd>Enter</kbd> detection</span>
+              </div>
+            </div>
+
+            <div class="clean-card scan-ticker-card mt-2">
+              <div class="ticker-header">
+                <span class="ticker-title"><i class="fa-solid fa-clock-rotate-left"></i> Last Audited</span>
+                <span class="ticker-badge font-mono" id="auditLastScanBadge">None yet</span>
+              </div>
+              <div class="ticker-details" id="auditLastScanDetails">Ready for first bill...</div>
+            </div>
+
+            <div class="clean-card mt-2">
+              <div class="basket-head">
+                <div class="head-left">
+                  <h3>Previous Audits</h3>
+                </div>
+              </div>
+              <div class="audit-history-list" id="auditHistoryList">
+                <p class="text-muted audit-hint">No audits saved yet.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- RIGHT: outstanding list with status -->
+          <div class="basket-col">
+            <div class="clean-card basket-card">
+              <div class="basket-head">
+                <div class="head-left">
+                  <h3>Outstanding Bills</h3>
+                  <span class="count-pill font-mono" id="auditListCount">0</span>
+                </div>
+                <div class="pill-tabs-small" id="auditFilterTabs">
+                  <button type="button" class="pill-tab-sub active" data-audit-filter="ALL">All</button>
+                  <button type="button" class="pill-tab-sub" data-audit-filter="MISSING">Missing</button>
+                  <button type="button" class="pill-tab-sub" data-audit-filter="FOUND">Found</button>
+                  <button type="button" class="pill-tab-sub" data-audit-filter="EXTRA">Extra</button>
+                </div>
+              </div>
+              <input type="text" id="auditSearchInput" class="form-input mt-2" placeholder="🔍 Filter by invoice or party..." autocomplete="off" />
+              <div class="table-wrap mt-2 audit-table-wrap">
+                <table class="minimal-table">
+                  <thead>
+                    <tr>
+                      <th>Status</th>
+                      <th>Invoice No</th>
+                      <th>Party</th>
+                      <th>Beat</th>
+                      <th class="text-right">Outstanding</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="auditTbody">
+                    <tr class="empty-row"><td colspan="6">Select an agent to load outstanding bills.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </div>
       </section>
