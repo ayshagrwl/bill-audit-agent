@@ -1,19 +1,31 @@
 rules_version = '2';
-// Cloud Firestore rules for BillAudit Pro.
-// Paste into Firebase Console > Firestore Database > Rules, then Publish.
-// Only the bill_audits collection is reachable; audits can be added and read, never deleted.
+// CURRENT: any signed-in app session may read and write. The app signs in anonymously, so this
+// keeps out casual access but not someone determined who has the project ID.
+//
+// TO ADD THE SHARED LOGIN LATER: set BILLAUDIT_AUTH_MODE = 'shared' in firebase-config.js and
+// change isApp() to:
+//   return request.auth != null && request.auth.token.email == 'your-shared-login@example.com';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /bill_audits/{auditId} {
-      allow read: if true;
-      allow create, update: if request.resource.data.auditId == auditId
-                            && request.resource.data.agent is string
-                            && request.resource.data.rows is list
-                            && request.resource.data.rows.size() <= 5000;
-      allow delete: if false;
+    function isApp() {
+      return request.auth != null;
     }
-    match /{document=**} {
-      allow read, write: if false;
+    match /custody/{billId} {
+      allow read, write: if isApp();
+    }
+    match /scanOut/{rowId} {
+      allow read, create, update: if isApp();
+    }
+    match /scanIn/{rowId} {
+      allow read, create, update: if isApp();
+    }
+    // Outstanding Bill Audits (Bill Audit tab): one document per saved audit, never deleted.
+    match /billAudits/{auditId} {
+      allow read: if isApp();
+      allow create, update: if isApp()
+                            && request.resource.data.auditId == auditId
+                            && request.resource.data.agent is string
+                            && request.resource.data.rows is list;
     }
   }
 }
