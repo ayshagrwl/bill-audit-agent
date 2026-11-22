@@ -36,7 +36,9 @@
     sheetCsvUrl: 'https://docs.google.com/spreadsheets/d/11J3WSXNFfu5aARNMBX3HQazajsfzBjj7wX9MWyVVBRk/export?format=csv&gid=1608276684',
     theme: 'light',
     audioSound: true,
-    preferredCamera: 'environment'
+    preferredCamera: 'environment',
+    firebaseProjectId: '',
+    firebaseApiKey: ''
   };
 
   const DEFAULT_MAPPINGS = {
@@ -5746,7 +5748,8 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
 
   const AUDIT_KEYS = {
     SESSIONS: 'billAudit_auditSessions',
-    HISTORY: 'billAudit_auditHistory'
+    HISTORY: 'billAudit_auditHistory',
+    FIREBASE_PENDING: 'billAudit_firebasePendingAudits'
   };
 
   const AuditState = {
@@ -5756,6 +5759,8 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     search: '',
     sessions: {},    // { 'Agent|Beat': { startedAt, entries: [...] } }
     history: [],
+    pending: [],     // full audit payloads not yet uploaded to Firebase
+    cloudLoadedAt: 0,
     loaded: false
   };
 
@@ -5772,12 +5777,18 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       const parsed = h ? JSON.parse(h) : [];
       AuditState.history = Array.isArray(parsed) ? parsed : [];
     } catch (e) { AuditState.history = []; }
+    try {
+      const q = localStorage.getItem(AUDIT_KEYS.FIREBASE_PENDING);
+      const parsed = q ? JSON.parse(q) : [];
+      AuditState.pending = Array.isArray(parsed) ? parsed : [];
+    } catch (e) { AuditState.pending = []; }
   }
 
   function saveAuditState() {
     try {
       localStorage.setItem(AUDIT_KEYS.SESSIONS, JSON.stringify(AuditState.sessions));
       localStorage.setItem(AUDIT_KEYS.HISTORY, JSON.stringify(AuditState.history.slice(0, 50)));
+      localStorage.setItem(AUDIT_KEYS.FIREBASE_PENDING, JSON.stringify(AuditState.pending));
     } catch (e) {
       console.warn('Audit state save failed:', e);
     }
@@ -5999,7 +6010,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     el.innerHTML = AuditState.history.slice(0, 15).map(h => `
       <div class="audit-history-item">
         <strong>${escapeHtml(h.agent)}</strong> · ${escapeHtml(h.beat === 'ALL' ? 'All Beats' : h.beat)}
-        <div class="audit-history-meta">${escapeHtml(new Date(h.auditedAt).toLocaleString())}</div>
+        <div class="audit-history-meta">${escapeHtml(new Date(h.auditedAt).toLocaleString())}${AuditState.pending.some(p => p.auditId === h.auditId) ? ' · ⏳ waiting to upload' : ' · ☁️ saved'}</div>
         <div class="audit-history-meta">
           ✅ ${h.found} found · ❌ ${h.missing} missing (${escapeHtml(formatINR(h.missingAmt))}) · ⚠️ ${h.extra} extra
         </div>
@@ -6114,7 +6125,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     if (!confirm(
       `Save audit for ${AuditState.agent} · ${AuditState.beat === 'ALL' ? 'All Beats' : AuditState.beat}?\n\n` +
       `✅ Found: ${found.length}\n❌ Missing: ${missing.length} (${formatINR(sumOut(missing))})\n⚠️ Extra: ${extra.length}\n\n` +
-      `This will be recorded to the Tracking Sheet (Bill_Audit_Log).`
+      `This will be saved to the Firebase database.`
     )) return;
 
     const now = new Date();
@@ -6140,7 +6151,17 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       }))
     };
 
-    queueSyncAction('BILL_AUDIT', payload);
+    payload.summary = {
+      expected: expected.length,
+      found: found.length,
+      missing: missing.length,
+      extra: extra.length,
+      expectedAmt: sumOut(expected.map(b => ({ outstanding: getAuditBillOutstanding(b) }))),
+      foundAmt: sumOut(found),
+      missingAmt: sumOut(missing),
+      extraAmt: sumOut(extra)
+    };
+    AuditState.pending.push(payload);
 
     AuditState.history.unshift({
       auditId,
@@ -6161,12 +6182,232 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
     SoundFX.playBeep('success');
     ConfettiFX.burst({ count: 30, x: 0.5, y: 0.4 });
     showToast(`Audit saved: ${found.length} found, ${missing.length} missing, ${extra.length} extra`, 'success', 3500);
+    flushAuditsToFirebase(true);
 
     const badge = document.getElementById('auditLastScanBadge');
     const details = document.getElementById('auditLastScanDetails');
     if (badge) badge.textContent = 'None yet';
     if (details) details.textContent = 'Audit saved. Ready for the next one...';
     renderAuditTab();
+  }
+
+  // ---------- Firebase (Cloud Firestore REST) storage for Bill Audits ----------
+
+  const FIRESTORE_COLLECTION = 'bill_audits';
+  let firebaseFlushing = false;
+
+  function getFirebaseConfig() {
+    const projectId = String(State.settings.firebaseProjectId || '').trim();
+    const apiKey = String(State.settings.firebaseApiKey || '').trim();
+    return projectId && apiKey ? { projectId, apiKey } : null;
+  }
+
+  function firestoreDocsUrl(cfg, path) {
+    return `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(cfg.projectId)}/databases/(default)/documents/${path}`;
+  }
+
+  function toFirestoreValue(v) {
+    if (v === null || v === undefined) return { nullValue: null };
+    if (typeof v === 'boolean') return { booleanValue: v };
+    if (typeof v === 'number') {
+      if (!isFinite(v)) return { nullValue: null };
+      return Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
+    }
+    if (Array.isArray(v)) return { arrayValue: { values: v.map(toFirestoreValue) } };
+    if (typeof v === 'object') return { mapValue: { fields: toFirestoreFields(v) } };
+    return { stringValue: String(v) };
+  }
+
+  function toFirestoreFields(obj) {
+    const fields = {};
+    Object.keys(obj).forEach(k => { fields[k] = toFirestoreValue(obj[k]); });
+    return fields;
+  }
+
+  function fromFirestoreValue(v) {
+    if (!v || typeof v !== 'object') return null;
+    if ('stringValue' in v) return v.stringValue;
+    if ('integerValue' in v) return Number(v.integerValue);
+    if ('doubleValue' in v) return Number(v.doubleValue);
+    if ('booleanValue' in v) return v.booleanValue;
+    if ('timestampValue' in v) return v.timestampValue;
+    if ('nullValue' in v) return null;
+    if ('arrayValue' in v) return (v.arrayValue.values || []).map(fromFirestoreValue);
+    if ('mapValue' in v) {
+      const out = {};
+      const f = v.mapValue.fields || {};
+      Object.keys(f).forEach(k => { out[k] = fromFirestoreValue(f[k]); });
+      return out;
+    }
+    return null;
+  }
+
+  async function firestoreRequest(url, options) {
+    const resp = await fetch(url, options);
+    let body = null;
+    try { body = await resp.json(); } catch (e) { body = null; }
+    if (!resp.ok) {
+      const msg = (body && body.error && body.error.message) || `HTTP ${resp.status}`;
+      const err = new Error(msg);
+      err.status = resp.status;
+      throw err;
+    }
+    return body;
+  }
+
+  /** Upload a single audit. Document ID = audit ID, so retries overwrite instead of duplicating. */
+  async function uploadAuditToFirebase(cfg, payload) {
+    const doc = {
+      ...payload,
+      device: navigator.userAgent ? navigator.userAgent.slice(0, 120) : ''
+    };
+    const fields = toFirestoreFields(doc);
+    fields.auditedAt = { timestampValue: new Date(payload.auditedAt).toISOString() };
+    const url = firestoreDocsUrl(cfg, `${FIRESTORE_COLLECTION}/${encodeURIComponent(payload.auditId)}`) +
+      `?key=${encodeURIComponent(cfg.apiKey)}`;
+    await firestoreRequest(url, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields })
+    });
+  }
+
+  async function flushAuditsToFirebase(showResult) {
+    loadAuditState();
+    if (firebaseFlushing || AuditState.pending.length === 0) return;
+    const cfg = getFirebaseConfig();
+    if (!cfg) {
+      if (showResult) showToast('Audit kept on this device. Add Firebase settings (Settings tab) to upload it.', 'warning', 4500);
+      updateFirebaseStatus();
+      return;
+    }
+    if (!navigator.onLine) {
+      if (showResult) showToast('Offline: audit will upload to Firebase when back online', 'info', 3500);
+      return;
+    }
+    firebaseFlushing = true;
+    let uploaded = 0;
+    let lastError = null;
+    try {
+      for (const payload of [...AuditState.pending]) {
+        try {
+          await uploadAuditToFirebase(cfg, payload);
+          AuditState.pending = AuditState.pending.filter(p => p.auditId !== payload.auditId);
+          uploaded++;
+          saveAuditState();
+        } catch (e) {
+          lastError = e;
+          break;
+        }
+      }
+    } finally {
+      firebaseFlushing = false;
+    }
+    if (uploaded > 0 && showResult) showToast(`☁️ Saved ${uploaded} audit(s) to Firebase`, 'success', 3000);
+    if (lastError) {
+      console.warn('Firebase audit upload failed:', lastError);
+      if (showResult) showToast(`Firebase upload failed: ${lastError.message}. Will retry.`, 'danger', 5000);
+    }
+    updateFirebaseStatus(lastError);
+    if (State.activeTab === 'tab-audit') renderAuditHistory();
+  }
+
+  /** Pull the latest saved audit summaries from Firebase (shared across devices). */
+  async function loadAuditHistoryFromFirebase() {
+    const cfg = getFirebaseConfig();
+    if (!cfg || !navigator.onLine) return;
+    if (Date.now() - AuditState.cloudLoadedAt < 30000) return;
+    AuditState.cloudLoadedAt = Date.now();
+    try {
+      const mask = ['auditId', 'agent', 'beat', 'auditedAt', 'summary']
+        .map(f => `mask.fieldPaths=${f}`).join('&');
+      const url = firestoreDocsUrl(cfg, FIRESTORE_COLLECTION) +
+        `?pageSize=50&orderBy=auditedAt%20desc&${mask}&key=${encodeURIComponent(cfg.apiKey)}`;
+      const body = await firestoreRequest(url, { method: 'GET' });
+      const cloud = (body && body.documents ? body.documents : []).map(d => {
+        const o = fromFirestoreValue({ mapValue: { fields: d.fields || {} } }) || {};
+        const sm = o.summary || {};
+        return {
+          auditId: o.auditId,
+          agent: o.agent || '',
+          beat: o.beat === 'All Beats' ? 'ALL' : (o.beat || ''),
+          auditedAt: o.auditedAt,
+          expected: sm.expected || 0,
+          found: sm.found || 0,
+          missing: sm.missing || 0,
+          extra: sm.extra || 0,
+          missingAmt: sm.missingAmt || 0
+        };
+      }).filter(h => h.auditId);
+      const byId = new Map();
+      cloud.forEach(h => byId.set(h.auditId, h));
+      AuditState.history.forEach(h => { if (!byId.has(h.auditId)) byId.set(h.auditId, h); });
+      AuditState.history = Array.from(byId.values())
+        .sort((a, b) => new Date(b.auditedAt) - new Date(a.auditedAt))
+        .slice(0, 50);
+      saveAuditState();
+      updateFirebaseStatus();
+      if (State.activeTab === 'tab-audit') renderAuditHistory();
+    } catch (e) {
+      console.warn('Firebase audit history load failed:', e);
+      updateFirebaseStatus(e);
+    }
+  }
+
+  function updateFirebaseStatus(err) {
+    const el = document.getElementById('firebaseStatusText');
+    if (!el) return;
+    const cfg = getFirebaseConfig();
+    const pendingTxt = AuditState.pending.length ? ` · ${AuditState.pending.length} audit(s) waiting to upload` : '';
+    if (!cfg) el.textContent = 'Firebase: not configured. Audits are kept on this device only.' + pendingTxt;
+    else if (err) el.textContent = `Firebase (${cfg.projectId}): error — ${err.message}` + pendingTxt;
+    else el.textContent = `Firebase (${cfg.projectId}): connected` + pendingTxt;
+  }
+
+  function setupFirebaseSettings() {
+    const pidInput = document.getElementById('firebaseProjectId');
+    const keyInput = document.getElementById('firebaseApiKey');
+    if (pidInput) pidInput.value = State.settings.firebaseProjectId || '';
+    if (keyInput) keyInput.value = State.settings.firebaseApiKey || '';
+    loadAuditState();
+    updateFirebaseStatus();
+
+    document.getElementById('saveFirebaseConfigBtn')?.addEventListener('click', () => {
+      State.settings.firebaseProjectId = (pidInput?.value || '').trim();
+      State.settings.firebaseApiKey = (keyInput?.value || '').trim();
+      saveState('settings');
+      AuditState.cloudLoadedAt = 0;
+      updateFirebaseStatus();
+      showToast('Firebase settings saved', 'success');
+      flushAuditsToFirebase(true);
+      loadAuditHistoryFromFirebase();
+    });
+
+    document.getElementById('testFirebaseBtn')?.addEventListener('click', async () => {
+      const cfg = {
+        projectId: (pidInput?.value || '').trim(),
+        apiKey: (keyInput?.value || '').trim()
+      };
+      if (!cfg.projectId || !cfg.apiKey) {
+        showToast('Enter the Project ID and Web API Key first', 'warning');
+        return;
+      }
+      try {
+        await firestoreRequest(firestoreDocsUrl(cfg, FIRESTORE_COLLECTION) + `?pageSize=1&key=${encodeURIComponent(cfg.apiKey)}`, { method: 'GET' });
+        showToast('✅ Firebase connected — bill_audits collection is reachable', 'success', 3500);
+        const el = document.getElementById('firebaseStatusText');
+        if (el) el.textContent = `Firebase (${cfg.projectId}): connection OK`;
+      } catch (e) {
+        showToast(`Firebase test failed: ${e.message}`, 'danger', 5000);
+        updateFirebaseStatus(e);
+      }
+    });
+
+    window.addEventListener('online', () => flushAuditsToFirebase(false));
+    setTimeout(() => {
+      flushAuditsToFirebase(false);
+      loadAuditHistoryFromFirebase();
+    }, 1500);
   }
 
   function setupAuditListeners() {
@@ -6207,6 +6448,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       renderAuditTab();
     });
     document.getElementById('auditSaveBtn')?.addEventListener('click', saveAndRecordAudit);
+    setupFirebaseSettings();
   }
 
   // ========================================================
@@ -6352,6 +6594,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       renderAgentsManager();
     } else if (tabId === 'tab-audit') {
       renderAuditTab();
+      loadAuditHistoryFromFirebase();
       focusActiveScannerInput();
     }
   }

@@ -1012,7 +1012,7 @@
               <button type="button" id="auditResetBtn" class="btn btn-outline btn-sm" title="Clear scanned bills and start this audit again">
                 <i class="fa-solid fa-rotate-left"></i> Restart
               </button>
-              <button type="button" id="auditSaveBtn" class="btn btn-success btn-sm font-bold" title="Save audit result and record it to the Tracking Sheet">
+              <button type="button" id="auditSaveBtn" class="btn btn-success btn-sm font-bold" title="Save audit result to the Firebase database">
                 <i class="fa-solid fa-floppy-disk"></i> Save &amp; Record Audit
               </button>
             </div>
@@ -1283,6 +1283,37 @@
 
             <div class="sheet-loaded-summary mt-3" id="trackingSheetSummaryBox">
               <span id="trackingSheetSummaryText">Tracking Sheet: Ready to link. Enter your Tracking Web App URL above.</span>
+            </div>
+          </div>
+
+          <!-- CARD: FIREBASE (BILL AUDIT STORAGE) -->
+          <div class="clean-card">
+            <div class="card-header-simple">
+              <i class="fa-solid fa-fire icon-accent text-warning"></i>
+              <div>
+                <h3>Firebase Database (Bill Audit Storage)</h3>
+                <p>Saved Bill Audits are stored in Cloud Firestore, collection <code>bill_audits</code></p>
+              </div>
+            </div>
+            <div class="mt-3">
+              <label for="firebaseProjectId">Firebase Project ID</label>
+              <input type="text" id="firebaseProjectId" class="form-input font-mono" placeholder="e.g. bill-audit-12345" autocomplete="off" />
+              <label for="firebaseApiKey" class="mt-2" style="display:block;">Web API Key</label>
+              <input type="text" id="firebaseApiKey" class="form-input font-mono" placeholder="AIza..." autocomplete="off" />
+              <p class="hint mt-1" style="font-size: 0.75rem;">
+                💡 <em>Firebase Console &gt; Project settings &gt; General &gt; Your apps (Web) &gt; <code>projectId</code> and <code>apiKey</code>.</em>
+              </p>
+              <div class="buttons-cluster mt-2">
+                <button id="saveFirebaseConfigBtn" class="btn btn-primary btn-sm">
+                  <i class="fa-solid fa-save"></i> Save Firebase Settings
+                </button>
+                <button id="testFirebaseBtn" class="btn btn-outline btn-sm">
+                  <i class="fa-solid fa-plug"></i> Test Connection
+                </button>
+              </div>
+            </div>
+            <div class="sheet-loaded-summary mt-3">
+              <span id="firebaseStatusText">Firebase: not configured.</span>
             </div>
           </div>
 

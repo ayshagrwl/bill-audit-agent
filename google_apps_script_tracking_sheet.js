@@ -40,8 +40,7 @@ const TRACKING_TABS = {
   SCAN_OUT: 'Scan_Out_Log',
   SCAN_IN: 'Scan_In_Log',
   CUSTODY: 'Live_Custody',
-  SUMMARY: 'Daily_Summary',
-  BILL_AUDIT: 'Bill_Audit_Log'
+  SUMMARY: 'Daily_Summary'
 };
 
 /**
@@ -189,19 +188,6 @@ function doPost(e) {
         message: 'Batch sync completed into Tracking Sheet',
         queuedCount: data.queue ? data.queue.length : 0,
         syncedCount: data.bills ? data.bills.length : 0,
-        timestamp: nowIST
-      });
-    }
-
-    // 3B. Outstanding Bill Audit (by Agent & Beat)
-    if (action === 'RECORD_BILL_AUDIT' || action === 'BILL_AUDIT') {
-      const p = data.payload || data;
-      const count = recordBillAudit(ss, p, nowIST);
-      return respondJSON({
-        success: true,
-        action: 'RECORD_BILL_AUDIT',
-        message: `Recorded ${count} audit rows`,
-        count: count,
         timestamp: nowIST
       });
     }
@@ -435,8 +421,6 @@ function processSyncQueue(ss, queue, timestamp) {
       recordScanOut(ss, p.bills, p.dispatchDate || getTodayDateString(), p.agent, itemTime);
     } else if (type === 'SETTLEMENT_PAYMENT' || type === 'SETTLEMENT_RETURN') {
       recordScanIn(ss, p, itemTime);
-    } else if (type === 'BILL_AUDIT') {
-      recordBillAudit(ss, p, itemTime);
     } else if (type === 'BILL_FLAG_MISSING') {
       const custodyBill = {
         billNo: p.billNo,
@@ -450,64 +434,6 @@ function processSyncQueue(ss, queue, timestamp) {
       syncCustodyBills(ss, [custodyBill], itemTime);
     }
   });
-}
-
-/**
- * Record an Outstanding Bill Audit into the Bill_Audit_Log tab.
- * One row per bill: FOUND (physically present), MISSING (outstanding but not found), EXTRA (found but not in list).
- * Re-sending the same Audit ID is ignored so offline retries never duplicate rows.
- * Does not touch Live_Custody / Scan logs.
- */
-function recordBillAudit(ss, p, timestamp) {
-  if (!p || !Array.isArray(p.rows)) return 0;
-  let sheet = ss.getSheetByName(TRACKING_TABS.BILL_AUDIT);
-  if (!sheet) {
-    sheet = ss.insertSheet(TRACKING_TABS.BILL_AUDIT);
-    const headers = [
-      ['Timestamp (IST)', 'Audit ID', 'Audit Date', 'Sales Agent', 'Audited Beat', 'Invoice / Bill No', 'Party Name', 'Bill Amount (₹)', 'Outstanding (₹)', 'Audit Result', 'Entry Mode', 'Bill Beat (Sheet)', 'Notes']
-    ];
-    styleHeaderRow(sheet, headers, '#7c2d12'); // Rust
-    sheet.setColumnWidth(1, 160);
-    sheet.setColumnWidth(2, 150);
-    sheet.setColumnWidth(5, 180);
-    sheet.setColumnWidth(6, 150);
-    sheet.setColumnWidth(7, 200);
-    sheet.setColumnWidth(12, 180);
-    sheet.setColumnWidth(13, 220);
-  }
-
-  const auditId = String(p.auditId || '');
-  if (auditId && sheet.getLastRow() > 1) {
-    const ids = sheet.getRange(2, 2, sheet.getLastRow() - 1, 1).getValues();
-    for (let i = 0; i < ids.length; i++) {
-      if (String(ids[i][0]) === auditId) return 0;
-    }
-  }
-
-  const ts = (p.auditedAt ? Utilities.formatDate(new Date(p.auditedAt), 'Asia/Kolkata', 'yyyy-MM-dd HH:mm:ss') : '') || timestamp;
-  const rows = p.rows.map(r => [
-    ts,
-    sanitizeCellForSheet(auditId),
-    sanitizeCellForSheet(p.auditDate || getTodayDateString()),
-    sanitizeCellForSheet(p.agent || ''),
-    sanitizeCellForSheet(p.beat || ''),
-    sanitizeCellForSheet(expandCanonicalInvoiceNumber(r.billNo || '')),
-    sanitizeCellForSheet(r.party || ''),
-    Number(r.amount) || 0,
-    Number(r.outstanding) || 0,
-    sanitizeCellForSheet(r.result || ''),
-    sanitizeCellForSheet(r.mode || ''),
-    sanitizeCellForSheet(r.beat || ''),
-    sanitizeCellForSheet(r.note || '')
-  ]);
-  if (rows.length === 0) return 0;
-
-  const start = sheet.getLastRow() + 1;
-  sheet.getRange(start, 1, rows.length, rows[0].length).setValues(rows);
-  const resultCol = sheet.getRange(start, 10, rows.length, 1);
-  const colors = rows.map(r => [r[9] === 'FOUND' ? '#d1fae5' : (r[9] === 'MISSING' ? '#fee2e2' : '#fef3c7')]);
-  resultCol.setBackgrounds(colors).setFontWeight('bold');
-  return rows.length;
 }
 
 /**
