@@ -21,9 +21,11 @@ const consts = ['PAY_MODE_RE', 'GENERIC_REMARK_RE', 'PAID_STATUS_RE', 'SYSTEM_IN
   .map(n => src.match(new RegExp('  const ' + n + ' = .*;'))[0]).join('\n');
 const names = ['normalizeInvoiceNumber', 'normalizeDateString', 'getTodayDateString', 'isSameAgent', 'cleanBeatString',
   'canonicalAgentName', 'parseLogNumber', 'mapOutLogRow', 'mapInLogRow', 'extractTripNote', 'daysBetween',
-  'buildBillInsights', 'getInsightsWeek', 'summarizeTrips', 'summarizeOutlets'];
+  'buildBillInsights', 'getInsightsWeek', 'summarizeTrips', 'summarizeOutlets', 'summarizeBeats',
+  'planBeatFor', 'tripBeatLabel', 'parseInvoiceDate', 'receiptNumbers', 'buildBillReview'];
 const L = new Function(
   'const dateNormCache = new Map();\nconst State = { agents: [{ name: "Rajesh" }, { name: "Shivam" }, { name: "Self" }] };\n' +
+  src.match(/  const MASTER_BEAT_PLAN = \{[\s\S]*?\n  \};/)[0] + "\nconst REVIEW_PLAN_SUFFIX = ' (beat plan)';\n" +
   consts + '\n' + names.map(extract).join('\n') + '\nreturn { ' + names.join(', ') + ' };'
 )();
 
@@ -126,6 +128,75 @@ test('Outlets group bills by party, biggest due first', () => {
   assert.strictEqual(outlets[0].party, 'Other');
   assert.strictEqual(outlets[1].bills.length, 2);
   assert.strictEqual(outlets[1].due, 1500);
+});
+
+test('Beats & outlets: visits, usual gap, visits since paid, and status', () => {
+  const rows = [
+    // Stuck outlet: 3 visits, nothing collected
+    out('2026-10-01T05:00:00Z', 'IN-FY26/27-901', 'Shivam', 'Stuck Store', 1000, '2026-10-01', 1000),
+    out('2026-10-08T05:00:00Z', 'IN-FY26/27-901', 'Shivam', 'Stuck Store', 1000, '2026-10-08', 1000),
+    out('2026-10-15T05:00:00Z', 'IN-FY26/27-901', 'Shivam', 'Stuck Store', 1000, '2026-10-15', 1000),
+    // Paying outlet: due dropped between visits
+    out('2026-10-08T05:00:00Z', 'IN-FY26/27-902', 'Shivam', 'Paying Store', 1000, '2026-10-08', 1000),
+    out('2026-10-15T05:00:00Z', 'IN-FY26/27-902', 'Shivam', 'Paying Store', 1000, '2026-10-15', 600),
+    // Outlet on another beat, last seen long ago
+    out('2026-09-01T05:00:00Z', 'IN-FY26/27-903', 'Rajesh', 'Old Store', 500, '2026-09-01', 500)
+  ];
+  rows[0].beat = rows[1].beat = rows[2].beat = rows[3].beat = rows[4].beat = 'Pateri';
+  rows[5].beat = 'Bagha';
+  const bills = L.buildBillInsights(rows, [], { today: '2026-10-20' });
+  const beats = L.summarizeBeats(bills, '2026-10-20');
+  const pateri = beats.find(b => b.beat === 'Pateri');
+  assert.strictEqual(pateri.outlets.length, 2);
+  const stuck = pateri.outlets.find(o => o.party === 'Stuck Store');
+  assert.strictEqual(stuck.status, 'STUCK');
+  assert.strictEqual(stuck.visitsSincePaid, 3);
+  assert.strictEqual(Math.round(stuck.avgGap), 7);
+  const paying = pateri.outlets.find(o => o.party === 'Paying Store');
+  assert.strictEqual(paying.status, 'PAYING');
+  assert.strictEqual(paying.lastPaid, '2026-10-08');
+  assert.strictEqual(paying.lastPaidAmt, 400);
+  assert.strictEqual(pateri.stuck, 1);
+  const old = beats.find(b => b.beat === 'Bagha').outlets[0];
+  assert.strictEqual(old.status, 'VISIT_DUE');
+  assert.strictEqual(old.daysSinceVisit, 49);
+});
+
+test('Bill review: invoice dates, receipt numbers and the beat-plan fallback', () => {
+  assert.strictEqual(L.parseInvoiceDate('22 Mar', 'IN-FY26/27-3921'), '2027-03-22'); // FY26/27: Jan-Mar fall in 2027
+  assert.strictEqual(L.parseInvoiceDate('1 Oct', 'IN-FY26/27-3921'), '2026-10-01');
+  assert.strictEqual(L.parseInvoiceDate('14 Mar', 'IN-17063-10205'), '2026-03-14'); // older series = FY25/26
+  assert.strictEqual(L.parseInvoiceDate('', 'X'), '');
+  assert.deepStrictEqual(L.receiptNumbers('R4228 + R4255 (NO VCH) r 4255'), ['R4228', 'R4255']);
+  // 2026-10-20 is a Tuesday: Rajesh's plan says Civil Line Panna Naka
+  assert.strictEqual(L.tripBeatLabel({ agent: 'Rajesh', date: '2026-10-20', beat: '' }), 'Civil Line Panna Naka (beat plan)');
+  assert.strictEqual(L.tripBeatLabel({ agent: 'Rajesh', date: '2026-10-20', beat: 'Kothi Road Bagha' }), 'Kothi Road Bagha');
+});
+
+test('Bill review follows the agent & beat chosen in the app, not the Master Sheet', () => {
+  const rows = [
+    out('2026-10-13T05:00:00Z', 'IN-FY26/27-951', 'Rajesh', 'Neema', 1000, '2026-10-13', 1000),
+    out('2026-10-20T05:00:00Z', 'IN-FY26/27-951', 'Rajesh', 'Neema', 1000, '2026-10-20', 600),
+    out('2026-10-20T05:00:00Z', 'IN-FY26/27-952', 'Shivam', 'Other', 500, '2026-10-20', 500),
+    out('2026-10-21T05:00:00Z', 'IN-FY26/27-953', 'Rajesh', 'Unknown Bill Shop', 300, '2026-10-21', 300)
+  ];
+  rows[3].beat = 'Kothi Road Bagha'; // recorded at Scan OUT
+  const bills = L.buildBillInsights(rows, [], { today: '2026-10-22', getMaster: no => (no.endsWith('953') ? null : { outstanding: no.endsWith('951') ? 600 : 500 }) });
+  // The master sheet would say another agent/beat; the review only uses the scans
+  const master = no => (no.endsWith('953') ? null : { billNo: no, billDate: '1 Oct', receipt: 'R4026', agent: 'SHEET AGENT', beat: 'SHEET BEAT' });
+  const all = L.buildBillReview(bills, { agent: 'Rajesh', beat: 'ALL', range: ['0000-00-00', '9999-12-31'] }, master);
+  assert.deepStrictEqual(all.map(r => r.billNo).sort(), ['IN-FY26/27-951', 'IN-FY26/27-953']);
+  const neema = all.find(r => r.billNo === 'IN-FY26/27-951');
+  assert.strictEqual(neema.tripsTotal, 2);
+  assert.strictEqual(neema.lastPaidDate, '2026-10-13'); // due dropped between the two trips
+  assert.strictEqual(neema.lastPaidAmt, 400);
+  assert.deepStrictEqual(neema.receipts, ['R4026']);
+  assert.strictEqual(neema.invoiceDate, '2026-10-01');
+  assert.strictEqual(all.find(r => r.billNo === 'IN-FY26/27-953').inMaster, false);
+  const kothi = L.buildBillReview(bills, { agent: 'Rajesh', beat: 'Kothi Road Bagha', range: ['0000-00-00', '9999-12-31'] }, master);
+  assert.deepStrictEqual(kothi.map(r => r.billNo), ['IN-FY26/27-953']);
+  const oneDay = L.buildBillReview(bills, { agent: 'Rajesh', beat: 'ALL', range: ['2026-10-13', '2026-10-13'] }, master);
+  assert.deepStrictEqual(oneDay.map(r => r.billNo), ['IN-FY26/27-951']);
 });
 
 console.log(`\n🎉 ALL ${n} INSIGHTS TESTS PASSED`);

@@ -1164,7 +1164,8 @@
       agent: mm ? mm.agent : '',
       beat: mm ? (mm.beat || '') : '',
       receipt: mm ? (mm.receipt || '') : '',
-      outstanding: mm && mm.outstanding !== undefined ? mm.outstanding : 0,
+      // Unknown when the bill is not in the Master Sheet: 0 would record it as fully paid on Scan IN
+      outstanding: mm && mm.outstanding !== undefined ? mm.outstanding : undefined,
       remainingText: mm ? (mm.remainingText || '') : '',
       fromMaster: !!mm,
       raw: raw || finalBillNo,
@@ -2076,7 +2077,7 @@
         const end = next ? next.t : Infinity;
         const tripIns = ins.filter(r => r.t >= o.t - 60000 && r.t < end);
         const dueOut = o.dueOut !== null ? o.dueOut : (o.amount || 0);
-        const trip = { date: o.date, agent: canonicalAgentName(o.agent), dueOut, scanned: tripIns.length > 0, back: false, collected: 0, dueIn: null, note: '', inDate: '' };
+        const trip = { date: o.date, agent: canonicalAgentName(o.agent), beat: o.beat || '', dueOut, scanned: tripIns.length > 0, back: false, collected: 0, dueIn: null, note: '', inDate: '' };
 
         let dueAfter = null;
         if (trip.scanned) {
@@ -2112,6 +2113,7 @@
         billNo: lastOutRow.billNo,
         party: (mm && mm.party) || [...outs, ...ins].reverse().map(r => r.party).find(Boolean) || '',
         agent: canonicalAgentName(lastOutRow.agent || (lastIn && lastIn.agent)),
+        beat: [...outs].reverse().map(r => r.beat).find(Boolean) || (mm && mm.beat) || '',
         amount: (mm && Number(mm.amount)) || lastOutRow.amount || 0,
         trips,
         tripCount: trips.length,
@@ -2130,6 +2132,83 @@
       });
     });
     return bills;
+  }
+
+  /**
+   * Agent -> Beat -> Outlet view of what is owed and how often each outlet is visited.
+   * A visit is a day the outlet's bills went out with an agent. Per outlet: open bills, due,
+   * visits, average gap between visits, last visit, last payment, visits since it, and a
+   * status: STUCK (3+ visits since money last came in), VISIT_DUE (not visited for longer
+   * than its usual cycle), PAYING (paid in the last 14 days) or OK.
+   */
+  function summarizeBeats(bills, today = getTodayDateString(), beatOf = b => b.beat) {
+    const outletMap = new Map();
+    bills.forEach(b => {
+      const agent = b.agent || 'Unassigned';
+      const beat = beatOf(b) || 'No beat';
+      const party = String(b.party || 'Unknown outlet').trim();
+      const key = `${agent}|${beat.toLowerCase()}|${party.toLowerCase().replace(/\s+/g, ' ')}`;
+      if (!outletMap.has(key)) outletMap.set(key, { agent, beat, party, bills: [], visitDays: new Set(), paidDays: new Map() });
+      const o = outletMap.get(key);
+      o.bills.push(b);
+      b.trips.forEach(t => {
+        o.visitDays.add(t.date);
+        if (t.collected > 0) o.paidDays.set(t.date, (o.paidDays.get(t.date) || 0) + t.collected);
+      });
+    });
+
+    const outlets = [];
+    outletMap.forEach(o => {
+      const open = o.bills.filter(b => b.currentDue > 0);
+      if (open.length === 0) return;
+      const visits = Array.from(o.visitDays).sort();
+      const gaps = visits.slice(1).map((d, i) => daysBetween(visits[i], d)).filter(g => g > 0);
+      const avgGap = gaps.length ? gaps.reduce((s, g) => s + g, 0) / gaps.length : null;
+      const lastVisit = visits[visits.length - 1] || '';
+      const paidDates = Array.from(o.paidDays.keys()).sort();
+      const lastPaid = paidDates[paidDates.length - 1] || '';
+      const visitsSincePaid = visits.filter(d => !lastPaid || d > lastPaid).length;
+      const daysSinceVisit = lastVisit ? daysBetween(lastVisit, today) : null;
+      const oldest = open.reduce((m, b) => (b.firstOut < m ? b.firstOut : m), open[0].firstOut);
+      let status = 'OK';
+      if (lastPaid && daysBetween(lastPaid, today) <= 14) status = 'PAYING';
+      else if (visitsSincePaid >= 3) status = 'STUCK';
+      if (status !== 'STUCK' && daysSinceVisit !== null && daysSinceVisit > Math.max(7, Math.round((avgGap || 7) * 1.5))) status = 'VISIT_DUE';
+      outlets.push({
+        agent: o.agent, beat: o.beat, party: o.party, openBills: open,
+        due: open.reduce((s, b) => s + b.currentDue, 0),
+        oldestDays: daysBetween(oldest, today),
+        visits30: visits.filter(d => daysBetween(d, today) <= 30).length,
+        avgGap, lastVisit, daysSinceVisit, lastPaid,
+        lastPaidAmt: lastPaid ? o.paidDays.get(lastPaid) : 0,
+        collected30: Array.from(o.paidDays.entries()).filter(([d]) => daysBetween(d, today) <= 30).reduce((s, [, v]) => s + v, 0),
+        visitsSincePaid, status
+      });
+    });
+
+    const beatMap = new Map();
+    outlets.forEach(o => {
+      const key = `${o.agent}|${o.beat.toLowerCase()}`;
+      if (!beatMap.has(key)) beatMap.set(key, { agent: o.agent, beat: o.beat, outlets: [], due: 0, collected30: 0, stuck: 0, visitDue: 0, visitDays: new Set() });
+      const bt = beatMap.get(key);
+      bt.outlets.push(o);
+      bt.due += o.due;
+      bt.collected30 += o.collected30;
+      if (o.status === 'STUCK') bt.stuck++;
+      if (o.status === 'VISIT_DUE') bt.visitDue++;
+    });
+    // Beat visit days = days any of its bills went out (including outlets that are paid up)
+    bills.forEach(b => {
+      const key = `${b.agent || 'Unassigned'}|${(beatOf(b) || 'No beat').toLowerCase()}`;
+      const bt = beatMap.get(key);
+      if (bt) b.trips.forEach(t => bt.visitDays.add(t.date));
+    });
+    const beats = Array.from(beatMap.values()).map(bt => {
+      const days = Array.from(bt.visitDays).sort();
+      bt.outlets.sort((a, b) => b.due - a.due);
+      return { ...bt, lastVisit: days[days.length - 1] || '', visits30: days.filter(d => daysBetween(d, today) <= 30).length };
+    });
+    return beats.sort((a, b) => a.agent.localeCompare(b.agent) || b.due - a.due);
   }
 
   /** Monday-based week window for an offset from the current week (0 = this week). */
@@ -2195,7 +2274,7 @@
     { key: 'paid', label: 'Money collected', cls: 'viz-good', icon: 'fa-indian-rupee-sign' }
   ];
 
-  const insightsState = { logs: null, fetchedAt: 0, loading: false, error: '', bills: [], weekOffset: 0, agent: 'ALL', list: 'BLOCKED', search: '' };
+  const insightsState = { logs: null, fetchedAt: 0, loading: false, error: '', bills: [], weekOffset: 0, agent: 'ALL', list: 'BLOCKED', search: '', beatKey: null, openOutlet: null };
 
   function formatShortDate(dateStr) {
     const n = normalizeDateString(dateStr);
@@ -2205,6 +2284,23 @@
   }
 
   async function loadInsightsLogs(force = false) {
+    if (Cloud.isConfigured()) {
+      if (!force && insightsState.logs && Date.now() - insightsState.fetchedAt < 10 * 60 * 1000) return;
+      insightsState.loading = true;
+      insightsState.error = '';
+      renderInsightsTab();
+      try {
+        await Cloud.ready();
+        const data = await Cloud.fetchLogs(120);
+        insightsState.logs = { out: data.out.map(mapOutLogRow), in: data.in.map(mapInLogRow) };
+        insightsState.fetchedAt = Date.now();
+      } catch (err) {
+        insightsState.error = err && err.message ? err.message : String(err);
+      } finally {
+        insightsState.loading = false;
+      }
+      return;
+    }
     const url = State.settings.trackingSheetScriptUrl;
     if (!url) {
       insightsState.error = 'Tracking Sheet script URL is not set (Settings & Sync).';
@@ -2450,6 +2546,7 @@
     }
 
     renderInsightsList({ blocked, missing, payment, outlets });
+    renderInsightsBeats(bills);
   }
 
   function tripDotsHtml(b) {
@@ -2516,6 +2613,450 @@
       ? `<tr class="empty-row"><td colspan="${columns.length}" style="text-align:center;padding:24px">🎉 Nothing here${q ? ' for this search' : ''}.</td></tr>`
       : rows.slice(0, limit).join('') + (rows.length > limit ? `<tr class="empty-row"><td colspan="${columns.length}">Showing ${limit} of ${rows.length} — search or export to see all.</td></tr>` : '');
     insightsState.csv = { columns, rows: csvRows };
+  }
+
+  const OUTLET_STATUS = {
+    STUCK: { label: 'Stuck', cls: 'ins-st-crit', icon: 'fa-ban', hint: '3+ visits since money last came in' },
+    VISIT_DUE: { label: 'Visit overdue', cls: 'ins-st-warn', icon: 'fa-clock', hint: 'Not visited for longer than its usual cycle' },
+    PAYING: { label: 'Paying', cls: 'ins-st-good', icon: 'fa-circle-check', hint: 'Paid something in the last 14 days' },
+    OK: { label: 'OK', cls: 'ins-st-neutral', icon: 'fa-minus', hint: 'Visited on its usual cycle, no payment pattern yet' }
+  };
+
+  function insightsBeatOf(b) {
+    return b.beat || inferBillBeat({ billNo: b.billNo, agent: b.agent, dispatchDate: b.lastOut }) || '';
+  }
+
+  function outletStatusBadge(status) {
+    const st = OUTLET_STATUS[status];
+    return `<span class="ins-status-badge ${st.cls}" title="${st.hint}"><i class="fa-solid ${st.icon}"></i> ${st.label}</span>`;
+  }
+
+  /** Beats & Outlets section of the Insights tab. */
+  function renderInsightsBeats(bills) {
+    const todayEl = document.getElementById('insTodayBeats');
+    const listEl = document.getElementById('insBeatList');
+    const panelEl = document.getElementById('insOutletPanel');
+    if (!listEl || !panelEl) return;
+
+    const beats = summarizeBeats(bills, getTodayDateString(), insightsBeatOf);
+    const keyOf = bt => `${bt.agent}|${bt.beat.toLowerCase()}`;
+
+    // Today's beat for each agent, from the weekly beat plan
+    const dayCode = getCurrentDayCode();
+    const agents = State.agents.filter(a => insightsState.agent === 'ALL' || a.name === insightsState.agent);
+    const todayCards = agents.map(a => {
+      const plan = MASTER_BEAT_PLAN[a.name] && MASTER_BEAT_PLAN[a.name][dayCode];
+      if (!plan) return '';
+      const bt = beats.find(b => isSameAgent(b.agent, a.name) && isSameBeat(b.beat, plan.beat));
+      const priority = bt ? bt.outlets.filter(o => o.status === 'STUCK' || o.status === 'VISIT_DUE').slice(0, 3) : [];
+      return `
+        <button type="button" class="ins-today-card" ${bt ? `data-ins-beat="${escapeHtml(keyOf(bt))}"` : 'disabled'}>
+          <span class="ins-today-head"><i class="fa-solid fa-calendar-day"></i> ${escapeHtml(a.name)} · today (${dayCode})</span>
+          <strong>${escapeHtml(plan.beat)}</strong>
+          ${bt ? `<span class="ins-today-meta"><strong class="text-danger">${formatINR(bt.due)}</strong> due across ${bt.outlets.length} outlets · ${bt.stuck} stuck</span>
+          ${priority.length ? `<span class="ins-today-meta">Collect first: ${priority.map(o => `${escapeHtml(o.party)} (${formatINRCompact(o.due)})`).join(', ')}</span>` : ''}`
+          : '<span class="ins-today-meta">No unpaid bills on this beat 🎉</span>'}
+        </button>`;
+    }).join('');
+    if (todayEl) todayEl.innerHTML = todayCards || '<div class="viz-empty">No beat planned for today.</div>';
+
+    if (beats.length === 0) {
+      listEl.innerHTML = '<div class="viz-empty">No outlets with money due.</div>';
+      panelEl.innerHTML = '';
+      return;
+    }
+    // Agents in the usual order (Rajesh, Shivam, Self), then anyone else found in old logs
+    const agentRank = name => {
+      const i = State.agents.findIndex(a => isSameAgent(name, a.name));
+      return i < 0 ? State.agents.length : i;
+    };
+    beats.sort((a, b) => agentRank(a.agent) - agentRank(b.agent) || b.due - a.due);
+    if (!beats.some(bt => keyOf(bt) === insightsState.beatKey)) {
+      // Default to today's beat of the first agent that has one, else the biggest due
+      const todayBtn = todayEl && todayEl.querySelector('[data-ins-beat]');
+      insightsState.beatKey = todayBtn ? todayBtn.dataset.insBeat : keyOf(beats[0]);
+    }
+
+    // Beat list grouped by agent; bar length = due, relative to the agent's biggest beat
+    const byAgent = new Map();
+    beats.forEach(bt => { if (!byAgent.has(bt.agent)) byAgent.set(bt.agent, []); byAgent.get(bt.agent).push(bt); });
+    listEl.innerHTML = Array.from(byAgent.entries()).map(([agent, list]) => {
+      const max = Math.max(...list.map(b => b.due), 1);
+      const total = list.reduce((s, b) => s + b.due, 0);
+      return `
+        <div class="ins-beat-group">
+          <div class="ins-beat-agent"><i class="fa-solid fa-user-tie"></i> ${escapeHtml(agent)} <span class="font-mono">${formatINR(total)} due</span></div>
+          ${list.map(bt => {
+            const tipId = registerVizTip(bt.beat, [
+              { cls: 'viz-route', label: 'Due on this beat', value: formatINR(bt.due), strong: true },
+              { label: 'Outlets with dues', value: String(bt.outlets.length) },
+              { label: 'Stuck / visit overdue', value: `${bt.stuck} / ${bt.visitDue}` },
+              { label: 'Visit days (30 days)', value: String(bt.visits30) },
+              { label: 'Collected (30 days)', value: formatINR(bt.collected30) }
+            ], 'ins');
+            return `
+              <button type="button" class="viz-hbar-row ins-beat-row${keyOf(bt) === insightsState.beatKey ? ' is-selected' : ''}" data-ins-beat="${escapeHtml(keyOf(bt))}" data-viz-tip="${tipId}" aria-pressed="${keyOf(bt) === insightsState.beatKey}">
+                <span class="viz-hbar-head">
+                  <span class="viz-hbar-name">${escapeHtml(bt.beat)}</span>
+                  <span class="viz-hbar-value font-mono"><strong>${formatINRCompact(bt.due)}</strong> · ${bt.outlets.length} outlets</span>
+                </span>
+                <span class="viz-hbar-track"><span class="viz-seg viz-route" style="width:${(bt.due / max) * 100}%"></span></span>
+                <span class="ins-beat-meta">${bt.stuck ? `<span class="text-danger">${bt.stuck} stuck</span> · ` : ''}${bt.visitDue ? `${bt.visitDue} visit overdue · ` : ''}last visit ${bt.lastVisit ? formatShortDate(bt.lastVisit) : '—'} · ${formatINRCompact(bt.collected30)} in 30d</span>
+              </button>`;
+          }).join('')}
+        </div>`;
+    }).join('');
+
+    // Outlet table for the selected beat
+    const bt = beats.find(b => keyOf(b) === insightsState.beatKey);
+    const counts = Object.keys(OUTLET_STATUS).map(k => ({ k, n: bt.outlets.filter(o => o.status === k).length })).filter(x => x.n);
+    panelEl.innerHTML = `
+      <div class="ins-outlet-head">
+        <div>
+          <h5>${escapeHtml(bt.beat)} <small class="text-muted">· ${escapeHtml(bt.agent)}</small></h5>
+          <span class="text-muted">${bt.outlets.length} outlets owe <strong class="text-danger">${formatINR(bt.due)}</strong> · visited on ${bt.visits30} days in the last 30 · ${formatINR(bt.collected30)} collected</span>
+        </div>
+        <div class="ins-status-counts">${counts.map(c => `${outletStatusBadge(c.k)} <span class="font-mono">${c.n}</span>`).join(' ')}</div>
+      </div>
+      <div class="table-wrap mt-2" style="max-height: 480px; overflow-y: auto;">
+        <table class="minimal-table ins-table">
+          <thead><tr><th>Outlet</th><th>Status</th><th style="text-align:right">Due</th><th>Bills</th><th>Oldest</th><th>Visits (30d)</th><th>Usual gap</th><th>Last visit</th><th>Last paid</th><th>Visits since paid</th></tr></thead>
+          <tbody>
+            ${bt.outlets.map((o, i) => {
+              const open = insightsState.openOutlet === `${insightsState.beatKey}|${i}`;
+              return `
+                <tr class="ins-outlet-row${open ? ' is-open' : ''}" data-ins-outlet="${i}" tabindex="0" aria-expanded="${open}">
+                  <td><i class="fa-solid fa-chevron-${open ? 'down' : 'right'} text-muted"></i> <strong>${escapeHtml(o.party)}</strong></td>
+                  <td>${outletStatusBadge(o.status)}</td>
+                  <td class="font-mono text-danger" style="text-align:right">${formatINR(o.due)}</td>
+                  <td>${o.openBills.length}</td>
+                  <td><span class="aging-pill ${o.oldestDays > 30 ? 'aging-critical' : o.oldestDays > 14 ? 'aging-warn' : 'aging-fresh'}">${o.oldestDays}d</span></td>
+                  <td>${o.visits30}</td>
+                  <td>${o.avgGap ? `every ~${Math.round(o.avgGap)}d` : '—'}</td>
+                  <td>${o.lastVisit ? `${formatShortDate(o.lastVisit)} <small class="text-muted">(${o.daysSinceVisit}d ago)</small>` : '—'}</td>
+                  <td>${o.lastPaid ? `${formatShortDate(o.lastPaid)} <small class="font-mono">${formatINRCompact(o.lastPaidAmt)}</small>` : '<span class="text-danger">never</span>'}</td>
+                  <td><strong class="${o.visitsSincePaid >= 3 ? 'text-danger' : ''}">${o.visitsSincePaid}</strong></td>
+                </tr>
+                ${open ? `<tr class="ins-outlet-bills"><td colspan="10">${o.openBills.map(b => `
+                  <div class="ins-outlet-bill"><strong class="font-mono">${escapeHtml(b.billNo)}</strong>
+                    <span class="font-mono text-danger">${formatINR(b.currentDue)}</span>
+                    <span>sent ${formatShortDate(b.firstOut)}</span>
+                    ${tripDotsHtml(b)}
+                    ${b.lastNote ? `<span class="ins-note">${escapeHtml(b.lastNote)}</span>` : ''}</div>`).join('')}</td></tr>` : ''}`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>`;
+
+    const selectBeat = key => {
+      insightsState.beatKey = key;
+      insightsState.openOutlet = null;
+      renderInsightsTab();
+      document.getElementById('insOutletPanel')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    };
+    document.querySelectorAll('#insBeatsCard [data-ins-beat]').forEach(btn => btn.addEventListener('click', () => selectBeat(btn.dataset.insBeat)));
+    panelEl.querySelectorAll('[data-ins-outlet]').forEach(row => {
+      const toggle = () => {
+        const key = `${insightsState.beatKey}|${row.dataset.insOutlet}`;
+        insightsState.openOutlet = insightsState.openOutlet === key ? null : key;
+        renderInsightsTab();
+      };
+      row.addEventListener('click', toggle);
+      row.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+    });
+  }
+
+  // ========================================================
+  // BILL REVIEW: agent + beat + dates, as chosen in this app
+  // ========================================================
+  // Agent and beat come from the Scan OUT session (what was picked in the app), never from the
+  // Master Sheet. Scan OUT rows from before beats were recorded fall back to the agent's weekly
+  // beat plan for that weekday, shown as "(beat plan)".
+
+  const reviewState = { agent: '', beat: 'ALL', range: '30', from: '', to: '', onlyUnpaid: true, search: '', view: 'OUTLETS', open: new Set() };
+  const REVIEW_PLAN_SUFFIX = ' (beat plan)';
+
+  function planBeatFor(agent, dateStr) {
+    const n = normalizeDateString(dateStr);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(n)) return '';
+    const [y, m, d] = n.split('-').map(Number);
+    const code = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(y, m - 1, d).getDay()];
+    const plan = MASTER_BEAT_PLAN[agent] && MASTER_BEAT_PLAN[agent][code];
+    return plan ? plan.beat : '';
+  }
+
+  /** The beat a trip was made on: as recorded at Scan OUT, else the agent's beat plan for that day. */
+  function tripBeatLabel(t) {
+    if (t.beat) return t.beat;
+    const planned = planBeatFor(t.agent, t.date);
+    return planned ? planned + REVIEW_PLAN_SUFFIX : 'Beat not recorded';
+  }
+
+  /** Invoice date from the Master Sheet ("22 Mar") with the year taken from the invoice series. */
+  function parseInvoiceDate(billDate, billNo) {
+    const m = String(billDate || '').match(/(\d{1,2})\s*[-\s]\s*([A-Za-z]{3})/);
+    if (!m) return '';
+    const mon = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'].indexOf(m[2].toLowerCase()) + 1;
+    if (!mon) return '';
+    const fy = String(billNo || '').match(/FY(\d{2})\/\d{2}/i);
+    const fyStart = fy ? 2000 + Number(fy[1]) : 2025; // older series (IN-17063-…) were FY25/26
+    const year = mon >= 4 ? fyStart : fyStart + 1;
+    return `${year}-${String(mon).padStart(2, '0')}-${String(Number(m[1])).padStart(2, '0')}`;
+  }
+
+  function receiptNumbers(text) {
+    return Array.from(new Set((String(text || '').match(/\bR\s*-?\s*\d{2,6}\b/gi) || []).map(r => r.replace(/[\s-]/g, '').toUpperCase())));
+  }
+
+  function reviewDateRange() {
+    const today = getTodayDateString();
+    const shift = n => { const d = new Date(); d.setDate(d.getDate() - n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+    switch (reviewState.range) {
+      case 'TODAY': return [today, today];
+      case 'YESTERDAY': return [shift(1), shift(1)];
+      case '7': return [shift(6), today];
+      case '30': return [shift(29), today];
+      case 'CUSTOM': return [reviewState.from || '0000-00-00', reviewState.to || '9999-12-31'];
+      default: return ['0000-00-00', '9999-12-31'];
+    }
+  }
+
+  /**
+   * Bills the selected agent carried on the selected beat within the date range, with what to
+   * discuss: age, trips, last payment, receipts, notes, and whether the Master Sheet knows it.
+   */
+  function buildBillReview(bills, sel, getMaster) {
+    const [from, to] = sel.range;
+    const rows = [];
+    bills.forEach(b => {
+      const agentTrips = b.trips.filter(t => isSameAgent(t.agent, sel.agent));
+      const inSel = agentTrips.filter(t => t.date >= from && t.date <= to &&
+        (sel.beat === 'ALL' || tripBeatLabel(t) === sel.beat));
+      if (inSel.length === 0) return;
+      const mm = getMaster(b.billNo);
+      const invoiceDate = mm ? parseInvoiceDate(mm.billDate, mm.billNo) : '';
+      const paidTrips = b.trips.filter(t => t.collected > 0);
+      const lastPaid = paidTrips[paidTrips.length - 1];
+      const amount = Number(b.amount) || 0;
+      const due = Number(b.currentDue) || 0;
+      rows.push({
+        bill: b,
+        billNo: b.billNo,
+        party: b.party || 'Unknown outlet',
+        inMaster: !!mm,
+        invoiceDate,
+        ageDays: daysBetween(invoiceDate || b.firstOut, getTodayDateString()),
+        ageFrom: invoiceDate ? 'invoice' : 'first scan',
+        amount,
+        due,
+        paid: Math.max(0, amount - due),
+        tripsTotal: b.tripCount,
+        tripsByAgent: agentTrips.length,
+        tripsInSel: inSel,
+        lastTrip: b.trips[b.trips.length - 1],
+        lastPaidDate: lastPaid ? lastPaid.date : '',
+        lastPaidAmt: lastPaid ? lastPaid.collected : 0,
+        receipts: receiptNumbers(mm ? mm.receipt : ''),
+        note: b.lastNote,
+        stuck: b.blocked,
+        beats: Array.from(new Set(inSel.map(tripBeatLabel)))
+      });
+    });
+    return rows;
+  }
+
+  function openBillReview(agentName) {
+    if (agentName && agentName !== 'ALL') reviewState.agent = agentName;
+    switchTab('tab-review');
+    renderBillReview();
+  }
+
+  async function renderBillReview() {
+    const list = document.getElementById('rvList');
+    if (!list) return;
+    if (!insightsState.logs) {
+      list.innerHTML = '<div class="viz-empty"><i class="fa-solid fa-spinner fa-spin"></i> Loading scans…</div>';
+      await loadInsightsLogs();
+      rebuildInsights();
+      if (!insightsState.logs) {
+        list.textContent = '';
+        const err = document.createElement('div');
+        err.className = 'ins-error';
+        err.textContent = `Could not load scans: ${insightsState.error || 'unknown error'}`;
+        list.appendChild(err);
+        return;
+      }
+    }
+    ensureVizTooltip();
+    clearVizTips('rv');
+
+    // Agent options (from this app's agents), beat options (from that agent's trips)
+    const agentSel = document.getElementById('rvAgent');
+    if (!reviewState.agent) reviewState.agent = State.agents[0] ? State.agents[0].name : '';
+    if (agentSel && agentSel.options.length !== State.agents.length) {
+      agentSel.innerHTML = '';
+      State.agents.forEach(a => {
+        const o = document.createElement('option');
+        o.value = a.name;
+        o.textContent = a.fullName || a.name;
+        agentSel.appendChild(o);
+      });
+    }
+    if (agentSel) agentSel.value = reviewState.agent;
+
+    const beatCounts = new Map();
+    insightsState.bills.forEach(b => b.trips.forEach(t => {
+      if (!isSameAgent(t.agent, reviewState.agent)) return;
+      const label = tripBeatLabel(t);
+      beatCounts.set(label, (beatCounts.get(label) || 0) + 1);
+    }));
+    const beatSel = document.getElementById('rvBeat');
+    if (beatSel) {
+      const beats = Array.from(beatCounts.keys()).sort((a, b) => a.localeCompare(b));
+      if (reviewState.beat !== 'ALL' && !beatCounts.has(reviewState.beat)) reviewState.beat = 'ALL';
+      beatSel.innerHTML = '';
+      [['ALL', 'All beats'], ...beats.map(b => [b, `${b} (${beatCounts.get(b)} trips)`])].forEach(([v, t]) => {
+        const o = document.createElement('option');
+        o.value = v;
+        o.textContent = t;
+        beatSel.appendChild(o);
+      });
+      beatSel.value = reviewState.beat;
+    }
+    const custom = document.getElementById('rvCustomDates');
+    if (custom) custom.style.display = reviewState.range === 'CUSTOM' ? '' : 'none';
+
+    const rows = buildBillReview(insightsState.bills,
+      { agent: reviewState.agent, beat: reviewState.beat, range: reviewDateRange() }, findMasterBill);
+    const q = reviewState.search.trim().toLowerCase();
+    const visible = rows.filter(r => (!reviewState.onlyUnpaid || r.due > 0 || !r.inMaster) &&
+      (!q || r.party.toLowerCase().includes(q) || r.billNo.toLowerCase().includes(q)));
+    const missing = visible.filter(r => !r.inMaster);
+
+    // Outlets
+    const outletMap = new Map();
+    visible.filter(r => r.inMaster).forEach(r => {
+      const key = r.party.toLowerCase().replace(/\s+/g, ' ');
+      if (!outletMap.has(key)) outletMap.set(key, { key, party: r.party, rows: [] });
+      outletMap.get(key).rows.push(r);
+    });
+    const outlets = Array.from(outletMap.values()).map(o => {
+      o.rows.sort((a, b) => b.ageDays - a.ageDays);
+      o.due = o.rows.reduce((s, r) => s + r.due, 0);
+      o.oldest = Math.max(...o.rows.map(r => r.ageDays));
+      o.visitDays = new Set(o.rows.flatMap(r => r.bill.trips.filter(t => isSameAgent(t.agent, reviewState.agent)).map(t => t.date))).size;
+      const paid = o.rows.filter(r => r.lastPaidDate).sort((a, b) => a.lastPaidDate.localeCompare(b.lastPaidDate)).pop();
+      o.lastPaid = paid ? { date: paid.lastPaidDate, amt: paid.lastPaidAmt } : null;
+      o.receipts = Array.from(new Set(o.rows.flatMap(r => r.receipts)));
+      o.stuck = o.rows.filter(r => r.stuck).length;
+      return o;
+    }).sort((a, b) => b.due - a.due);
+
+    // Summary
+    const [from, to] = reviewDateRange();
+    const tripsInSel = visible.reduce((s, r) => s + r.tripsInSel.length, 0);
+    const collectedInSel = visible.reduce((s, r) => s + r.tripsInSel.reduce((x, t) => x + t.collected, 0), 0);
+    const summary = document.getElementById('rvSummary');
+    if (summary) {
+      const totalDue = outlets.reduce((s, o) => s + o.due, 0);
+      const tiles = [
+        ['Outlets', outlets.length, ''],
+        ['Bills', visible.length, `${missing.length} not in master sheet`],
+        ['Still due', formatINR(totalDue), 'per Master Sheet today'],
+        ['Trips in these dates', tripsInSel, reviewState.beat === 'ALL' ? 'all beats' : reviewState.beat],
+        ['Collected on those trips', formatINR(collectedInSel), ''],
+        ['Stuck bills', outlets.reduce((s, o) => s + o.stuck, 0), '2+ trips, nothing paid']
+      ];
+      summary.innerHTML = tiles.map(([label, value, sub]) => `
+        <div class="rv-tile"><span class="ins-kpi-label">${label}</span><strong class="font-mono">${value}</strong>${sub ? `<span class="ins-kpi-sub">${escapeHtml(String(sub))}</span>` : ''}</div>`).join('');
+    }
+
+    document.querySelectorAll('[data-rv-count]').forEach(el => { el.textContent = el.dataset.rvCount === 'MISSING' ? missing.length : outlets.length; });
+    document.querySelectorAll('#rvViewTabs [data-rv-view]').forEach(b => b.classList.toggle('active', b.dataset.rvView === reviewState.view));
+    const hint = document.getElementById('rvHint');
+    const rangeText = from === '0000-00-00' ? 'all dates' : from === to ? formatShortDate(from) : `${formatShortDate(from)} – ${formatShortDate(to)}`;
+
+    if (reviewState.view === 'MISSING') {
+      if (hint) hint.textContent = `Bills ${reviewState.agent} carried (${rangeText}) that are not in this year's Master Sheet — not entered yet, a typo in the bill number, or last year's bill.`;
+      list.innerHTML = missing.length === 0 ? '<div class="viz-empty">🎉 Every bill in this selection is in the Master Sheet.</div>' : `
+        <div class="table-wrap"><table class="minimal-table ins-table">
+          <thead><tr><th>Bill no (as scanned)</th><th>Outlet (from scan)</th><th style="text-align:right">Amount</th><th>Beat</th><th>Trips</th><th>First / last scan</th></tr></thead>
+          <tbody>${missing.map(r => `<tr>
+            <td><strong class="font-mono">${escapeHtml(r.billNo)}</strong></td>
+            <td>${escapeHtml(r.party)}</td>
+            <td class="font-mono" style="text-align:right">${formatINR(r.amount)}</td>
+            <td>${r.beats.map(escapeHtml).join(', ')}</td>
+            <td style="white-space:nowrap">${tripDotsHtml(r.bill)} ${r.tripsTotal}</td>
+            <td>${formatShortDate(r.bill.firstOut)} / ${formatShortDate(r.bill.lastOut)}</td></tr>`).join('')}</tbody>
+        </table></div>`;
+      insightsState.reviewText = missing.map(r => `• ${r.billNo} – ${r.party} – ${formatINR(r.amount)} (not in master sheet)`).join('\n');
+      return;
+    }
+
+    if (hint) hint.textContent = `${reviewState.agent} · ${reviewState.beat === 'ALL' ? 'all beats' : reviewState.beat} · ${rangeText}. Age counts from the invoice date where the Master Sheet has it. Click an outlet for its bills.`;
+    if (outlets.length === 0) {
+      list.innerHTML = '<div class="viz-empty">No bills for this agent, beat and dates.</div>';
+      insightsState.reviewText = '';
+      return;
+    }
+    list.innerHTML = outlets.map(o => {
+      const open = reviewState.open.has(o.key);
+      const talk = `${o.rows.length} bill${o.rows.length === 1 ? '' : 's'}, <strong>${formatINR(o.due)}</strong> due, oldest <strong>${o.oldest} days</strong>. ` +
+        `Visited <strong>${o.visitDays}</strong> time${o.visitDays === 1 ? '' : 's'} by ${escapeHtml(reviewState.agent)}. ` +
+        (o.lastPaid ? `Last payment <strong>${formatINR(o.lastPaid.amt)}</strong> on ${formatShortDate(o.lastPaid.date)}` : '<span class="text-danger">No payment seen on these trips</span>') +
+        (o.receipts.length ? ` · ${o.receipts.length} receipt${o.receipts.length === 1 ? '' : 's'} (${o.receipts.slice(0, 4).join(', ')}${o.receipts.length > 4 ? '…' : ''})` : '') + '.';
+      return `
+        <div class="rv-outlet${open ? ' is-open' : ''}">
+          <button type="button" class="rv-outlet-head" data-rv-outlet="${escapeHtml(o.key)}" aria-expanded="${open}">
+            <span class="rv-outlet-name"><i class="fa-solid fa-chevron-${open ? 'down' : 'right'}"></i> ${escapeHtml(o.party)}
+              ${o.stuck ? `<span class="ins-status-badge ins-st-crit"><i class="fa-solid fa-ban"></i> ${o.stuck} stuck</span>` : ''}</span>
+            <span class="rv-outlet-due font-mono">${formatINR(o.due)}</span>
+            <span class="rv-talk">${talk}</span>
+          </button>
+          ${open ? `<div class="table-wrap"><table class="minimal-table ins-table">
+            <thead><tr><th>Bill</th><th>Age</th><th style="text-align:right">Amount</th><th style="text-align:right">Paid</th><th style="text-align:right">Due</th><th>Trips</th><th>Last trip</th><th>Last payment</th><th>Receipts</th><th>Agent note</th></tr></thead>
+            <tbody>${o.rows.map(r => `<tr>
+              <td><strong class="font-mono">${escapeHtml(r.billNo)}</strong>${r.invoiceDate ? `<div class="ins-sub">billed ${formatShortDate(r.invoiceDate)}</div>` : ''}</td>
+              <td><span class="aging-pill ${r.ageDays > 30 ? 'aging-critical' : r.ageDays > 14 ? 'aging-warn' : 'aging-fresh'}" title="days since ${r.ageFrom}">${r.ageDays}d</span></td>
+              <td class="font-mono" style="text-align:right">${formatINR(r.amount)}</td>
+              <td class="font-mono" style="text-align:right">${formatINR(r.paid)}</td>
+              <td class="font-mono text-danger" style="text-align:right">${formatINR(r.due)}</td>
+              <td style="white-space:nowrap">${tripDotsHtml(r.bill)} <strong>${r.tripsTotal}</strong>${r.tripsByAgent !== r.tripsTotal ? `<div class="ins-sub">${r.tripsByAgent} with ${escapeHtml(reviewState.agent)}</div>` : ''}</td>
+              <td>${formatShortDate(r.lastTrip.date)}<div class="ins-sub">${escapeHtml(tripBeatLabel(r.lastTrip))}</div></td>
+              <td>${r.lastPaidDate ? `${formatShortDate(r.lastPaidDate)} <span class="font-mono">${formatINR(r.lastPaidAmt)}</span>` : '<span class="text-danger">none seen</span>'}</td>
+              <td class="font-mono">${r.receipts.length ? escapeHtml(r.receipts.join(', ')) : '—'}</td>
+              <td class="ins-note">${escapeHtml(r.note || '—')}</td></tr>`).join('')}</tbody>
+          </table></div>` : ''}
+        </div>`;
+    }).join('');
+
+    insightsState.reviewText = [`*${reviewState.agent} · ${reviewState.beat === 'ALL' ? 'All beats' : reviewState.beat} · ${rangeText}*`,
+      ...outlets.map(o => `\n*${o.party}* — ${formatINR(o.due)} due, oldest ${o.oldest}d, ${o.visitDays} visits, ` +
+        (o.lastPaid ? `last paid ${formatINR(o.lastPaid.amt)} on ${formatShortDate(o.lastPaid.date)}` : 'no payment seen') + '\n' +
+        o.rows.filter(r => r.due > 0).map(r => `  • ${r.billNo}: ${formatINR(r.due)} due, ${r.ageDays}d, ${r.tripsTotal} trips${r.note ? ` (${r.note})` : ''}`).join('\n'))].join('\n');
+
+    list.querySelectorAll('[data-rv-outlet]').forEach(btn => btn.addEventListener('click', () => {
+      const k = btn.dataset.rvOutlet;
+      if (reviewState.open.has(k)) reviewState.open.delete(k); else reviewState.open.add(k);
+      renderBillReview();
+    }));
+  }
+
+  function setupBillReviewListeners() {
+    const on = (id, ev, fn) => document.getElementById(id)?.addEventListener(ev, fn);
+    on('rvAgent', 'change', e => { reviewState.agent = e.target.value; reviewState.beat = 'ALL'; reviewState.open.clear(); renderBillReview(); });
+    on('rvBeat', 'change', e => { reviewState.beat = e.target.value; reviewState.open.clear(); renderBillReview(); });
+    on('rvRange', 'change', e => { reviewState.range = e.target.value; renderBillReview(); });
+    on('rvFrom', 'change', e => { reviewState.from = e.target.value; renderBillReview(); });
+    on('rvTo', 'change', e => { reviewState.to = e.target.value; renderBillReview(); });
+    on('rvOnlyUnpaid', 'change', e => { reviewState.onlyUnpaid = e.target.checked; renderBillReview(); });
+    on('rvSearch', 'input', e => { reviewState.search = e.target.value; renderBillReview(); });
+    on('rvCopyBtn', 'click', () => {
+      const text = insightsState.reviewText || '';
+      if (!text) return showToast('Nothing to copy for this selection', 'info');
+      navigator.clipboard.writeText(text).then(() => showToast('Copied — paste it in WhatsApp', 'success'), () => showToast('Could not copy', 'warning'));
+    });
+    document.querySelectorAll('#rvViewTabs [data-rv-view]').forEach(b => b.addEventListener('click', () => { reviewState.view = b.dataset.rvView; renderBillReview(); }));
   }
 
   function exportInsightsList() {
@@ -3300,7 +3841,14 @@
     });
 
     // Cloud Sync Queue for Tracking Sheet
-    queueSyncAction('BATCH_DISPATCH', { dispatchDate: date, timestamp, bills: newBills });
+    // The agent and beat chosen for this scanning session, stored with every Scan OUT row
+    queueSyncAction('BATCH_DISPATCH', {
+      dispatchDate: date,
+      timestamp,
+      agent: State.activeAgent ? State.activeAgent.name : '',
+      beat: State.selectedBeatName || State.activeBeat || '',
+      bills: newBills
+    });
 
     const count = itemsToDispatch.length;
     State.lastHandoverBatch = {
@@ -3941,7 +4489,7 @@
         const { sheetId, gid } = getSheetCredentials();
         const q = s => String(s).replace(/['"\\]/g, '');
         const runQuery = async (condition) => {
-          const tq = encodeURIComponent(`select D, E, F, L, M, N, O, P, I, J ${condition} limit 20`);
+          const tq = encodeURIComponent(`select D, E, F, L, M, N, O, P, I, J, C ${condition} limit 20`);
           const gvizUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&tq=${tq}&gid=${gid}&t=${Date.now()}`;
           const gResp = await fetch(gvizUrl);
           return gResp.ok ? parseGvizResponse(await gResp.text()) : [];
@@ -4988,10 +5536,28 @@ _BillAudit Pro_`;
    */
   async function syncBillsFromTrackingSheet(showFeedback = false) {
     let custodyBills = null;
+    const fromCloud = Cloud.isConfigured();
+
+    if (fromCloud) {
+      try {
+        await Cloud.ready();
+        custodyBills = await Cloud.pullCustody(State.bills);
+        // Firebase has no custody yet (history not imported): keep this device's bills instead of
+        // replacing them with an empty list
+        if (custodyBills.length === 0 && State.bills.length > 0) {
+          localStorage.removeItem(CLOUD_KEYS.CUSTODY_PULLED_AT);
+          custodyBills = null;
+          showToast('Cloud storage is empty — run importAllToFirestore in the tracking Apps Script. Showing bills saved on this device.', 'warning', 6000);
+          return false;
+        }
+      } catch (cloudErr) {
+        console.warn('Firestore custody fetch warning:', cloudErr);
+      }
+    }
 
     // 1. Direct BigTable GViz query on Live_Custody tab (Ultra-fast ~300ms, public, zero login redirect, works on all devices)
     const trackingSheetId = '1Lu1C-aX9KCRhCrcrZNal81tt4-wD_6wqHWqsI5orTrY';
-    try {
+    if (!fromCloud) try {
       const gvizUrl = `https://docs.google.com/spreadsheets/d/${trackingSheetId}/gviz/tq?tqx=out:json&sheet=Live_Custody&t=${Date.now()}`;
       const gvizResp = await fetch(gvizUrl);
       if (gvizResp.ok) {
@@ -5045,7 +5611,7 @@ _BillAudit Pro_`;
     }
 
     // 2. Fallback to Web App endpoint if GViz failed
-    if (!custodyBills && State.settings.trackingSheetScriptUrl) {
+    if (!fromCloud && !custodyBills && State.settings.trackingSheetScriptUrl) {
       try {
         const resp = await fetch(`${State.settings.trackingSheetScriptUrl}?action=GET_CUSTODY&t=${Date.now()}`);
         const data = await resp.json();
@@ -5145,6 +5711,8 @@ _BillAudit Pro_`;
       State.bills = [...uniqueCloudBills, ...pendingLocalUnsynced];
       reconcileCustodyWithMasterSheet();
       saveState('bills');
+      // Bills healed by the reconcile above (paid on Master Sheet etc.) go back to the cloud
+      if (fromCloud) syncCustodyToTrackingSheet();
       updateGlobalStats();
       if (State.activeTab === 'tab-leftout') renderLeftOutTab();
       else if (State.activeTab === 'tab-ledger') renderMasterLedger();
@@ -5665,6 +6233,370 @@ _BillAudit Pro_`;
 
   let syncDebounceTimer = null;
 
+  // ========================================================
+  // FIREBASE CLOUD STORE (Firestore + shared app login)
+  // ========================================================
+  // When firebase-config.js provides a config, scans are stored in Firestore instead of the
+  // Apps Script tracking sheet:
+  //   scanOut/{queueId_bill}  one row per bill per Scan OUT   (same fields as Scan_Out_Log)
+  //   scanIn/{queueId_bill}   one row per Scan IN             (same fields as Scan_In_Log)
+  //   custody/{normalized bill no}  current state of each bill (same fields as Live_Custody)
+  // With no config, the app keeps using the Apps Script tracking sheet.
+
+  const CLOUD_KEYS = {
+    CUSTODY_HASHES: 'billAudit_cloudCustodyHashes',
+    CUSTODY_PULLED_AT: 'billAudit_cloudCustodyPulledAt',
+    LOG_CACHE: 'billAudit_cloudLogCache'
+  };
+  const CUSTODY_FIELDS = ['billNo', 'party', 'amount', 'agent', 'dispatchDate', 'status', 'collectedAmt', 'outstanding',
+    'paymentMode', 'refNo', 'returnReason', 'remarks', 'lastActionDate', 'beat', 'week'];
+
+  /** The stored shape of one custody bill (also used to detect which bills changed). */
+  function custodyRecord(b) {
+    const amount = Number(b.amount) || 0;
+    return {
+      billNo: String(b.billNo || '').trim(),
+      party: String(b.party || '').trim(),
+      amount,
+      agent: String(b.agent || '').trim(),
+      dispatchDate: String(b.dispatchDate || '').trim(),
+      status: String(b.status || 'WITH_AGENT').trim(),
+      collectedAmt: Number(b.collectedAmt) || 0,
+      outstanding: b.outstanding !== undefined && b.outstanding !== null && b.outstanding !== '' ? Number(b.outstanding) || 0 : amount,
+      paymentMode: String(b.paymentMode || '').trim(),
+      refNo: String(b.refNo || b.receipt || '').trim(),
+      returnReason: String(b.returnReason || '').trim(),
+      remarks: String(b.remarks || '').trim(),
+      lastActionDate: String(b.lastActionDate || '').trim(),
+      beat: String(b.beat || b.beatName || '').trim(),
+      week: String(b.week || '').trim()
+    };
+  }
+
+  function custodyHash(rec) {
+    return CUSTODY_FIELDS.map(f => rec[f]).join('␟');
+  }
+
+  /**
+   * Firestore log documents for one queued sync action (custody is synced separately from
+   * State.bills). Doc ids are derived from the queue item id, so a retried sync never
+   * duplicates rows.
+   */
+  function cloudLogWritesForQueueItem(item) {
+    const p = (item && item.payload) || {};
+    const ts = String(p.timestamp || item.timestamp || new Date().toISOString());
+    const writes = [];
+    const docId = billNo => `${item.id}_${normalizeInvoiceNumber(billNo)}`;
+
+    if (item.type === 'BATCH_DISPATCH' && Array.isArray(p.bills)) {
+      const date = normalizeDateString(p.dispatchDate) || normalizeDateString(ts);
+      p.bills.forEach(b => {
+        const billNo = String(b.billNo || '').trim();
+        if (!billNo) return;
+        const amount = Number(b.amount) || 0;
+        writes.push({
+          col: 'scanOut',
+          id: docId(billNo),
+          data: {
+            ts,
+            billNo,
+            agent: String(p.agent || b.agent || '').trim(),
+            party: String(b.party || 'Standard Customer').trim(),
+            amount,
+            dispatchDate: date,
+            dueOut: b.outstanding !== undefined && b.outstanding !== null && b.outstanding !== '' ? Number(b.outstanding) || 0 : amount,
+            receipt: String(b.receipt || b.refNo || '').trim(),
+            status: 'WITH_AGENT',
+            notes: String(b.remarks || `Dispatched for route ${date}`),
+            beat: String(p.beat || b.beatName || b.beat || '').trim(),
+            week: String(b.week || '').trim()
+          }
+        });
+      });
+    } else if (item.type === 'SETTLEMENT_PAYMENT' || item.type === 'SETTLEMENT_RETURN') {
+      const billNo = String(p.billNo || '').trim();
+      const remarks = String(p.remarks || '').trim();
+      // Sync jobs ("Auto-Healed") update custody only; they are not a person scanning the bill in
+      if (billNo && !/^(auto-healed|verified paid on master sheet)/i.test(remarks)) {
+        const amount = Number(p.amount || p.totalAmount) || 0;
+        // SETTLEMENT_RETURN carries `outstanding`, SETTLEMENT_PAYMENT carries `remainingDue`
+        const rawDue = p.remainingDue !== undefined ? p.remainingDue : p.outstanding;
+        const collectedRaw = p.collectedAmt !== undefined ? Number(p.collectedAmt) || 0 : null;
+        const dueIn = rawDue !== undefined && rawDue !== null && rawDue !== ''
+          ? Number(rawDue) || 0
+          : Math.max(0, amount - (collectedRaw || 0));
+        const status = String(p.status || 'RECEIVED').trim();
+        writes.push({
+          col: 'scanIn',
+          id: docId(billNo),
+          data: {
+            ts,
+            billNo,
+            agent: String(p.agent || '').trim(),
+            party: String(p.party || 'Standard Customer').trim(),
+            amount,
+            collected: collectedRaw !== null ? collectedRaw : Math.max(0, amount - dueIn),
+            dueIn,
+            mode: String(p.paymentMode || (status === 'RETURNED_IN_HAND' ? 'RETURN' : '')).trim(),
+            receipt: String(p.refNo || p.receipt || '').trim(),
+            status,
+            reason: String(p.returnReason || '').trim(),
+            remarks: remarks || (status === 'RETURNED_IN_HAND' ? 'Verified Return' : 'Checked IN'),
+            beat: String(p.beat || p.beatName || '').trim(),
+            week: String(p.week || '').trim()
+          }
+        });
+      }
+    }
+    return writes;
+  }
+
+  /** Firestore log docs as rows in the Scan_Out_Log / Scan_In_Log column order (for Insights). */
+  function cloudOutDocToRow(d) {
+    return [d.ts, d.billNo, d.agent, d.party, d.amount, d.dispatchDate, d.dueOut, d.receipt, d.status, d.notes, d.beat, d.week];
+  }
+
+  function cloudInDocToRow(d) {
+    return [d.ts, d.billNo, d.agent, d.party, d.amount, d.collected, d.dueIn, d.mode, d.receipt, d.status, d.reason, d.remarks, d.beat, d.week];
+  }
+
+  function readLocalJson(key, fallback) {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : fallback;
+    } catch (e) {
+      return fallback;
+    }
+  }
+
+  function writeLocalJson(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) { console.warn('[Cloud] local cache not saved:', e); }
+  }
+
+  const Cloud = {
+    db: null,
+    auth: null,
+    user: null,
+    _ready: null,
+    _resolveReady: null,
+
+    /** 'anonymous' (default): the app signs itself in, no login screen. 'shared': shared email/password login. */
+    authMode() {
+      return window.BILLAUDIT_AUTH_MODE === 'shared' ? 'shared' : 'anonymous';
+    },
+
+    isConfigured() {
+      return !!(window.BILLAUDIT_FIREBASE_CONFIG && window.BILLAUDIT_FIREBASE_CONFIG.apiKey && window.firebase && window.firebase.firestore);
+    },
+
+    init() {
+      if (!this.isConfigured() || this.db) return;
+      this._ready = new Promise(resolve => { this._resolveReady = resolve; });
+      firebase.initializeApp(window.BILLAUDIT_FIREBASE_CONFIG);
+      this.auth = firebase.auth();
+      this.db = firebase.firestore();
+      // Offline cache: scans made without signal are saved and sent when back online
+      this.db.enablePersistence({ synchronizeTabs: true }).catch(err => console.warn('[Cloud] offline cache unavailable:', err.code || err));
+      this.auth.onAuthStateChanged(user => {
+        this.user = user;
+        if (!user && this.authMode() === 'anonymous') {
+          this.auth.signInAnonymously().catch(err => console.warn('[Cloud] anonymous sign-in failed:', err.code || err));
+        }
+        renderCloudLoginGate();
+        if (user) this._resolveReady();
+      });
+    },
+
+    /** Resolves once the shared login is signed in. */
+    ready() {
+      return this._ready || Promise.reject(new Error('Firebase is not configured'));
+    },
+
+    async signIn(email, password) {
+      await this.auth.signInWithEmailAndPassword(email, password);
+    },
+
+    async signOut() {
+      await this.auth.signOut();
+    },
+
+    async commit(writes) {
+      for (let i = 0; i < writes.length; i += 400) {
+        const batch = this.db.batch();
+        writes.slice(i, i + 400).forEach(w => {
+          batch.set(this.db.collection(w.col).doc(w.id), w.data, w.merge ? { merge: true } : {});
+        });
+        await batch.commit();
+      }
+    },
+
+    async pushQueue(queue) {
+      const writes = [];
+      queue.forEach(item => writes.push(...cloudLogWritesForQueueItem(item)));
+      if (writes.length) await this.commit(writes);
+    },
+
+    /** Writes only the custody bills whose stored fields changed since the last sync. */
+    async pushCustodyChanges(bills) {
+      const hashes = readLocalJson(CLOUD_KEYS.CUSTODY_HASHES, {});
+      const writes = [];
+      const next = {};
+      (bills || []).forEach(b => {
+        const id = normalizeInvoiceNumber(b && b.billNo);
+        if (!id) return;
+        const rec = custodyRecord(b);
+        const h = custodyHash(rec);
+        next[id] = h;
+        if (hashes[id] !== h) {
+          writes.push({ col: 'custody', id, data: { ...rec, updatedAt: firebase.firestore.FieldValue.serverTimestamp() } });
+        }
+      });
+      if (writes.length) await this.commit(writes);
+      writeLocalJson(CLOUD_KEYS.CUSTODY_HASHES, { ...hashes, ...next });
+      return writes.length;
+    },
+
+    /**
+     * Custody bills from Firestore. The first pull on a device reads everything; later pulls
+     * read only bills updated since, merged into the bills already on this device.
+     */
+    async pullCustody(currentBills) {
+      const lastPulled = Number(localStorage.getItem(CLOUD_KEYS.CUSTODY_PULLED_AT)) || 0;
+      const full = !lastPulled || !(currentBills && currentBills.length);
+      const startedAt = Date.now();
+      let query = this.db.collection('custody');
+      if (!full) query = query.where('updatedAt', '>', firebase.firestore.Timestamp.fromMillis(lastPulled - 5 * 60 * 1000));
+      const snap = await query.get();
+      const docs = snap.docs.map(d => d.data());
+
+      const hashes = full ? {} : readLocalJson(CLOUD_KEYS.CUSTODY_HASHES, {});
+      docs.forEach(d => { hashes[normalizeInvoiceNumber(d.billNo)] = custodyHash(custodyRecord(d)); });
+      writeLocalJson(CLOUD_KEYS.CUSTODY_HASHES, hashes);
+      localStorage.setItem(CLOUD_KEYS.CUSTODY_PULLED_AT, String(startedAt));
+
+      if (full) return docs;
+      const merged = new Map(currentBills.map(b => [normalizeInvoiceNumber(b.billNo), { ...b }]));
+      docs.forEach(d => {
+        const id = normalizeInvoiceNumber(d.billNo);
+        merged.set(id, { ...(merged.get(id) || {}), ...d });
+      });
+      return Array.from(merged.values());
+    },
+
+    /** Scan OUT / Scan IN rows for the last `days` days, cached on this device and topped up incrementally. */
+    async fetchLogs(days) {
+      const cutoff = new Date(Date.now() - days * 86400000).toISOString();
+      const cache = readLocalJson(CLOUD_KEYS.LOG_CACHE, { out: [], in: [], maxTs: '' });
+      const since = cache.maxTs && cache.maxTs > cutoff ? cache.maxTs : cutoff;
+      const [outSnap, inSnap] = await Promise.all([
+        this.db.collection('scanOut').where('ts', '>', since).get(),
+        this.db.collection('scanIn').where('ts', '>', since).get()
+      ]);
+      const keep = rows => rows.filter(r => String(r[0]) >= cutoff);
+      const seen = new Set();
+      const dedupe = rows => rows.filter(r => { const k = `${r[0]}|${r[1]}`; if (seen.has(k)) return false; seen.add(k); return true; });
+      const out = dedupe(keep([...(since === cutoff ? [] : cache.out), ...outSnap.docs.map(d => cloudOutDocToRow(d.data()))]));
+      const inn = dedupe(keep([...(since === cutoff ? [] : cache.in), ...inSnap.docs.map(d => cloudInDocToRow(d.data()))]));
+      const maxTs = [...out, ...inn].reduce((m, r) => (String(r[0]) > m ? String(r[0]) : m), cache.maxTs || '');
+      writeLocalJson(CLOUD_KEYS.LOG_CACHE, { out, in: inn, maxTs });
+      return { out, in: inn };
+    },
+
+    /** All documents of a collection, for the export button. */
+    async readAll(col) {
+      const snap = await this.db.collection(col).get();
+      return snap.docs.map(d => d.data());
+    }
+  };
+
+  function renderCloudLoginGate() {
+    const gate = document.getElementById('cloudLoginGate');
+    if (!gate) return;
+    const needsLogin = Cloud.isConfigured() && Cloud.authMode() === 'shared' && !Cloud.user;
+    gate.style.display = needsLogin ? 'flex' : 'none';
+    const who = document.getElementById('cloudSignedInAs');
+    if (who) {
+      who.textContent = !Cloud.user ? 'Not signed in'
+        : Cloud.user.isAnonymous ? 'Connected (no login required yet)' : `Signed in as ${Cloud.user.email}`;
+    }
+    const pending = document.getElementById('cloudPendingStatus');
+    if (pending) {
+      const n = (State.offlineQueue || []).length;
+      pending.textContent = n === 0 ? 'All scans saved to the cloud.'
+        : `${n} scan action(s) on this device are waiting to be saved.${State.lastCloudError ? ` Last error: ${State.lastCloudError}` : ''}`;
+      pending.classList.toggle('text-danger', n > 0);
+    }
+    const signOutBtn = document.getElementById('cloudSignOutBtn');
+    if (signOutBtn) signOutBtn.style.display = Cloud.authMode() === 'shared' ? '' : 'none';
+  }
+
+  function setupCloudLogin() {
+    const form = document.getElementById('cloudLoginForm');
+    form?.addEventListener('submit', async e => {
+      e.preventDefault();
+      const email = document.getElementById('cloudLoginEmail').value.trim();
+      const password = document.getElementById('cloudLoginPassword').value;
+      const err = document.getElementById('cloudLoginError');
+      const btn = document.getElementById('cloudLoginBtn');
+      if (err) err.textContent = '';
+      if (btn) btn.disabled = true;
+      try {
+        await Cloud.signIn(email, password);
+        document.getElementById('cloudLoginPassword').value = '';
+      } catch (ex) {
+        if (err) err.textContent = /wrong-password|invalid-credential|user-not-found|invalid-login/i.test(String(ex.code || ex.message))
+          ? 'Wrong email or password.'
+          : `Could not sign in: ${ex.message || ex}`;
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    });
+    document.getElementById('cloudSignOutBtn')?.addEventListener('click', async () => {
+      if (!Cloud.isConfigured()) return;
+      if (!confirm('Sign out of BillAudit on this device?')) return;
+      await Cloud.signOut();
+    });
+    document.getElementById('cloudSyncNowBtn')?.addEventListener('click', () => {
+      if (!Cloud.isConfigured()) return;
+      processOfflineQueue().then(() => syncCustodyToTrackingSheet()).then(() => {
+        renderCloudLoginGate();
+        showToast(State.offlineQueue.length ? 'Some scans are still waiting — see Settings' : 'All scans saved to the cloud', State.offlineQueue.length ? 'warning' : 'success');
+      });
+    });
+    document.querySelectorAll('[data-cloud-export]').forEach(btn => btn.addEventListener('click', () => exportCloudCollection(btn.dataset.cloudExport)));
+  }
+
+  /** Downloads a Firestore collection (custody, scanOut or scanIn) as CSV. */
+  async function exportCloudCollection(col) {
+    if (!Cloud.isConfigured()) {
+      showToast('Cloud export needs Firebase to be set up', 'warning');
+      return;
+    }
+    try {
+      await Cloud.ready();
+      showToast('Preparing export…', 'info', 1500);
+      const docs = await Cloud.readAll(col);
+      const columns = col === 'custody' ? CUSTODY_FIELDS
+        : col === 'scanOut' ? ['ts', 'billNo', 'agent', 'party', 'amount', 'dispatchDate', 'dueOut', 'receipt', 'status', 'notes', 'beat', 'week']
+        : ['ts', 'billNo', 'agent', 'party', 'amount', 'collected', 'dueIn', 'mode', 'receipt', 'status', 'reason', 'remarks', 'beat', 'week'];
+      docs.sort((a, b) => String(b.ts || b.lastActionDate || '').localeCompare(String(a.ts || a.lastActionDate || '')));
+      const cell = v => {
+        let str = String(v === null || v === undefined ? '' : v);
+        if (/^[=+\-@]/.test(str)) str = `'${str}`;
+        return `"${str.replace(/"/g, '""')}"`;
+      };
+      const csv = [columns.map(cell).join(','), ...docs.map(d => columns.map(c => cell(d[c])).join(','))].join('\n');
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+      link.download = `BillAudit_${col}_${getTodayDateString()}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (err) {
+      showToast(`Export failed: ${err.message || err}`, 'warning', 4000);
+    }
+  }
+
   function queueSyncAction(type, payload) {
     State.offlineQueue.push({
       id: 'Q-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5),
@@ -5676,7 +6608,7 @@ _BillAudit Pro_`;
     updateOfflineQueueBadge();
 
     const targetUrl = State.settings.trackingSheetScriptUrl || State.settings.scriptUrl;
-    if (navigator.onLine && targetUrl) {
+    if (navigator.onLine && (Cloud.isConfigured() || targetUrl)) {
       if (syncDebounceTimer) clearTimeout(syncDebounceTimer);
       syncDebounceTimer = setTimeout(() => {
         processOfflineQueue();
@@ -5685,6 +6617,7 @@ _BillAudit Pro_`;
   }
 
   async function processOfflineQueue() {
+    if (Cloud.isConfigured()) return processOfflineQueueToCloud();
     const targetUrl = State.settings.trackingSheetScriptUrl || State.settings.scriptUrl;
     if (!targetUrl || State.offlineQueue.length === 0) return;
     if (State.isSyncing) return;
@@ -5733,7 +6666,47 @@ _BillAudit Pro_`;
     }
   }
 
+  /** Firebase mode: write queued scans as log docs, then the custody bills that changed. */
+  async function processOfflineQueueToCloud() {
+    if (State.isSyncing || State.offlineQueue.length === 0) return;
+    State.isSyncing = true;
+    const btn = document.getElementById('quickSyncBtn');
+    const text = document.getElementById('syncStatusText');
+    if (btn) btn.classList.add('syncing');
+    if (text) text.textContent = 'Syncing...';
+    const queueSnapshot = [...State.offlineQueue];
+    try {
+      await Cloud.ready();
+      await Cloud.pushQueue(queueSnapshot);
+      await Cloud.pushCustodyChanges(State.bills);
+      const processedIds = new Set(queueSnapshot.map(item => item.id));
+      State.offlineQueue = State.offlineQueue.filter(item => !processedIds.has(item.id));
+      saveState('queue');
+      updateOfflineQueueBadge();
+      if (text) text.textContent = 'Synced';
+      State.lastCloudError = '';
+    } catch (e) {
+      console.warn('Cloud sync failed, kept in queue:', e);
+      State.lastCloudError = `${new Date().toLocaleTimeString('en-IN')}: ${e && e.message ? e.message : e}`;
+      if (text) text.textContent = 'Queued';
+      showToast(`${State.offlineQueue.length} scan(s) not saved to the cloud yet — will retry. ${e && e.message ? e.message : ''}`, 'warning', 5000);
+    } finally {
+      renderCloudLoginGate();
+      State.isSyncing = false;
+      if (btn) btn.classList.remove('syncing');
+    }
+  }
+
   async function syncCustodyToTrackingSheet() {
+    if (Cloud.isConfigured()) {
+      try {
+        await Cloud.ready();
+        await Cloud.pushCustodyChanges(State.bills);
+      } catch (e) {
+        console.warn('Background custody sync failed:', e);
+      }
+      return;
+    }
     const targetUrl = State.settings.trackingSheetScriptUrl || State.settings.scriptUrl;
     if (!targetUrl || !State.bills || State.bills.length === 0) return;
 
@@ -5929,6 +6902,7 @@ _BillAudit Pro_`;
       const idxP = colIds.indexOf('P');
       const idxI = colIds.indexOf('I');
       const idxJ = colIds.indexOf('J');
+      const idxC = colIds.indexOf('C');
 
       for (let i = 0; i < json.table.rows.length; i++) {
         const r = json.table.rows[i];
@@ -5989,7 +6963,11 @@ _BillAudit Pro_`;
         // Intelligent Receipt Resolution
         const receipt = resolveIntelligentReceipt(rawRec, rawRem, rawPaidUp, rawStatus, rawOut, rawAmt);
 
-        rows.push({ billNo, receipt, outstanding: rawOut, party, amount: rawAmt, agent, beat, remainingText });
+        // Invoice date (Col C, e.g. "22 Mar"; the year comes from the invoice series)
+        const cellC = idxC !== -1 ? r.c[idxC] : null;
+        const billDate = cellC ? String(cellC.f || cellC.v || '').trim() : '';
+
+        rows.push({ billNo, receipt, outstanding: rawOut, party, amount: rawAmt, agent, beat, remainingText, billDate });
       }
       return rows;
     } catch (e) {
@@ -6016,7 +6994,7 @@ _BillAudit Pro_`;
     ].filter(Boolean)));
 
     // 1. Direct BigTable Visualization API across candidate Master Sheet IDs
-    const tq = encodeURIComponent('select D, E, F, L, M, N, O, P, I, J where D is not null');
+    const tq = encodeURIComponent('select D, E, F, L, M, N, O, P, I, J, C where D is not null');
     for (const candId of candidateSheetIds) {
       if (incomingBills && incomingBills.length > 0) break;
       try {
@@ -6485,6 +7463,8 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
       renderAgentsManager();
     } else if (tabId === 'tab-insights') {
       openInsightsTab();
+    } else if (tabId === 'tab-review') {
+      renderBillReview();
     }
   }
 
@@ -6677,7 +7657,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
         const baBtn = card.querySelector('.agent-beat-analysis-btn');
         baBtn?.addEventListener('click', (e) => {
           e.stopPropagation();
-          openBeatAnalysisModal(agent.name);
+          openBillReview(agent.name);
         });
         card.addEventListener('click', () => openDashboardBreakdown('AGENT', agent.name));
         diffGrid.appendChild(card);
@@ -8308,6 +9288,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
 
   function setupEventListeners() {
     setupInsightsListeners();
+    setupBillReviewListeners();
 
     // Tab switching (only nav tabs, not scan tabs)
     document.querySelectorAll('.tab-item').forEach(btn => {
@@ -8462,7 +9443,7 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
         if (State.isBeatAnalysisModalOpen) {
           closeBeatAnalysisModal();
         } else {
-          openBeatAnalysisModal('ALL');
+          openBillReview();
         }
         return;
       }
@@ -8474,7 +9455,8 @@ IN-FY26/27-3927\tRahul Sharma\tModern Bakery & Sweets\t7400.00\tRCT-9820\t1400.0
         '4': 'tab-leftout',
         '5': 'tab-ledger',
         '6': 'tab-settings',
-        '7': 'tab-insights'
+        '7': 'tab-insights',
+        '8': 'tab-review'
       };
 
       if (tabMap[e.key]) {
@@ -8922,13 +9904,8 @@ _BillAudit Pro_`;
     document.getElementById('breakdownCopySummaryBtn')?.addEventListener('click', copyBreakdownSummaryText);
 
     // ================== BEAT ANALYSIS MODAL ==================
-    document.getElementById('sidebarBeatAnalysisBtn')?.addEventListener('click', () => {
-      openBeatAnalysisModal('ALL');
-    });
-
-    document.getElementById('btnOpenBeatAnalysis')?.addEventListener('click', () => {
-      openBeatAnalysisModal('ALL');
-    });
+    // The sidebar "Bill Review" button is a normal tab (data-tab="tab-review")
+    document.getElementById('btnOpenBeatAnalysis')?.addEventListener('click', () => openBillReview());
 
     document.getElementById('closeBeatAnalysisModalBtn')?.addEventListener('click', closeBeatAnalysisModal);
     document.getElementById('closeBeatAnalysisFooterBtn')?.addEventListener('click', closeBeatAnalysisModal);
@@ -8995,6 +9972,7 @@ _BillAudit Pro_`;
   // Application Startup
   document.addEventListener('DOMContentLoaded', () => {
     loadLocalState();
+    Cloud.init();
 
     const today = getTodayDateString();
     const dDate = document.getElementById('dispatchDate');
@@ -9024,6 +10002,8 @@ _BillAudit Pro_`;
     if (csvUrlInput) csvUrlInput.value = State.settings.sheetCsvUrl || '';
 
     setupEventListeners();
+    setupCloudLogin();
+    renderCloudLoginGate();
 
     // Initialize Hardware USB & Bluetooth Barcode / QR Scanner Listener
     HardwareScanner.init();
@@ -9044,6 +10024,8 @@ _BillAudit Pro_`;
       syncBillsFromTrackingSheet(false).catch(err => {
         console.warn('Background tracking custody sync warning:', err);
       });
+      // Send scans that were queued while offline or before signing in
+      if (Cloud.isConfigured()) Cloud.ready().then(() => processOfflineQueue()).catch(() => {});
     }, 300);
   });
 

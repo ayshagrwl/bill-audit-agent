@@ -1,6 +1,6 @@
 /**
  * Prepares the clean frontend distribution folder (`dist/`) for the Rust Tauri bundler.
- * Copies index.html, app.js, and style.css so Tauri packages only the web UI assets.
+ * Copies index.html, app.js, style.css and firebase-config.js so only the web UI assets are packaged.
  */
 const fs = require('fs');
 const path = require('path');
@@ -12,7 +12,7 @@ if (!fs.existsSync(distDir)) {
   fs.mkdirSync(distDir, { recursive: true });
 }
 
-const assets = ['index.html', 'app.js', 'style.css'];
+const assets = ['index.html', 'app.js', 'style.css', 'firebase-config.js'];
 
 for (const file of assets) {
   const src = path.join(rootDir, file);

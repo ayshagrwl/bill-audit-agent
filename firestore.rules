@@ -1,0 +1,23 @@
+rules_version = '2';
+// CURRENT: any signed-in app session may read and write. The app signs in anonymously, so this
+// keeps out casual access but not someone determined who has the project ID.
+//
+// TO ADD THE SHARED LOGIN LATER: set BILLAUDIT_AUTH_MODE = 'shared' in firebase-config.js and
+// change isApp() to:
+//   return request.auth != null && request.auth.token.email == 'your-shared-login@example.com';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isApp() {
+      return request.auth != null;
+    }
+    match /custody/{billId} {
+      allow read, write: if isApp();
+    }
+    match /scanOut/{rowId} {
+      allow read, create, update: if isApp();
+    }
+    match /scanIn/{rowId} {
+      allow read, create, update: if isApp();
+    }
+  }
+}
