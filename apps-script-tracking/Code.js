@@ -48,7 +48,7 @@ const TRACKING_TABS = {
  */
 function doGet(e) {
   try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const ss = getTrackingSpreadsheet();
     ensureDatabaseSetup(ss);
 
     const action = (e && e.parameter && e.parameter.action) ? e.parameter.action.toUpperCase() : 'PING';
@@ -74,6 +74,19 @@ function doGet(e) {
         mode: 'TRACKING_RECORDER',
         count: bills.length,
         bills: bills,
+        timestamp: getFormattedTimestamp()
+      });
+    }
+
+    // Read-only: Scan_Out_Log & Scan_In_Log rows for the Insights tab (trips, repeats, collections)
+    if (action === 'GET_LOGS') {
+      const days = Math.min(400, Math.max(7, Number(e.parameter.days) || 120));
+      return respondJSON({
+        status: 'OK',
+        mode: 'TRACKING_RECORDER',
+        days: days,
+        out: readLogRows(ss, TRACKING_TABS.SCAN_OUT, 12, days),
+        in: readLogRows(ss, TRACKING_TABS.SCAN_IN, 14, days),
         timestamp: getFormattedTimestamp()
       });
     }
@@ -132,7 +145,7 @@ function doGet(e) {
  */
 function doPost(e) {
   try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const ss = getTrackingSpreadsheet();
     ensureDatabaseSetup(ss);
 
     let data = {};
@@ -291,7 +304,9 @@ function recordScanIn(ss, p, timestamp) {
   const party = String(p.party || 'Standard Customer').trim();
   const totalAmt = Number(p.amount || p.totalAmount) || 0;
   const collectedAmt = Number(p.collectedAmt) || 0;
-  const remainingDue = p.remainingDue !== undefined ? Number(p.remainingDue) : Math.max(0, totalAmt - collectedAmt);
+  // SETTLEMENT_RETURN sends `outstanding`; SETTLEMENT_PAYMENT sends `remainingDue`
+  const rawDue = p.remainingDue !== undefined ? p.remainingDue : p.outstanding;
+  const remainingDue = rawDue !== undefined && rawDue !== null && rawDue !== '' ? Number(rawDue) : Math.max(0, totalAmt - collectedAmt);
   const paymentMode = String(p.paymentMode || (p.status === 'RETURNED_IN_HAND' ? 'RETURN' : 'Cash')).trim();
   const refNo = String(p.refNo || '').trim();
   const status = String(p.status || (collectedAmt >= totalAmt && totalAmt > 0 ? 'PAID_FULL' : 'PAID_PARTIAL')).trim();
@@ -1086,4 +1101,47 @@ function canonicalizeTrackingSheets(ss) {
   updateDailySummary(ss);
 
   return { custodyCount: custodyUpdated, outUpdated, inUpdated };
+}
+
+/**
+ * Returns log rows (without the header) from the last `days` days as plain arrays.
+ * Dates become ISO strings; the first column (timestamp) is used for the cut-off.
+ */
+function readLogRows(ss, tabName, numCols, days) {
+  // The live tab plus archived copies (e.g. "BACKUP_Scan_Out_Log_Oct2026"), so history
+  // survives a log reset and repeat trips are still counted.
+  const sheets = ss.getSheets().filter(sh => {
+    const name = sh.getName();
+    return name === tabName || name.indexOf('BACKUP_' + tabName) === 0;
+  });
+  const cutoff = Date.now() - days * 86400000;
+  const seen = {};
+  const rows = [];
+  sheets.forEach(sheet => {
+    if (sheet.getLastRow() < 2) return;
+    const width = Math.min(numCols, sheet.getLastColumn());
+    const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, width).getValues();
+    values.forEach(r => {
+      const row = r.map(v => (v instanceof Date ? v.toISOString() : v));
+      const t = Date.parse(String(row[0] || ''));
+      if (!row[1] || (!isNaN(t) && t < cutoff)) return;
+      const key = row[0] + '|' + row[1];
+      if (seen[key]) return; // same row present in a backup and the live tab
+      seen[key] = true;
+      rows.push(row);
+    });
+  });
+  return rows;
+}
+
+/**
+ * The tracking spreadsheet, whether this script is bound to it or deployed standalone
+ * (getActiveSpreadsheet() returns null in a standalone web app).
+ */
+function getTrackingSpreadsheet() {
+  try {
+    const active = SpreadsheetApp.getActiveSpreadsheet();
+    if (active) return active;
+  } catch (e) {}
+  return SpreadsheetApp.openById('1Lu1C-aX9KCRhCrcrZNal81tt4-wD_6wqHWqsI5orTrY');
 }
